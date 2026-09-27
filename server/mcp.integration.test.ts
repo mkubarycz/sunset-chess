@@ -1,0 +1,354 @@
+// @vitest-environment node
+import { mkdirSync, rmSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { AddressInfo } from 'node:net';
+import { request as httpRequest } from 'node:http';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { afterEach, describe, expect, it } from 'vitest';
+import { openDatabase } from './database.js';
+import {
+  allowedHostAuthority,
+  allowedOriginValue,
+  createSunsetServer,
+} from './httpServer.js';
+import { ChessRepository } from './repository.js';
+
+const testDirectory = resolve(process.cwd(), '.test-data');
+const files: string[] = [];
+
+function postChunks(
+  port: number,
+  chunks: Buffer[],
+): Promise<{ status: number; body: unknown }> {
+  return new Promise((resolveResponse, rejectResponse) => {
+    const req = httpRequest({
+      hostname: '127.0.0.1',
+      port,
+      path: '/api/check-ins',
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    }, (res) => {
+      const responseChunks: Buffer[] = [];
+      res.on('data', (chunk: Buffer) => responseChunks.push(chunk));
+      res.on('end', () => {
+        try {
+          resolveResponse({
+            status: res.statusCode ?? 0,
+            body: JSON.parse(Buffer.concat(responseChunks).toString('utf8')),
+          });
+        } catch (error) {
+          rejectResponse(error);
+        }
+      });
+    });
+    req.on('error', rejectResponse);
+    chunks.forEach((chunk) => req.write(chunk));
+    req.end();
+  });
+}
+
+afterEach(() => {
+  for (const file of files.splice(0)) rmSync(file, { force: true });
+});
+
+async function fixture() {
+  mkdirSync(testDirectory, { recursive: true });
+  const path = resolve(testDirectory, `mcp-${crypto.randomUUID()}.sqlite`);
+  files.push(path);
+  const db = openDatabase(path);
+  const repository = new ChessRepository(db);
+  const server = createSunsetServer(repository, db);
+  await new Promise<void>((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
+  const port = (server.address() as AddressInfo).port;
+  const client = new Client({ name: 'sunset-test', version: '1.0.0' });
+  await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`)));
+  return {
+    client,
+    db,
+    repository,
+    port,
+    close: async () => {
+      await client.close();
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+      db.close();
+    },
+  };
+}
+
+describe('Sunset Chess HTTP and MCP', () => {
+  it('accepts exact IPv4/IPv6 loopback authorities and rejects malformed or remote values', () => {
+    for (const authority of ['localhost', 'localhost:4175', '127.0.0.1:4175', '[::1]', '[::1]:4175']) {
+      expect(allowedHostAuthority(authority)).toBe(true);
+    }
+    for (const authority of ['', '::1', '[::1', 'example.com', '[2001:db8::1]:4175', 'localhost/path']) {
+      expect(allowedHostAuthority(authority)).toBe(false);
+    }
+    for (const origin of ['http://localhost:4175', 'http://127.0.0.1:4175', 'http://[::1]:4175']) {
+      expect(allowedOriginValue(origin)).toBe(true);
+    }
+    for (const origin of [
+      'https://[::1]:4175',
+      'http://[2001:db8::1]:4175',
+      'http://[::1]:4175/path',
+      'not-an-origin',
+    ]) {
+      expect(allowedOriginValue(origin)).toBe(false);
+    }
+  });
+
+  it('serves health, joined games API, static navigation, and JSON API errors', async () => {
+    const app = await fixture();
+    expect((await fetch(`http://127.0.0.1:${app.port}/health`)).status).toBe(200);
+    expect((await fetch(`http://127.0.0.1:${app.port}/`, {
+      headers: { accept: 'text/html' },
+    })).headers.get('content-type')).toContain('text/html');
+    const missing = await fetch(`http://127.0.0.1:${app.port}/api/missing`, {
+      headers: { accept: 'text/html' },
+    });
+    expect(missing.status).toBe(404);
+    expect(missing.headers.get('content-type')).toContain('application/json');
+    expect(await (await fetch(`http://127.0.0.1:${app.port}/api/games`)).json())
+      .toEqual({ games: [], recentGames: [] });
+    expect((await fetch(`http://127.0.0.1:${app.port}/api/games`, { method: 'POST' })).status).toBe(405);
+    const listJoinedGames = app.repository.listJoinedGames;
+    app.repository.listJoinedGames = () => { throw new Error('test database failure'); };
+    const failed = await fetch(`http://127.0.0.1:${app.port}/api/games`);
+    expect(failed.status).toBe(500);
+    expect(await failed.json()).toEqual({ error: 'test database failure' });
+    app.repository.listJoinedGames = listJoinedGames;
+    await app.close();
+  });
+
+  it('validates HTTP check-ins and returns the exact matchmaking result shape', async () => {
+    const app = await fixture();
+    const endpoint = `http://127.0.0.1:${app.port}/api/check-ins`;
+    expect((await fetch(endpoint, { method: 'GET' })).status).toBe(405);
+    expect((await fetch(endpoint, { method: 'POST', body: '{}' })).status).toBe(400);
+    expect((await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: 'http://example.com' },
+      body: JSON.stringify({ playerId: 1000, name: 'Alice' }),
+    })).status).toBe(403);
+    expect((await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{',
+    })).status).toBe(400);
+    expect((await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ playerId: 999, name: 'Alice' }),
+    })).status).toBe(400);
+
+    const first = await (await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ playerId: 1000, name: 'Alice' }),
+    })).json();
+    expect(first).toMatchObject({
+      status: 'waiting',
+      side: expect.stringMatching(/^(black|white)$/),
+      game: { tableNumber: 1, createdAt: expect.any(String) },
+    });
+
+    const repeat = await (await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ playerId: 1000, name: 'Alice Updated' }),
+    })).json();
+    expect(repeat).toMatchObject({
+      status: 'already-checked-in',
+      side: first.side,
+      game: { id: first.game.id, tableNumber: 1 },
+    });
+
+    const original = app.repository.checkInPlayer;
+    app.repository.checkInPlayer = () => { throw new Error('test check-in failure'); };
+    const failed = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ playerId: 1001, name: 'Bob' }),
+    });
+    expect(failed.status).toBe(500);
+    app.repository.checkInPlayer = original;
+    await app.close();
+  });
+
+  it('creates authoritative players before compact QR display and resolves them by id', async () => {
+    const app = await fixture();
+    const endpoint = `http://127.0.0.1:${app.port}/api/players`;
+    expect((await fetch(endpoint)).status).toBe(405);
+    expect((await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: '   ' }),
+    })).status).toBe(400);
+    const createdResponse = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: ' Ada ' }),
+    });
+    expect(createdResponse.status).toBe(201);
+    const created = await createdResponse.json() as { player: { id: number; name: string } };
+    expect(created.player.id).toBeGreaterThanOrEqual(1000);
+    expect(created.player.id).toBeLessThanOrEqual(2000);
+    expect(created.player.name).toBe('Ada');
+    const lookup = await fetch(`${endpoint}/${created.player.id}`);
+    expect(lookup.status).toBe(200);
+    expect(await lookup.json()).toEqual({ player: { ...created.player, rating: 700 } });
+    expect((await fetch(`${endpoint}/999`)).status).toBe(404);
+    await app.close();
+  });
+
+  it('preserves a multibyte player name split across raw request chunks', async () => {
+    const app = await fixture();
+    const name = 'Zoë ♟️';
+    const encoded = Buffer.from(JSON.stringify({ playerId: 1000, name }), 'utf8');
+    const symbol = Buffer.from('♟', 'utf8');
+    const symbolStart = encoded.indexOf(symbol);
+    expect(symbolStart).toBeGreaterThan(0);
+    const response = await postChunks(app.port, [
+      encoded.subarray(0, symbolStart + 1),
+      encoded.subarray(symbolStart + 1, symbolStart + 2),
+      encoded.subarray(symbolStart + 2),
+    ]);
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      status: 'waiting',
+      game: { tableNumber: 1 },
+    });
+    expect(app.repository.getPlayer(1000)).toEqual({ id: 1000, name, rating: 700 });
+    await app.close();
+  });
+
+  it('exposes exact tools and supports the complete player/game lifecycle', async () => {
+    const app = await fixture();
+    const tools = await app.client.listTools();
+    expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
+      'game-create', 'game-delete', 'game-get', 'game-list', 'game-result-set',
+      'player-check-in', 'player-create', 'player-delete', 'player-get', 'player-list', 'player-upsert',
+    ]);
+    expect(Object.fromEntries(tools.tools.map((tool) => [tool.name, tool.annotations]))).toMatchObject({
+      'player-list': { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      'player-get': { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      'player-upsert': { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      'player-create': { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      'player-check-in': { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      'player-delete': { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+      'game-list': { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      'game-get': { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      'game-create': { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      'game-delete': { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+      'game-result-set': { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    });
+    const byName = Object.fromEntries(tools.tools.map((tool) => [tool.name, tool]));
+    expect(byName['player-create'].description).toContain('natural-language request');
+    expect(Object.keys(byName['player-create'].inputSchema.properties)).toEqual(['name']);
+    expect(byName['player-upsert'].description).toContain('known ID');
+    expect(byName['player-check-in'].description).toContain('oldest waiting game');
+    expect(byName['game-create'].description).toContain('automatically assigns');
+    expect(Object.keys(byName['game-create'].inputSchema.properties).sort())
+      .toEqual(['blackPlayerId', 'whitePlayerId']);
+    const aliceResult = await app.client.callTool({ name: 'player-create', arguments: { name: 'Alice' } });
+    const alice = (aliceResult.structuredContent as { player: { id: number; name: string } }).player;
+    expect(alice).toEqual({ id: expect.any(Number), name: 'Alice', rating: 700 });
+    await app.client.callTool({ name: 'player-upsert', arguments: { id: 1001, name: 'Bob' } });
+    const created = await app.client.callTool({
+      name: 'game-create',
+      arguments: { blackPlayerId: alice.id, whitePlayerId: 1001 },
+    });
+    const game = (created.structuredContent as { game: { id: number; tableNumber: number } }).game;
+    expect(game.tableNumber).toBe(1);
+    expect((await app.client.callTool({ name: 'game-get', arguments: { id: game.id } })).isError)
+      .not.toBe(true);
+    expect((await app.client.callTool({ name: 'game-list', arguments: {} })).structuredContent)
+      .toEqual({ games: [{
+        id: game.id, tableNumber: 1, createdAt: expect.any(String),
+        blackPlayerId: alice.id, whitePlayerId: 1001,
+        finishedAt: null, result: null,
+      }] });
+    expect(await (await fetch(`http://127.0.0.1:${app.port}/api/games`)).json()).toEqual({
+      games: [{
+        id: game.id,
+        tableNumber: 1,
+        createdAt: expect.any(String),
+        finishedAt: null,
+        result: null,
+        blackPlayerId: alice.id,
+        whitePlayerId: 1001,
+        blackPlayer: alice,
+        whitePlayer: { id: 1001, name: 'Bob', rating: 700 },
+      }],
+      recentGames: [],
+    });
+    expect((await app.client.callTool({
+      name: 'game-create',
+      arguments: { blackPlayerId: alice.id, whitePlayerId: alice.id },
+    })).isError).toBe(true);
+    expect((await app.client.callTool({
+      name: 'player-delete', arguments: { id: alice.id },
+    })).isError).toBe(true);
+    await app.client.callTool({ name: 'game-delete', arguments: { id: game.id } });
+    await app.client.callTool({ name: 'player-delete', arguments: { id: alice.id } });
+    await app.client.callTool({ name: 'player-delete', arguments: { id: 1001 } });
+    expect((await app.client.callTool({ name: 'player-list', arguments: {} })).structuredContent)
+      .toEqual({ players: [] });
+    await app.close();
+  });
+
+  it('finalizes through HTTP and MCP with canonical immutable results', async () => {
+    const app = await fixture();
+    app.repository.upsertPlayer(1000, 'Alice');
+    app.repository.upsertPlayer(1001, 'Bob');
+    const game = app.repository.createGame(1000, 1001);
+    const response = await fetch(`http://127.0.0.1:${app.port}/api/games/${game.id}/result`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ result: '1/2-1/2' }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ game: { result: '1/2-1/2' } });
+    expect(app.repository.getPlayer(1000).rating).toBe(700);
+    expect(app.repository.getPlayer(1001).rating).toBe(700);
+    expect((await fetch(`http://127.0.0.1:${app.port}/api/games/${game.id}/result`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ result: '1-0' }),
+    })).status).toBe(409);
+
+    const next = app.repository.createGame(1000, 1001);
+    const mcp = await app.client.callTool({
+      name: 'game-result-set',
+      arguments: { id: next.id, result: '0-1' },
+    });
+    expect(mcp.structuredContent).toMatchObject({ game: { result: '0-1' } });
+    expect(app.repository.getPlayer(1000).rating).toBe(716);
+    expect(app.repository.getPlayer(1001).rating).toBe(684);
+    await app.close();
+  });
+
+  it('checks players in through MCP using the same idempotent domain service', async () => {
+    const app = await fixture();
+    const first = await app.client.callTool({
+      name: 'player-check-in', arguments: { playerId: 1000, name: 'Alice' },
+    });
+    expect(first.structuredContent).toMatchObject({
+      status: 'waiting', game: { tableNumber: 1 }, side: expect.any(String),
+    });
+    const second = await app.client.callTool({
+      name: 'player-check-in', arguments: { playerId: 1001, name: 'Bob' },
+    });
+    expect(second.structuredContent).toMatchObject({
+      status: 'paired', game: { tableNumber: 1 }, side: expect.any(String),
+    });
+    const repeat = await app.client.callTool({
+      name: 'player-check-in', arguments: { playerId: 1001, name: 'Bobby' },
+    });
+    expect(repeat.structuredContent).toMatchObject({
+      status: 'already-checked-in',
+      game: { id: (second.structuredContent as { game: { id: number } }).game.id },
+    });
+    await app.close();
+  });
+});
