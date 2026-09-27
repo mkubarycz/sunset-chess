@@ -3,6 +3,7 @@ import { prepareZXingModule, readBarcodes } from 'zxing-wasm/reader'
 import wasmUrl from 'zxing-wasm/reader/zxing_reader.wasm?url'
 import type { DecodeRequest, DecodeResponse } from './workerProtocol'
 import { mapZxingResults } from './zxingResults'
+import { ZXING_QR_READER_OPTIONS } from './zxingOptions'
 
 let initialized: Promise<void> | null = null
 
@@ -41,14 +42,7 @@ self.onmessage = async ({ data }: MessageEvent<DecodeRequest>) => {
     await initialize()
     const results = await readBarcodes(
       new ImageData(new Uint8ClampedArray(data.pixels), data.width, data.height),
-      {
-        formats: ['QRCode'],
-        maxNumberOfSymbols: 4,
-        tryHarder: false,
-        tryRotate: true,
-        tryInvert: true,
-        returnErrors: false,
-      },
+      ZXING_QR_READER_OPTIONS,
     )
     const detections = mapZxingResults(results)
     post({

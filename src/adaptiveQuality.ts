@@ -24,15 +24,15 @@ export interface CapabilitySample {
 
 const profiles: Record<QualityTier, QualityProfile> = {
   economy: {
-    tier: 'economy', decodeMaxDimension: 720, trackMaxDimension: 480,
+    tier: 'economy', decodeMaxDimension: 1280, trackMaxDimension: 480,
     decodeIntervalMs: 320, trackIntervalMs: 90,
   },
   balanced: {
-    tier: 'balanced', decodeMaxDimension: 1080, trackMaxDimension: 640,
+    tier: 'balanced', decodeMaxDimension: 1920, trackMaxDimension: 640,
     decodeIntervalMs: 150, trackIntervalMs: 55,
   },
   high: {
-    tier: 'high', decodeMaxDimension: 1440, trackMaxDimension: 960,
+    tier: 'high', decodeMaxDimension: 1920, trackMaxDimension: 960,
     decodeIntervalMs: 120, trackIntervalMs: 33,
   },
 }
@@ -66,6 +66,6 @@ export function selectQuality(sample: CapabilitySample): QualityProfile {
   if ((sample.decodeLatencyMs ?? 0) <= profile.decodeIntervalMs) return profile
   return {
     ...profile,
-    decodeIntervalMs: Math.min(600, Math.ceil((sample.decodeLatencyMs ?? 0) * 1.35)),
+    decodeIntervalMs: Math.min(1_000, Math.ceil((sample.decodeLatencyMs ?? 0) * 1.35)),
   }
 }

@@ -8,8 +8,8 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
   1920×1080/60 FPS request, and a non-exclusive 3840×2160 ceiling
 - Automatic camera startup on mount, with manual retry when permission or hardware is unavailable
 - Five-minute camera inactivity shutdown, reset by every decoded QR code (including arbitrary payloads), with a restart action
-- ZXing-C++ WebAssembly multi-QR scanning in a dedicated worker, with native
-  `BarcodeDetector` and worker-based `jsQR` failover
+- Complementary native `BarcodeDetector` and ZXing-C++ WebAssembly multi-QR
+  scanning, with worker-based `jsQR` as an additional staggered attempt
 - Mirrored, responsive polygon and bounded payload label that follow `object-fit: cover`
 - Identity-bound visual QR object tracking between decodes, with explicit
   decoded/visual/coasting/lost state, confidence, anchor age, and stale expiry
@@ -30,19 +30,28 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
   rail's left edge, then animate a decorative identity token from the detected
   QR label (reduced-motion users receive only a stationary highlight)
 
-Camera frames remain in the browser and are never transmitted. Decoder order is:
+Camera frames remain in the browser and are never transmitted. Decoder
+orchestration is complementary rather than an exclusive fallback chain:
 
-1. `zxing-wasm` 3.x (ZXing-C++) in a module worker;
-2. native `BarcodeDetector`, when the browser advertises QR support;
-3. `jsQR` in a separate module worker.
+1. native `BarcodeDetector` receives the original `HTMLVideoElement` at its
+   negotiated source resolution every eligible 50 ms cycle;
+2. `zxing-wasm` 3.x receives an RGBA `ImageData` frame in a module worker at
+   120 ms high, 150 ms balanced, or 320 ms economy cadence;
+3. `jsQR` is lazily started after 900 ms without a decode and attempts at most
+   every 1.2 seconds, staggered behind ZXing.
 
-Each worker has an explicit initialization handshake, timeout, runtime error,
-generation, and at most one request in flight. A new frame is skipped while work
-is pending, so there is no decode queue. ZXing is QR-only, returns at most four
-symbols with their four corner points, and is periodically run even while visual
-tracking succeeds so identity is re-anchored. Native detection also returns
-multiple symbols. Only the final `jsQR` layer is single-symbol; it never fabricates
-a second identity. Failures and the active fallback are visible in diagnostics.
+An ordinary empty result is not a decoder failure and never disables another
+decoder. Native and worker results are normalized into source-video coordinates,
+merged within 250 ms, and deduplicated by payload while retaining every distinct
+identity. Each decoder is generation-guarded and permits at most one request in
+flight, so there is no queue. ZXing is QR-only, searches at most four symbols,
+and enables `tryHarder`, rotation, and normal/inverted luminance attempts. jsQR
+uses both inversion polarities and remains intentionally single-symbol; it never
+fabricates another identity. Canvas capture is unmirrored source RGBA. ZXing
+receives that RGBA as `ImageData`, jsQR converts it internally, and OpenCV alone
+converts RGBA to luminance with `COLOR_RGBA2GRAY`. Mirroring and
+`object-fit: cover` are applied only when source polygons are mapped to preview
+coordinates.
 
 The preferred tracker is OpenCV.js pyramidal Lucas–Kanade optical flow in a
 dedicated module worker. The maintained `@opencvjs/worker` package is built
@@ -70,16 +79,43 @@ also avoid a global “Reacquiring… actions paused” banner: labels and zones
 remain mounted while their local progress pauses. Diagnostics report each active
 track as decoded or visual with confidence and decode-anchor age.
 
-Quality is capability- and latency-driven, never UA-driven. The initial tier uses
+Quality is capability- and latency-driven, never UA-driven. Decode and tracking
+resolution are independent. The initial tier uses
 the negotiated camera resolution/rate, `hardwareConcurrency`, `deviceMemory`
 when exposed, WebAssembly/SIMD, OffscreenCanvas, and page visibility. High uses
-1440 px decode / 960 px tracking at 120/33 ms; balanced uses 1080/640 at
-150/55 ms; economy uses 720/480 at 320/90 ms. Decode latency above 260 ms or
+1920 px decode / 960 px tracking at 120/33 ms; balanced uses 1920/640 at
+150/55 ms; economy uses 1280/480 at 320/90 ms. A 1920×1080 source therefore
+reaches both native and ZXing at the full 1920×1080 in high and balanced tiers.
+Sources above a tier's worker cap receive a full-source attempt at least once
+per second; intervening 4K worker attempts are bounded to 1920 px while native
+continues to see the full source. Decode latency above 260 ms or
 tracking above 75 ms steps the tier down, and decode cadence expands to at least
-1.35× measured latency (capped at 600 ms). A hidden page uses economy. This makes
+1.35× measured latency (capped at 1 second). A hidden page uses economy. This makes
 capable Apple Silicon Macs naturally high quality without excluding equally
 capable non-Mac systems. Camera acquisition still requests the existing high
 ideals and safely accepts lower negotiated modes.
+
+Worker decoding has scheduling priority: a frame that launches a ZXing/jsQR
+capture, and every frame while either worker request is pending, skips optical
+flow capture. Adaptive pressure therefore sheds tracking work before acquisition
+detail. Diagnostics report source resolution plus the actual most-recent
+native/ZXing/jsQR input dimensions and measured attempt interval.
+
+### Long-range regression fixed
+
+Commit `dbb5ffa` accidentally changed decoder *selection* as well as adding the
+portable workers. Once ZXing initialized, the 6cff31e native path was no longer
+called after normal zero-result frames; native ran only after worker
+initialization/runtime failure. On a 1920×1080 camera, high-tier ZXing received
+1440×810 (balanced 1080×608, economy 720×405), while OpenCV capture also ran
+before decode scheduling. The previous native path had received the full
+1920×1080 every 50 ms. ZXing additionally had `tryHarder: false`.
+
+The corrected pipeline restores full-source native detection every eligible
+cycle, supplies full 1920×1080 RGBA to ZXing on the target Mac, enables the
+difficult-code options, preserves periodic full-detail attempts under adaptation,
+keeps tracking at its independent lower resolution, and merges complementary
+results instead of treating “no symbols” as failure or exclusivity.
 
 Some browsers can leave a registered `requestVideoFrameCallback` pending even while
 the video clock and decoded frames continue after a source replacement or reload.

@@ -86,7 +86,11 @@ function setupCamera() {
     lineTo: vi.fn(),
     closePath: vi.fn(),
     stroke: vi.fn(),
-    getImageData: vi.fn(() => ({ data: new Uint8ClampedArray(16), width: 2, height: 2 })),
+    getImageData: vi.fn((_x: number, _y: number, width: number, height: number) => ({
+      data: new Uint8ClampedArray(width * height * 4),
+      width,
+      height,
+    })),
   }
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(context as never)
   return { stream, track, getUserMedia, callbacks, context }
@@ -338,7 +342,7 @@ describe('scanner and player producer', () => {
     expect(getUserMedia).toHaveBeenCalledOnce()
   })
 
-  it('prefers ZXing WASM while capturing local pixels for visual tracking', async () => {
+  it('runs native full-source detection alongside ZXing while capturing tracking pixels', async () => {
     const camera = setupCamera()
     const worker = new FakeWorker()
     const workerFactory = vi.fn(() => worker as unknown as Worker)
@@ -381,9 +385,108 @@ describe('scanner and player producer', () => {
     }))
 
     expect(await screen.findByText('Mike')).toBeInTheDocument()
-    expect(nativeDetector.detect).not.toHaveBeenCalled()
+    expect(nativeDetector.detect).toHaveBeenCalledWith(video)
     expect(camera.context.getImageData).toHaveBeenCalled()
     expect(workerFactory).toHaveBeenCalledOnce()
+  })
+
+  it('supplies full 1920×1080 source pixels to native and ZXing on the same cycle', async () => {
+    const camera = setupCamera()
+    const worker = new FakeWorker()
+    const detect = vi.fn().mockResolvedValue([])
+    render(<App
+      workerFactory={() => worker as unknown as Worker}
+      nativeDetectorFactory={() => ({ detect })}
+    />)
+    const video = screen.getByLabelText('Mirrored live camera preview')
+    Object.defineProperties(video, {
+      videoWidth: { configurable: true, value: 1920 },
+      videoHeight: { configurable: true, value: 1080 },
+      readyState: { configurable: true, value: HTMLMediaElement.HAVE_CURRENT_DATA },
+    })
+
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Scanning for a QR code'))
+    act(() => camera.callbacks.shift()?.(performance.now() + 400))
+    const request = worker.postMessage.mock.calls[0][0] as DecodeRequest
+
+    expect(detect).toHaveBeenCalledWith(video)
+    expect(request).toMatchObject({
+      type: 'decode',
+      width: 1920,
+      height: 1080,
+    })
+    if (request.type === 'decode') expect(request.pixels.byteLength).toBe(1920 * 1080 * 4)
+    expect(camera.context.drawImage).toHaveBeenCalledWith(video, 0, 0, 1920, 1080)
+  })
+
+  it('does not let an ordinary empty ZXing result suppress a native result', async () => {
+    const camera = setupCamera()
+    const worker = new FakeWorker()
+    const nativeDetection = {
+      rawValue: 'native-long-range',
+      cornerPoints: [
+        { x: 100, y: 100 }, { x: 140, y: 100 },
+        { x: 140, y: 140 }, { x: 100, y: 140 },
+      ],
+    }
+    render(<App
+      workerFactory={() => worker as unknown as Worker}
+      nativeDetectorFactory={() => ({ detect: vi.fn().mockResolvedValue([nativeDetection]) })}
+    />)
+    const video = screen.getByLabelText('Mirrored live camera preview')
+    Object.defineProperties(video, {
+      videoWidth: { configurable: true, value: 1920 },
+      videoHeight: { configurable: true, value: 1080 },
+      clientWidth: { configurable: true, value: 400 },
+      clientHeight: { configurable: true, value: 300 },
+      readyState: { configurable: true, value: HTMLMediaElement.HAVE_CURRENT_DATA },
+    })
+
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Scanning for a QR code'))
+    act(() => camera.callbacks.shift()?.(performance.now() + 400))
+    const request = worker.postMessage.mock.calls[0][0] as DecodeRequest
+    act(() => worker.respond({
+      type: 'result',
+      id: request.id,
+      generation: request.generation,
+      detections: [],
+      elapsedMs: 3,
+    }))
+
+    expect(await screen.findByText('native-long-range')).toBeInTheDocument()
+  })
+
+  it('keeps lower-resolution tracking independent and yields while decode is pending', async () => {
+    const camera = setupCamera()
+    const worker = new FakeWorker()
+    render(<App
+      workerFactory={() => worker as unknown as Worker}
+      nativeDetectorFactory={() => ({ detect: vi.fn().mockResolvedValue([]) })}
+    />)
+    const video = screen.getByLabelText('Mirrored live camera preview')
+    Object.defineProperties(video, {
+      videoWidth: { configurable: true, value: 1920 },
+      videoHeight: { configurable: true, value: 1080 },
+      readyState: { configurable: true, value: HTMLMediaElement.HAVE_CURRENT_DATA },
+    })
+
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Scanning for a QR code'))
+    act(() => camera.callbacks.shift()?.(performance.now() + 400))
+    const request = worker.postMessage.mock.calls[0][0] as DecodeRequest
+    expect(camera.context.drawImage).toHaveBeenCalledTimes(1)
+
+    act(() => camera.callbacks.shift()?.(performance.now() + 500))
+    expect(camera.context.drawImage).toHaveBeenCalledTimes(1)
+
+    act(() => worker.respond({
+      type: 'result',
+      id: request.id,
+      generation: request.generation,
+      detections: [],
+      elapsedMs: 3,
+    }))
+    act(() => camera.callbacks.shift()?.(performance.now() + 510))
+    expect(camera.context.drawImage).toHaveBeenLastCalledWith(video, 0, 0, 640, 360)
   })
 
   it('reports negotiated camera settings, optional tuning, and opt-in zoom', async () => {
@@ -1072,11 +1175,7 @@ describe('scanner and player producer', () => {
     await scanDetection(12_600, { data: payload, location })
     expect(checkInPlayer).toHaveBeenCalledTimes(1)
 
-    await scanDetection(12_750, null)
-    now = 13_800
-    act(() => camera.callbacks.shift()?.(13_800))
-    await waitFor(() => expect(screen.queryByText('Ada · #1234')).not.toBeInTheDocument())
-    for (let time = 14_000; time <= 16_300; time += 150) {
+    for (let time = 12_750; time <= 15_050; time += 150) {
       await scanDetection(time, { data: payload, location })
     }
     expect(checkInPlayer).toHaveBeenCalledTimes(1)
@@ -1250,10 +1349,13 @@ describe('scanner and player producer', () => {
     restoreDescriptor(window, 'matchMedia', matchMediaDescriptor)
   })
 
-  it('recovers from a worker error without leaving a pending scan', async () => {
+  it('keeps native acquisition alive after a worker error', async () => {
     const camera = setupCamera()
     const worker = new FakeWorker()
-    render(<App workerFactory={() => worker as unknown as Worker} />)
+    render(<App
+      workerFactory={() => worker as unknown as Worker}
+      nativeDetectorFactory={() => ({ detect: vi.fn().mockResolvedValue([]) })}
+    />)
     const video = screen.getByLabelText('Mirrored live camera preview')
     Object.defineProperties(video, {
       videoWidth: { configurable: true, value: 2 },
@@ -1264,15 +1366,19 @@ describe('scanner and player producer', () => {
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Scanning for a QR code'))
     act(() => camera.callbacks.shift()?.(performance.now() + 200))
     act(() => worker.dispatchEvent(new ErrorEvent('error', { message: 'decoder crashed' })))
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('scanner stopped'))
+    await waitFor(() => expect(worker.terminate).toHaveBeenCalledOnce())
+    expect(screen.getByRole('status')).toHaveTextContent('Scanning for a QR code')
     expect(worker.terminate).toHaveBeenCalledOnce()
-    expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument()
+    expect(camera.track.stop).not.toHaveBeenCalled()
   })
 
-  it('handles a worker failure before the first decode exactly once', async () => {
+  it('handles a worker failure before the first decode exactly once without stopping native', async () => {
     const camera = setupCamera()
     const worker = new FakeWorker()
-    render(<App workerFactory={() => worker as unknown as Worker} />)
+    render(<App
+      workerFactory={() => worker as unknown as Worker}
+      nativeDetectorFactory={() => ({ detect: vi.fn().mockResolvedValue([]) })}
+    />)
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Scanning for a QR code'))
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Scanning for a QR code'))
 
@@ -1280,9 +1386,10 @@ describe('scanner and player producer', () => {
       worker.dispatchEvent(new ErrorEvent('error', { message: 'startup failure' }))
       worker.dispatchEvent(new ErrorEvent('error', { message: 'duplicate failure' }))
     })
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('scanner stopped'))
+    await waitFor(() => expect(worker.terminate).toHaveBeenCalledOnce())
+    expect(screen.getByRole('status')).toHaveTextContent('Scanning for a QR code')
     expect(worker.terminate).toHaveBeenCalledOnce()
-    expect(camera.track.stop).toHaveBeenCalledOnce()
+    expect(camera.track.stop).not.toHaveBeenCalled()
   })
 
   it('validates, generates, and prints a player card without a download action', async () => {
