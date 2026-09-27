@@ -33,8 +33,6 @@ import {
 import {
   resizeCanvasToDisplaySize,
   scanDimensions,
-  NATIVE_SCAN_INTERVAL_MS,
-  SCAN_INTERVAL_MS,
   type QrDetection,
   type RememberedDetection,
 } from './scanner'
@@ -85,7 +83,13 @@ import {
 } from './actionZones'
 import { ActionZoneView } from './ActionZoneView'
 import { GameCard, type OngoingGame } from './GameCard'
-import { createQrWorker, WorkerDecoder } from './workerDecoder'
+import { createJsQrWorker, createQrWorker, WorkerDecoder } from './workerDecoder'
+import { createOpenCvWorker, OpticalFlowTracker } from './opticalFlowTracker'
+import {
+  selectQuality,
+  supportsWasmSimd,
+  type QualityProfile,
+} from './adaptiveQuality'
 import { encodeQrDataUrl } from './qrArtwork'
 import './App.css'
 
@@ -165,6 +169,8 @@ function classifyCameraError(error: unknown): CameraState {
 
 interface AppProps {
   workerFactory?: () => Worker
+  jsQrWorkerFactory?: () => Worker
+  openCvWorkerFactory?: () => Worker
   nativeDetectorFactory?: () => NativeBarcodeDetector | null | Promise<NativeBarcodeDetector | null>
   qrEncoder?: (value: string) => Promise<string>
   createPlayer?: (name: string, signal: AbortSignal) => Promise<PlayerPayload>
@@ -236,6 +242,8 @@ async function defaultCheckInPlayer(
 }
 export default function App({
   workerFactory = createQrWorker,
+  jsQrWorkerFactory = createJsQrWorker,
+  openCvWorkerFactory = createOpenCvWorker,
   nativeDetectorFactory = createNativeBarcodeDetector,
   qrEncoder = encodeQrDataUrl,
   createPlayer = defaultCreatePlayer,
@@ -279,6 +287,8 @@ export default function App({
   const visualCaptureRef = useRef<HTMLCanvasElement | null>(null)
   const visualFrameRef = useRef<VisualFrame | null>(null)
   const visualTrackerRef = useRef(new VisualObjectTracker())
+  const opticalTrackerRef = useRef<OpticalFlowTracker | null>(null)
+  const opticalReadyRef = useRef(false)
   const streamRef = useRef<MediaStream | null>(null)
   const scheduleRef = useRef<ScheduledFrame>(null)
   const timerFallbackRef = useRef(false)
@@ -298,6 +308,19 @@ export default function App({
   const scanSizeRef = useRef<{ width: number; height: number } | null>(null)
   const cameraGenerationRef = useRef(0)
   const decoderRef = useRef<WorkerDecoder | null>(null)
+  const decoderModeRef = useRef<'zxing-wasm' | 'native' | 'jsqr' | 'none'>('none')
+  const decoderFailureRef = useRef('')
+  const trackerModeRef = useRef<'opencv-lk' | 'lightweight'>('lightweight')
+  const trackerFailureRef = useRef('')
+  const decodeLatencyRef = useRef(0)
+  const trackLatencyRef = useRef(0)
+  const lastTrackRef = useRef(0)
+  const qualityRef = useRef<QualityProfile>(selectQuality({
+    wasm: typeof WebAssembly !== 'undefined',
+    simd: supportsWasmSimd(),
+    offscreenCanvas: typeof OffscreenCanvas !== 'undefined',
+    visible: document.visibilityState !== 'hidden',
+  }))
   const nativeDetectorRef = useRef<NativeBarcodeDetector | null>(null)
   const nativePendingGenerationRef = useRef<number | null>(null)
   const qrRequestRef = useRef(0)
@@ -562,6 +585,10 @@ export default function App({
     cancelScheduledFrame()
     decoderRef.current?.terminate()
     decoderRef.current = null
+    opticalTrackerRef.current?.terminate()
+    opticalTrackerRef.current = null
+    opticalReadyRef.current = false
+    decoderModeRef.current = 'none'
     nativeDetectorRef.current = null
     nativePendingGenerationRef.current = null
     timerFallbackRef.current = false
@@ -816,11 +843,13 @@ export default function App({
     }
     const visualFrame = visualFrameRef.current
     if (visualFrame) {
-      visualTrackerRef.current.anchor(normalized.map((detection) => scaleDetection(
+      const scaled = normalized.map((detection) => scaleDetection(
         detection,
         videoSize,
         visualFrame,
-      )), visualFrame, now)
+      ))
+      visualTrackerRef.current.anchor(scaled, visualFrame, now)
+      opticalTrackerRef.current?.anchor(scaled)
     }
     if (normalized.length === 1) {
       const detection = normalized[0]
@@ -835,10 +864,13 @@ export default function App({
   }, [])
 
   const updateVisualTracking = useCallback((video: HTMLVideoElement, now: number) => {
+    const profile = qualityRef.current
+    if (now - lastTrackRef.current < profile.trackIntervalMs) return
+    lastTrackRef.current = now
     const size = scanDimensions(
       video.videoWidth,
       video.videoHeight,
-      VISUAL_FRAME_MAX_DIMENSION,
+      opticalReadyRef.current ? profile.trackMaxDimension : VISUAL_FRAME_MAX_DIMENSION,
     )
     if (!size.width || !size.height) return
     const canvas = visualCaptureRef.current ?? document.createElement('canvas')
@@ -853,28 +885,48 @@ export default function App({
       const frame = rgbaToVisualFrame(image.data, size.width, size.height, now)
       if (!frame) return
       visualFrameRef.current = frame
-      const observations = visualTrackerRef.current.update(frame, now)
-      const visualIdentities = new Set(observations.map(({ detection }) => detection.data))
-      for (const [identity, state] of trackingRefs.current) {
-        if (state.source === 'visual' && !visualIdentities.has(identity)) {
-          trackingRefs.current.delete(identity)
+      const applyObservations = (observations: ReturnType<VisualObjectTracker['update']>) => {
+        const visualIdentities = new Set(observations.map(({ detection }) => detection.data))
+        for (const [identity, state] of trackingRefs.current) {
+          if (state.source === 'visual' && !visualIdentities.has(identity)) {
+            trackingRefs.current.delete(identity)
+          }
+        }
+        const videoSize = { width: video.videoWidth, height: video.videoHeight }
+        for (const tracked of observations) {
+          if (tracked.source !== 'visual') continue
+          const previous = trackingRefs.current.get(tracked.detection.data)
+          if (!previous) continue
+          trackingRefs.current.set(tracked.detection.data, observeVisualDetection(
+            previous,
+            scaleDetection(tracked.detection, frame, videoSize),
+            now,
+            tracked.confidence,
+            tracked.actionable,
+          ))
         }
       }
-      const videoSize = { width: video.videoWidth, height: video.videoHeight }
-      for (const tracked of observations) {
-        if (tracked.source !== 'visual') continue
-        const previous = trackingRefs.current.get(tracked.detection.data)
-        if (!previous) continue
-        trackingRefs.current.set(tracked.detection.data, observeVisualDetection(
-          previous,
-          scaleDetection(tracked.detection, frame, videoSize),
-          now,
-          tracked.confidence,
-          tracked.actionable,
-        ))
+      const optical = opticalTrackerRef.current
+      if (opticalReadyRef.current && optical && !optical.busy) {
+        const generation = cameraGenerationRef.current
+        const buffer = image.data.buffer.slice(0) as ArrayBuffer
+        optical.process(buffer, size.width, size.height, now, generation)
+          ?.then((result) => {
+            if (result.generation !== cameraGenerationRef.current) return
+            trackLatencyRef.current = result.elapsedMs
+            applyObservations(result.observations)
+          }).catch(() => {
+            if (generation !== cameraGenerationRef.current) return
+            opticalReadyRef.current = false
+            trackerModeRef.current = 'lightweight'
+          })
+        return
       }
-    } catch {
+      const observations = visualTrackerRef.current.update(frame, now)
+      applyObservations(observations)
+    } catch (error) {
       visualFrameRef.current = null
+      trackerFailureRef.current = error instanceof Error ? error.message : 'frame capture failed'
     }
   }, [])
 
@@ -929,9 +981,11 @@ export default function App({
     armInactivityTimer(generation)
   }, [armInactivityTimer])
 
-  const activateWorkerDecoder = useCallback((generation: number) => {
+  const activateWorkerDecoder = useCallback(function activateWorkerDecoder(
+    generation: number,
+    kind: 'zxing-wasm' | 'jsqr' = 'zxing-wasm',
+  ) {
     if (generation !== cameraGenerationRef.current || decoderRef.current) return
-    nativeDetectorRef.current = null
     nativePendingGenerationRef.current = null
     rememberedRef.current = null
     trackingRefs.current.clear()
@@ -941,18 +995,43 @@ export default function App({
     scanSizeRef.current = null
     setRemembered(null)
     drawOverlay()
-    const handleDecoderFailure = () => {
+    const handleDecoderFailure = (error: Error) => {
       if (generation !== cameraGenerationRef.current) return
+      decoderFailureRef.current = `${kind}: ${error.message}`
+      decoderRef.current?.terminate()
+      decoderRef.current = null
+      if (kind === 'zxing-wasm' && nativeDetectorRef.current) {
+        decoderModeRef.current = 'native'
+        return
+      }
+      if (kind === 'zxing-wasm') {
+        activateWorkerDecoder(generation, 'jsqr')
+        return
+      }
       stopCamera(true)
       drawOverlay()
       setCameraState('error')
     }
     try {
-      decoderRef.current = new WorkerDecoder(workerFactory(), handleDecoderFailure)
-    } catch {
-      handleDecoderFailure()
+      const decoder = new WorkerDecoder(
+        kind === 'zxing-wasm' ? workerFactory() : jsQrWorkerFactory(),
+        handleDecoderFailure,
+      )
+      decoderRef.current = decoder
+      void decoder.initialize(generation).then(() => {
+        if (generation !== cameraGenerationRef.current || decoderRef.current !== decoder) return
+        decoderModeRef.current = kind
+      }).catch(handleDecoderFailure)
+    } catch (error) {
+      handleDecoderFailure(error instanceof Error ? error : new Error('decoder startup failed'))
     }
-  }, [clearResultMode, drawOverlay, stopCamera, workerFactory])
+  }, [
+    clearResultMode,
+    drawOverlay,
+    jsQrWorkerFactory,
+    stopCamera,
+    workerFactory,
+  ])
 
   const scan = useCallback(function scanFrame(time: number, generation: number) {
     if (generation !== cameraGenerationRef.current) return
@@ -975,25 +1054,33 @@ export default function App({
       if (diagnosticsRef.current) {
         diagnosticsRef.current.textContent =
           `${formatCameraDiagnostics(cameraDiagnosticsRef.current)} · `
+          + `${decoderModeRef.current}/${trackerModeRef.current} · ${qualityRef.current.tier} · `
+          + `${decodeLatencyRef.current.toFixed(0)}ms decode/${trackLatencyRef.current.toFixed(0)}ms track · `
           + `${rates.cameraFps.toFixed(0)} camera / ${rates.decodeFps.toFixed(0)} decode / ${rates.paintFps.toFixed(0)} paint fps`
           + ` · ${trackingPhaseRef.current} · ${presenceStateRef.current}`
           + ` · ${trackingDiagnosticsRef.current}`
+          + `${decoderFailureRef.current || trackerFailureRef.current
+            ? ` · fallback: ${decoderFailureRef.current || trackerFailureRef.current}` : ''}`
       }
       cadenceRef.current = { startedAt: time, cameraFrames: 0, decodes: 0, paints: 0 }
       lastDiagnosticsRef.current = time
     }
     const nativeDetector = nativeDetectorRef.current
     const decoder = decoderRef.current
-    const scanInterval = nativeDetector ? NATIVE_SCAN_INTERVAL_MS : SCAN_INTERVAL_MS
+    const scanInterval = nativeDetector && decoderModeRef.current === 'native'
+      ? Math.min(100, qualityRef.current.decodeIntervalMs)
+      : qualityRef.current.decodeIntervalMs
     if (
       video
-      && ((nativeDetector && nativePendingGenerationRef.current === null) || (decoder && !decoder.busy))
+      && ((decoderModeRef.current === 'native' && nativeDetector
+        && nativePendingGenerationRef.current === null)
+        || (decoderModeRef.current !== 'native' && decoder && !decoder.busy))
       && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
       && video.videoWidth && video.videoHeight
       && time - lastScanRef.current >= scanInterval
     ) {
       lastScanRef.current = time
-      if (nativeDetector) {
+      if (decoderModeRef.current === 'native' && nativeDetector) {
         nativePendingGenerationRef.current = generation
         scanSizeRef.current = { width: video.videoWidth, height: video.videoHeight }
         void detectNativeQrs(nativeDetector, video).then((detections) => {
@@ -1007,17 +1094,23 @@ export default function App({
             performance.now(),
             { width: video.videoWidth, height: video.videoHeight },
           )
-        }).catch(() => {
+        }).catch((error) => {
           if (nativePendingGenerationRef.current === generation) {
             nativePendingGenerationRef.current = null
           }
           if (generation !== cameraGenerationRef.current) return
-          activateWorkerDecoder(generation)
+          decoderFailureRef.current = `native: ${error instanceof Error ? error.message : 'decode failed'}`
+          nativeDetectorRef.current = null
+          activateWorkerDecoder(generation, 'jsqr')
         })
       } else if (decoder) {
         const capture = captureRef.current ?? document.createElement('canvas')
         captureRef.current = capture
-        const size = scanDimensions(video.videoWidth, video.videoHeight)
+        const size = scanDimensions(
+          video.videoWidth,
+          video.videoHeight,
+          qualityRef.current.decodeMaxDimension,
+        )
         capture.width = size.width
         capture.height = size.height
         scanSizeRef.current = { width: video.videoWidth, height: video.videoHeight }
@@ -1028,14 +1121,38 @@ export default function App({
           const pending = decoder.decode(pixels.data.buffer as ArrayBuffer, size.width, size.height, generation)
           pending?.then((result) => {
             if (result.generation !== cameraGenerationRef.current) return
-            const detections = result.detection ? [result.detection] : []
+            decodeLatencyRef.current = result.elapsedMs
+            qualityRef.current = selectQuality({
+              cameraWidth: cameraDiagnosticsRef.current?.width ?? video.videoWidth,
+              cameraHeight: cameraDiagnosticsRef.current?.height ?? video.videoHeight,
+              frameRate: cameraDiagnosticsRef.current?.frameRate,
+              hardwareConcurrency: navigator.hardwareConcurrency,
+              deviceMemory: (navigator as Navigator & { deviceMemory?: number }).deviceMemory,
+              wasm: typeof WebAssembly !== 'undefined',
+              simd: supportsWasmSimd(),
+              offscreenCanvas: typeof OffscreenCanvas !== 'undefined',
+              visible: document.visibilityState !== 'hidden',
+              decodeLatencyMs: result.elapsedMs,
+              trackLatencyMs: trackLatencyRef.current,
+            })
+            const detections = result.detections
             recordQrActivity(generation, detections)
             recordDetections(detections, performance.now(), size)
-          }).catch(() => {
+          }).catch((error) => {
             if (generation !== cameraGenerationRef.current) return
-            stopCamera(true)
-            drawOverlay()
-            setCameraState('error')
+            decoderFailureRef.current =
+              `${decoderModeRef.current}: ${error instanceof Error ? error.message : 'decode failed'}`
+            decoderRef.current?.terminate()
+            decoderRef.current = null
+            if (decoderModeRef.current === 'zxing-wasm' && nativeDetectorRef.current) {
+              decoderModeRef.current = 'native'
+            } else if (decoderModeRef.current === 'zxing-wasm') {
+              activateWorkerDecoder(generation, 'jsqr')
+            } else {
+              stopCamera(true)
+              drawOverlay()
+              setCameraState('error')
+            }
           })
         }
       }
@@ -1080,7 +1197,39 @@ export default function App({
       stream.getVideoTracks().forEach((track) => track.addEventListener('ended', handleEnded, { once: true }))
       nativeDetectorRef.current = await nativeDetectorFactory()
       if (generation !== cameraGenerationRef.current || streamRef.current !== stream) return
-      if (!nativeDetectorRef.current) activateWorkerDecoder(generation)
+      qualityRef.current = selectQuality({
+        cameraWidth: cameraDiagnosticsRef.current?.width,
+        cameraHeight: cameraDiagnosticsRef.current?.height,
+        frameRate: cameraDiagnosticsRef.current?.frameRate,
+        hardwareConcurrency: navigator.hardwareConcurrency,
+        deviceMemory: (navigator as Navigator & { deviceMemory?: number }).deviceMemory,
+        wasm: typeof WebAssembly !== 'undefined',
+        simd: supportsWasmSimd(),
+        offscreenCanvas: typeof OffscreenCanvas !== 'undefined',
+        visible: document.visibilityState !== 'hidden',
+      })
+      decoderModeRef.current = 'none'
+      decoderFailureRef.current = ''
+      activateWorkerDecoder(generation)
+      try {
+        const tracker = new OpticalFlowTracker(openCvWorkerFactory(), (error) => {
+          if (generation !== cameraGenerationRef.current) return
+          opticalReadyRef.current = false
+          trackerModeRef.current = 'lightweight'
+          trackerFailureRef.current = `opencv-lk: ${error.message}`
+        })
+        opticalTrackerRef.current = tracker
+        void tracker.initialize(generation).then(() => {
+          if (generation !== cameraGenerationRef.current || opticalTrackerRef.current !== tracker) return
+          opticalReadyRef.current = true
+          trackerModeRef.current = 'opencv-lk'
+          trackerFailureRef.current = ''
+        }).catch(() => undefined)
+      } catch (error) {
+        trackerFailureRef.current =
+          `opencv-lk: ${error instanceof Error ? error.message : 'worker startup failed'}`
+        trackerModeRef.current = 'lightweight'
+      }
       video.srcObject = stream
       await video.play()
       if (generation !== cameraGenerationRef.current || streamRef.current !== stream) return
@@ -1090,14 +1239,23 @@ export default function App({
         startedAt: performance.now(), cameraFrames: 0, decodes: 0, paints: 0,
       }
       lastDiagnosticsRef.current = performance.now()
-      lastScanRef.current = performance.now() - SCAN_INTERVAL_MS
+      lastScanRef.current = performance.now() - qualityRef.current.decodeIntervalMs
       scheduleScan(generation, (time) => scan(time, generation))
     } catch (error) {
       if (generation !== cameraGenerationRef.current) return
       stopCamera()
       setCameraState(classifyCameraError(error))
     }
-  }, [activateWorkerDecoder, armInactivityTimer, drawOverlay, nativeDetectorFactory, scan, scheduleScan, stopCamera])
+  }, [
+    activateWorkerDecoder,
+    armInactivityTimer,
+    drawOverlay,
+    nativeDetectorFactory,
+    openCvWorkerFactory,
+    scan,
+    scheduleScan,
+    stopCamera,
+  ])
 
   useEffect(() => {
     const deferredStart = window.setTimeout(() => void startCamera(), 0)
@@ -1111,6 +1269,27 @@ export default function App({
     if (videoRef.current) observer.observe(videoRef.current)
     return () => observer.disconnect()
   }, [drawOverlay])
+
+  useEffect(() => {
+    const updateVisibilityTier = () => {
+      const camera = cameraDiagnosticsRef.current
+      qualityRef.current = selectQuality({
+        cameraWidth: camera?.width,
+        cameraHeight: camera?.height,
+        frameRate: camera?.frameRate,
+        hardwareConcurrency: navigator.hardwareConcurrency,
+        deviceMemory: (navigator as Navigator & { deviceMemory?: number }).deviceMemory,
+        wasm: typeof WebAssembly !== 'undefined',
+        simd: supportsWasmSimd(),
+        offscreenCanvas: typeof OffscreenCanvas !== 'undefined',
+        visible: document.visibilityState !== 'hidden',
+        decodeLatencyMs: decodeLatencyRef.current,
+        trackLatencyMs: trackLatencyRef.current,
+      })
+    }
+    document.addEventListener('visibilitychange', updateVisibilityTier)
+    return () => document.removeEventListener('visibilitychange', updateVisibilityTier)
+  }, [])
 
   useEffect(() => () => {
     playerCreationRef.current?.abort()

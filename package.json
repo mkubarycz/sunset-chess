@@ -14,11 +14,13 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.1",
+    "@opencvjs/worker": "^5.0.0-release.2",
     "jsqr": "^1.4.0",
     "qrcode": "^1.5.4",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "zod": "^4.6.5"
+    "zod": "^4.6.5",
+    "zxing-wasm": "^3.1.4"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",

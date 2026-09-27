@@ -13,7 +13,18 @@ import type { DecodeRequest, DecodeResponse } from './workerProtocol'
 import type { QrDetection } from './scanner'
 
 class FakeWorker extends EventTarget {
-  postMessage = vi.fn()
+  postMessage = vi.fn((request: DecodeRequest) => {
+    if (request.type !== 'init') return
+    queueMicrotask(() => {
+      this.respond({
+        type: 'ready',
+        id: request.id,
+        generation: request.generation,
+        decoder: 'zxing-wasm',
+      })
+      this.postMessage.mockClear()
+    })
+  })
   terminate = vi.fn()
   respond(response: DecodeResponse) {
     this.dispatchEvent(new MessageEvent('message', { data: response }))
@@ -327,9 +338,10 @@ describe('scanner and player producer', () => {
     expect(getUserMedia).toHaveBeenCalledOnce()
   })
 
-  it('prefers native QR decoding while capturing local pixels for visual tracking', async () => {
+  it('prefers ZXing WASM while capturing local pixels for visual tracking', async () => {
     const camera = setupCamera()
-    const workerFactory = vi.fn(() => new FakeWorker() as unknown as Worker)
+    const worker = new FakeWorker()
+    const workerFactory = vi.fn(() => worker as unknown as Worker)
     const nativeDetector: NativeBarcodeDetector = {
       detect: vi.fn().mockResolvedValue([{
         rawValue: 'Mike',
@@ -352,12 +364,26 @@ describe('scanner and player producer', () => {
     })
 
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Scanning for a QR code'))
-    act(() => camera.callbacks.shift()?.(performance.now() + 60))
+    act(() => camera.callbacks.shift()?.(performance.now() + 200))
+    const request = worker.postMessage.mock.calls[0][0] as DecodeRequest
+    act(() => worker.respond({
+      type: 'result',
+      id: request.id,
+      generation: request.generation,
+      detections: [{
+        data: 'Mike',
+        location: {
+          topLeftCorner: { x: 0, y: 0 }, topRightCorner: { x: 2, y: 0 },
+          bottomRightCorner: { x: 2, y: 2 }, bottomLeftCorner: { x: 0, y: 2 },
+        },
+      }],
+      elapsedMs: 5,
+    }))
 
     expect(await screen.findByText('Mike')).toBeInTheDocument()
-    expect(nativeDetector.detect).toHaveBeenCalledWith(video)
+    expect(nativeDetector.detect).not.toHaveBeenCalled()
     expect(camera.context.getImageData).toHaveBeenCalled()
-    expect(workerFactory).not.toHaveBeenCalled()
+    expect(workerFactory).toHaveBeenCalledOnce()
   })
 
   it('reports negotiated camera settings, optional tuning, and opt-in zoom', async () => {
@@ -410,7 +436,7 @@ describe('scanner and player producer', () => {
     )
   })
 
-  it('keeps one native detection in flight and falls back to the worker on failure', async () => {
+  it('falls back from failed ZXing initialization to native and then jsQR', async () => {
     const camera = setupCamera()
     let rejectDetection: ((error: Error) => void) | undefined
     const nativeDetector: NativeBarcodeDetector = {
@@ -418,9 +444,22 @@ describe('scanner and player producer', () => {
         rejectDetection = reject
       })),
     }
-    const workerFactory = vi.fn(() => new FakeWorker() as unknown as Worker)
+    class FailingWorker extends FakeWorker {
+      override postMessage = vi.fn((request: DecodeRequest) => {
+        if (request.type === 'init') queueMicrotask(() => this.respond({
+          type: 'error',
+          id: request.id,
+          generation: request.generation,
+          phase: 'initialization',
+          message: 'WASM unavailable',
+        }))
+      })
+    }
+    const workerFactory = vi.fn(() => new FailingWorker() as unknown as Worker)
+    const jsQrWorkerFactory = vi.fn(() => new FakeWorker() as unknown as Worker)
     render(<App
       workerFactory={workerFactory}
+      jsQrWorkerFactory={jsQrWorkerFactory}
       nativeDetectorFactory={() => nativeDetector}
     />)
     const video = screen.getByLabelText('Mirrored live camera preview')
@@ -431,12 +470,13 @@ describe('scanner and player producer', () => {
     })
 
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Scanning for a QR code'))
-    act(() => camera.callbacks.shift()?.(performance.now() + 60))
-    act(() => camera.callbacks.shift()?.(performance.now() + 120))
+    await waitFor(() => expect(workerFactory).toHaveBeenCalledOnce())
+    act(() => camera.callbacks.shift()?.(performance.now() + 200))
+    act(() => camera.callbacks.shift()?.(performance.now() + 400))
     expect(nativeDetector.detect).toHaveBeenCalledOnce()
 
     act(() => rejectDetection?.(new Error('native detector unavailable')))
-    await waitFor(() => expect(workerFactory).toHaveBeenCalledOnce())
+    await waitFor(() => expect(jsQrWorkerFactory).toHaveBeenCalledOnce())
     expect(screen.getByRole('status')).toHaveTextContent('Scanning for a QR code')
   })
 

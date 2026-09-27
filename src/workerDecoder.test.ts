@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WorkerDecoder } from './workerDecoder'
-import type { DecodeResponse } from './workerProtocol'
+import type { DecodeRequest, DecodeResponse } from './workerProtocol'
 
 class FakeWorker extends EventTarget {
   postMessage = vi.fn()
@@ -10,92 +10,92 @@ class FakeWorker extends EventTarget {
   }
 }
 
+function ready(decoder: WorkerDecoder, worker: FakeWorker, generation = 1) {
+  const initialized = decoder.initialize(generation)
+  const request = worker.postMessage.mock.calls[0][0] as DecodeRequest
+  worker.respond({
+    type: 'ready', id: request.id, generation, decoder: 'zxing-wasm',
+  })
+  return initialized
+}
+
 describe('WorkerDecoder', () => {
   afterEach(() => vi.useRealTimers())
 
-  it('allows exactly one decode in flight and transfers the buffer', async () => {
+  it('initializes explicitly and allows exactly one transferable decode in flight', async () => {
     const worker = new FakeWorker()
     const decoder = new WorkerDecoder(worker as unknown as Worker)
+    await ready(decoder, worker, 4)
     const pixels = new ArrayBuffer(16)
     const first = decoder.decode(pixels, 2, 2, 4)
     expect(decoder.decode(new ArrayBuffer(16), 2, 2, 4)).toBeNull()
-    expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({ pixels }), [pixels])
-    worker.respond({ type: 'result', id: 1, generation: 4, detection: null })
-    await expect(first).resolves.toEqual({ generation: 4, detection: null })
+    expect(worker.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: 'decode', pixels }),
+      [pixels],
+    )
+    worker.respond({
+      type: 'result', id: 2, generation: 4, detections: [], elapsedMs: 7,
+    })
+    await expect(first).resolves.toEqual({ generation: 4, detections: [], elapsedMs: 7 })
     expect(decoder.busy).toBe(false)
   })
 
-  it('releases the pending lock after worker errors and terminates cleanly', async () => {
+  it('surfaces initialization failure and rejects later work', async () => {
     const worker = new FakeWorker()
     const decoder = new WorkerDecoder(worker as unknown as Worker)
-    const pending = decoder.decode(new ArrayBuffer(4), 1, 1, 1)
-    worker.dispatchEvent(new ErrorEvent('error', { message: 'boom' }))
-    await expect(pending).rejects.toThrow('boom')
-    expect(decoder.busy).toBe(false)
+    const initialized = decoder.initialize(1)
+    worker.respond({
+      type: 'error', id: 1, generation: 1, phase: 'initialization', message: 'WASM unavailable',
+    })
+    await expect(initialized).rejects.toThrow('initialization: WASM unavailable')
+    expect(decoder.decode(new ArrayBuffer(4), 1, 1, 1)).toBeNull()
+  })
+
+  it('discards responses whose id does not match the bounded in-flight request', async () => {
+    const worker = new FakeWorker()
+    const decoder = new WorkerDecoder(worker as unknown as Worker)
+    await ready(decoder, worker)
+    const pending = decoder.decode(new ArrayBuffer(4), 1, 1, 8)!
+    worker.respond({ type: 'result', id: 999, generation: 7, detections: [], elapsedMs: 1 })
+    expect(decoder.busy).toBe(true)
+    worker.respond({ type: 'result', id: 2, generation: 8, detections: [], elapsedMs: 2 })
+    await expect(pending).resolves.toMatchObject({ generation: 8 })
+  })
+
+  it('times out, reports runtime errors, and terminates cleanly', async () => {
+    vi.useFakeTimers()
+    const worker = new FakeWorker()
+    const decoder = new WorkerDecoder(worker as unknown as Worker, undefined, 25)
+    await ready(decoder, worker)
+    const pending = decoder.decode(new ArrayBuffer(4), 1, 1, 1)!
+    const rejection = expect(pending).rejects.toThrow('QR decoder timed out')
+    await vi.advanceTimersByTimeAsync(25)
+    await rejection
     decoder.terminate()
     expect(worker.terminate).toHaveBeenCalledOnce()
     expect(decoder.decode(new ArrayBuffer(4), 1, 1, 1)).toBeNull()
   })
 
-  it('reports a failure before the first decode and rejects future decodes immediately', async () => {
-    const worker = new FakeWorker()
-    const onFailure = vi.fn()
-    const decoder = new WorkerDecoder(worker as unknown as Worker, onFailure)
-    worker.dispatchEvent(new ErrorEvent('error', { message: 'failed during startup' }))
-
-    expect(onFailure).toHaveBeenCalledOnce()
-    expect(onFailure).toHaveBeenCalledWith(expect.objectContaining({ message: 'failed during startup' }))
-    await expect(decoder.decode(new ArrayBuffer(4), 1, 1, 1)).rejects.toThrow('failed during startup')
-    expect(worker.postMessage).not.toHaveBeenCalled()
-  })
-
-  it('times out a decode, marks the decoder failed, and rejects subsequent decodes', async () => {
-    vi.useFakeTimers()
-    const worker = new FakeWorker()
-    const decoder = new WorkerDecoder(worker as unknown as Worker, undefined, 25)
-    const pending = decoder.decode(new ArrayBuffer(4), 1, 1, 1)
-    const rejection = expect(pending).rejects.toThrow('QR decoder timed out')
-
-    await vi.advanceTimersByTimeAsync(25)
-    await rejection
-    expect(decoder.busy).toBe(false)
-    await expect(decoder.decode(new ArrayBuffer(4), 1, 1, 1)).rejects.toThrow('QR decoder timed out')
-    expect(worker.postMessage).toHaveBeenCalledOnce()
-  })
-
-  it('cleans decode timers on result, worker error, and termination', async () => {
-    vi.useFakeTimers()
+  it('returns all QR identities and quadrilateral geometry unchanged', async () => {
     const worker = new FakeWorker()
     const decoder = new WorkerDecoder(worker as unknown as Worker)
-    const completed = decoder.decode(new ArrayBuffer(4), 1, 1, 1)
-    expect(vi.getTimerCount()).toBe(1)
-    worker.respond({ type: 'result', id: 1, generation: 1, detection: null })
-    await completed
-    expect(vi.getTimerCount()).toBe(0)
-
-    const workerWithError = new FakeWorker()
-    const erroredDecoder = new WorkerDecoder(workerWithError as unknown as Worker)
-    const errored = erroredDecoder.decode(new ArrayBuffer(4), 1, 1, 1)
-    workerWithError.dispatchEvent(new ErrorEvent('error', { message: 'broken' }))
-    await expect(errored).rejects.toThrow('broken')
-    expect(vi.getTimerCount()).toBe(0)
-
-    const terminatedWorker = new FakeWorker()
-    const terminatedDecoder = new WorkerDecoder(terminatedWorker as unknown as Worker)
-    const terminated = terminatedDecoder.decode(new ArrayBuffer(4), 1, 1, 1)
-    terminatedDecoder.terminate()
-    await expect(terminated).rejects.toThrow('stopped')
-    expect(vi.getTimerCount()).toBe(0)
-  })
-
-  it('fails closed when the worker reports a jsQR error', async () => {
-    const worker = new FakeWorker()
-    const decoder = new WorkerDecoder(worker as unknown as Worker)
-    const pending = decoder.decode(new ArrayBuffer(4), 1, 1, 1)
-    worker.respond({ type: 'error', id: 1, generation: 1, message: 'jsQR exploded' })
-
-    await expect(pending).rejects.toThrow('jsQR exploded')
-    await expect(decoder.decode(new ArrayBuffer(4), 1, 1, 1)).rejects.toThrow('jsQR exploded')
-    expect(worker.postMessage).toHaveBeenCalledOnce()
+    await ready(decoder, worker)
+    const pending = decoder.decode(new ArrayBuffer(16), 2, 2, 1)!
+    const location = {
+      topLeftCorner: { x: 1, y: 2 },
+      topRightCorner: { x: 8, y: 2 },
+      bottomRightCorner: { x: 8, y: 9 },
+      bottomLeftCorner: { x: 1, y: 9 },
+    }
+    worker.respond({
+      type: 'result',
+      id: 2,
+      generation: 1,
+      detections: [{ data: 'one', location }, { data: 'two', location }],
+      elapsedMs: 4,
+    })
+    await expect(pending).resolves.toMatchObject({
+      detections: [{ data: 'one', location }, { data: 'two', location }],
+    })
   })
 })

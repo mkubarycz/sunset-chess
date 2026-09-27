@@ -8,9 +8,8 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
   1920×1080/60 FPS request, and a non-exclusive 3840×2160 ceiling
 - Automatic camera startup on mount, with manual retry when permission or hardware is unavailable
 - Five-minute camera inactivity shutdown, reset by every decoded QR code (including arbitrary payloads), with a restart action
-- Native Chromium `BarcodeDetector` QR scanning at up to 20 detections per second,
-  with one detection request in flight and concurrent tracking of multiple returned codes
-- Automatic timeout and fallback to off-main-thread `jsQR` when native QR detection is unavailable
+- ZXing-C++ WebAssembly multi-QR scanning in a dedicated worker, with native
+  `BarcodeDetector` and worker-based `jsQR` failover
 - Mirrored, responsive polygon and bounded payload label that follow `object-fit: cover`
 - Identity-bound visual QR object tracking between decodes, with explicit
   decoded/visual/coasting/lost state, confidence, anchor age, and stale expiry
@@ -31,35 +30,39 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
   rail's left edge, then animate a decorative identity token from the detected
   QR label (reduced-motion users receive only a stationary highlight)
 
-Camera frames remain in the browser and are never transmitted. Native
-`BarcodeDetector` decoding remains capped at 20 attempts/second with one request
-in flight; a native response may contain multiple distinct codes, which are
-smoothed and painted independently. It receives the full-resolution video
-element directly—there is no downscaled native-path canvas. `jsQR` remains the
-worker fallback, scans at most a 1440-pixel longest edge at a bounded cadence,
-and can decode only one code per frame, so dual-QR result reporting is unavailable
-on that fallback path. The increased 1440 cap retains more detail than the former
-960 cap but costs more worker CPU per attempt. Marker painting runs at delivered video/display frames. A successful decode binds
-the payload identity to a normalized grayscale appearance template and polygon.
-Between decodes, a focused application-level tracker searches a bounded
-neighborhood and small scale pyramid for the same appearance, rejects weak or
-non-unique matches, and updates the polygon from those pixels rather than velocity
-alone. Successful later decodes re-anchor both identity and appearance. Candidate
-tracks that converge with similar scores are discarded instead of exchanging
-identities. The worker fallback still creates at most the one identity it actually
-decoded; visual tracking never invents another code.
+Camera frames remain in the browser and are never transmitted. Decoder order is:
 
-Browsers do **not** expose a general QR object-tracking API. `BarcodeDetector`
-decodes barcodes but does not preserve object identity after a code becomes
-unreadable, so this tracker is application code built on the existing canvas/frame
-pipeline. Tracking uses a 640-pixel maximum frame dimension, a 16×16 normalized
-appearance template, a bounded 45%-of-object search radius (6–30 pixels), and
-0.9/1.0/1.1 scale candidates. UI geometry requires confidence ≥0.48. ActionZone
-holds accept visual evidence only at confidence ≥0.78 and only for 650 ms after
-the most recent successful decode; a visual frame gap over 220 ms, two failed
-matches, leaving the frame, a per-frame scale jump outside 0.82–1.22, or a decode
-anchor older than 1.1 seconds expires the visual track. The existing 900 ms
-presentation horizon remains an upper bound for decoded/coasting UI.
+1. `zxing-wasm` 3.x (ZXing-C++) in a module worker;
+2. native `BarcodeDetector`, when the browser advertises QR support;
+3. `jsQR` in a separate module worker.
+
+Each worker has an explicit initialization handshake, timeout, runtime error,
+generation, and at most one request in flight. A new frame is skipped while work
+is pending, so there is no decode queue. ZXing is QR-only, returns at most four
+symbols with their four corner points, and is periodically run even while visual
+tracking succeeds so identity is re-anchored. Native detection also returns
+multiple symbols. Only the final `jsQR` layer is single-symbol; it never fabricates
+a second identity. Failures and the active fallback are visible in diagnostics.
+
+The preferred tracker is OpenCV.js pyramidal Lucas–Kanade optical flow in a
+dedicated module worker. The maintained `@opencvjs/worker` package is built
+specifically for web workers and Vite bundles its version-matched Emscripten
+module into the worker asset; no CDN or runtime network dependency is used. A
+distributed 6×6 feature grid covers each expanded decoded-quad region. Points are
+tracked forward and backward through a three-level 21×21 LK pyramid, then fitted
+with a robust similarity transform and a 2.5 px reprojection-inlier pass.
+The track requires at least 8 surviving points, mean LK error ≤24 px,
+forward/backward drift ≤1.5 px, ≥65% affine inliers, scale 0.75–1.30, rotation
+≤0.7 radians, and UI confidence ≥0.52. Converging/ambiguous identities are both
+dropped. ActionZone evidence requires confidence ≥0.82 and a decode anchor no
+older than 650 ms; frame gaps over 220 ms and anchors over 1.1 seconds expire.
+
+If OpenCV fails initialization, lacks required APIs, times out, or fails at
+runtime, diagnostics explicitly switch to the existing bounded normalized-template
+tracker. That fallback uses a 640-pixel maximum frame dimension, 16×16 templates,
+a 6–30 px search radius, 0.9/1.0/1.1 scale candidates, UI confidence ≥0.48,
+ActionZone confidence ≥0.78, and the same short fail-closed age policy. Neither
+tracker creates payload identities: only a decoder can seed or re-anchor one.
 
 These conservative gates let strong visual evidence bridge momentary blur without
 allowing lower-confidence geometry to complete check-in or result actions. They
@@ -67,14 +70,16 @@ also avoid a global “Reacquiring… actions paused” banner: labels and zones
 remain mounted while their local progress pauses. Diagnostics report each active
 track as decoded or visual with confidence and decode-anchor age.
 
-This is deliberately a small CPU tracker, not a full perspective-aware SLAM or
-GPU pipeline. Large rotations, heavy occlusion, motion beyond the bounded search
-window, severe illumination changes, and two nearly identical overlapping
-appearances fail closed. Production tuning should collect anonymized aggregate
-confidence/failure timing (never camera frames), test representative devices and
-lighting, consider WebCodecs/WebGPU acceleration behind capability checks, and
-evaluate a compact corner-feature optical-flow implementation if rotation and
-perspective changes prove common.
+Quality is capability- and latency-driven, never UA-driven. The initial tier uses
+the negotiated camera resolution/rate, `hardwareConcurrency`, `deviceMemory`
+when exposed, WebAssembly/SIMD, OffscreenCanvas, and page visibility. High uses
+1440 px decode / 960 px tracking at 120/33 ms; balanced uses 1080/640 at
+150/55 ms; economy uses 720/480 at 320/90 ms. Decode latency above 260 ms or
+tracking above 75 ms steps the tier down, and decode cadence expands to at least
+1.35× measured latency (capped at 600 ms). A hidden page uses economy. This makes
+capable Apple Silicon Macs naturally high quality without excluding equally
+capable non-Mac systems. Camera acquisition still requests the existing high
+ideals and safely accepts lower negotiated modes.
 
 Some browsers can leave a registered `requestVideoFrameCallback` pending even while
 the video clock and decoded frames continue after a source replacement or reload.
@@ -89,8 +94,7 @@ ActionZones share one typed model and renderer across all camera interactions:
 stable ID, semantic action, mirrored screen lane, responsive rectangle, copy,
 occupant, status (including paused/reacquiring), hold duration/progress,
 accessibility, and reset/completion
-identity. Check-in uses mirrored fixed, inset squares in the upper-left and
-upper-right of the preview. Their sides are 42% of the preview's shortest
+identity. Check-in uses mirrored fixed, inset squares in the preview. Their sides are 42% of the preview's shortest
 dimension, clamped to 130–190 CSS pixels, with a 4% inset clamped to 12–20
 pixels. They render only while at least one valid player QR is present; an
 empty stage instead says “Scan your chess piece to log in”. Only a valid
@@ -199,6 +203,27 @@ post-result move-away/re-entry; and one request/animation per completion. Also v
 the diagnostics against the actual camera's negotiated resolution/frame rate and
 control readback. Unit tests use mocked media
 streams and generated QR pixels, so they do not require camera hardware.
+
+Browser capture remains permissioned by design: `getUserMedia`, device selection,
+preview, frame capture, and lifecycle stay inside the browser security model.
+There is no Electron, Tauri, native helper, permission bypass, or camera upload.
+Chromium, Firefox, and Safari builds with WebAssembly and workers can use ZXing;
+native `BarcodeDetector` is an optional acceleration/fallback, not a requirement.
+Older browsers without WASM can reach native or `jsQR`; if no decoder initializes,
+the scanner fails explicitly. OpenCV costs roughly 15.5 MiB uncompressed on disk
+plus WASM/heap memory at runtime, so lower-memory systems use smaller frames and
+slower cadence. ZXing's reader WASM is about 0.95 MiB in the production build.
+
+### Vision dependencies and licenses
+
+- `zxing-wasm` 3.1.4: MIT; packages the ZXing-C++ reader WASM locally.
+- ZXing-C++ within that package: Apache-2.0.
+- `@opencvjs/worker` 5.0.0-release.2: Apache-2.0; maintained worker-specific
+  OpenCV.js package bundled locally by Vite.
+- `jsQR` 1.4.0: Apache-2.0; retained as the last decoder fallback.
+
+The lockfile pins resolved artifacts; no computer-vision assets are fetched from
+a CDN or vendored separately from their packages.
 
 ### Physical QR limits
 
