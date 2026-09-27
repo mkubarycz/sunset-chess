@@ -12,10 +12,10 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
   with one detection request in flight and concurrent tracking of multiple returned codes
 - Automatic timeout and fallback to off-main-thread `jsQR` when native QR detection is unavailable
 - Mirrored, responsive polygon and bounded payload label that follow `object-fit: cover`
-- Display-frame QR marker interpolation, short bounded prediction, and explicit
-  tracking/coasting/lost behavior decoupled from QR decode cadence
+- Identity-bound visual QR object tracking between decodes, with explicit
+  decoded/visual/coasting/lost state, confidence, anchor age, and stale expiry
 - On-screen negotiated camera settings, optional-control state, camera/decode/paint
-  cadence, and fresh/present tracking diagnostics
+  cadence, fresh/present state, and compact per-track source/confidence/age diagnostics
 - Persisted player QR producer with 2-inch card and 0.9-inch sticker print modes
 - Reusable ActionZones for top-corner check-in and lane-aware per-player
   Win/Draw/Lose choices, with exact two-second holds and bounded DOM-only
@@ -39,14 +39,42 @@ element directly—there is no downscaled native-path canvas. `jsQR` remains the
 worker fallback, scans at most a 1440-pixel longest edge at a bounded cadence,
 and can decode only one code per frame, so dual-QR result reporting is unavailable
 on that fallback path. The increased 1440 cap retains more detail than the former
-960 cap but costs more worker CPU per attempt. Marker painting runs at delivered
-video/display frames and interpolates between decoder observations, predicts only
-briefly, coasts on misses, disappears when stale, and snaps on reacquisition after
-loss. This reduces visible stepping but cannot create detector accuracy or camera
-frames that the browser/hardware did not provide. It does not claim direct GPU
-acceleration. Future QR-as-pointer/hover targets should consume the smoothed
-geometry but require separate dwell, hysteresis, accessibility, and false-trigger
-design.
+960 cap but costs more worker CPU per attempt. Marker painting runs at delivered video/display frames. A successful decode binds
+the payload identity to a normalized grayscale appearance template and polygon.
+Between decodes, a focused application-level tracker searches a bounded
+neighborhood and small scale pyramid for the same appearance, rejects weak or
+non-unique matches, and updates the polygon from those pixels rather than velocity
+alone. Successful later decodes re-anchor both identity and appearance. Candidate
+tracks that converge with similar scores are discarded instead of exchanging
+identities. The worker fallback still creates at most the one identity it actually
+decoded; visual tracking never invents another code.
+
+Browsers do **not** expose a general QR object-tracking API. `BarcodeDetector`
+decodes barcodes but does not preserve object identity after a code becomes
+unreadable, so this tracker is application code built on the existing canvas/frame
+pipeline. Tracking uses a 640-pixel maximum frame dimension, a 16×16 normalized
+appearance template, a bounded 45%-of-object search radius (6–30 pixels), and
+0.9/1.0/1.1 scale candidates. UI geometry requires confidence ≥0.48. ActionZone
+holds accept visual evidence only at confidence ≥0.78 and only for 650 ms after
+the most recent successful decode; a visual frame gap over 220 ms, two failed
+matches, leaving the frame, a per-frame scale jump outside 0.82–1.22, or a decode
+anchor older than 1.1 seconds expires the visual track. The existing 900 ms
+presentation horizon remains an upper bound for decoded/coasting UI.
+
+These conservative gates let strong visual evidence bridge momentary blur without
+allowing lower-confidence geometry to complete check-in or result actions. They
+also avoid a global “Reacquiring… actions paused” banner: labels and zones can
+remain mounted while their local progress pauses. Diagnostics report each active
+track as decoded or visual with confidence and decode-anchor age.
+
+This is deliberately a small CPU tracker, not a full perspective-aware SLAM or
+GPU pipeline. Large rotations, heavy occlusion, motion beyond the bounded search
+window, severe illumination changes, and two nearly identical overlapping
+appearances fail closed. Production tuning should collect anonymized aggregate
+confidence/failure timing (never camera frames), test representative devices and
+lighting, consider WebCodecs/WebGPU acceleration behind capability checks, and
+evaluate a compact corner-feature optical-flow implementation if rotation and
+perspective changes prove common.
 
 Some browsers can leave a registered `requestVideoFrameCallback` pending even while
 the video clock and decoded frames continue after a source replacement or reload.
@@ -66,11 +94,11 @@ upper-right of the preview. Their sides are 42% of the preview's shortest
 dimension, clamped to 130–190 CSS pixels, with a 4% inset clamped to 12–20
 pixels. They render only while at least one valid player QR is present; an
 empty stage instead says “Scan your chess piece to log in”. Only a valid
-player QR whose mapped center is inside its lane's square can occupy it. Fresh
-detections start an uninterrupted two-second hold. A brief decode miss keeps
+player QR whose mapped center is inside its lane's square can occupy it. Fresh decoded or action-eligible visual evidence starts an uninterrupted two-second hold.
+A brief decode miss with weaker evidence keeps
 the zone, name, and game context mounted through the
 existing 900 ms presence horizon, but pauses and resets its hold without a
-global reacquisition banner. Fresh detection starts a new full two-second hold
+global reacquisition banner. Fresh evidence starts a new full two-second hold
 without remounting the zones. If multiple distinct codes overlap the squares,
 the current occupant is stable; otherwise the center-nearest identity wins
 deterministically. Only one player can check in at a time. Coasting/loss,
@@ -111,10 +139,9 @@ Successful finalization refreshes ongoing and recent games, reports explicit
 success, and returns still-visible players to check-in-shaped ActionZones with a
 move-away/re-enter guard. The guard reopens only after zero qualifying active
 detections persist for a short debounce, so a one-frame miss cannot re-arm it.
-Stale pre-finalization tracking therefore cannot start a new hold. Result holds
-advance only from actively tracked detections; the existing smoothing/coasting
-window absorbs brief detector misses without treating coasting geometry as an
-irreversible choice. Successful check-in still promotes the table and uses the QR-to-table
+Stale pre-finalization tracking therefore cannot start a new hold. Result holds advance only from decoded or high-confidence, recently
+decode-anchored visual detections. Lower-confidence tracking can preserve context
+but cannot be treated as an irreversible choice. Successful check-in still promotes the table and uses the QR-to-table
 animation (or the reduced-motion highlight); failures remain explicit.
 
 New player QR codes contain only a compact, versioned uppercase alphanumeric

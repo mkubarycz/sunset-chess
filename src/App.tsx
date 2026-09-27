@@ -42,11 +42,19 @@ import {
   cadenceRates,
   emptyTrackingState,
   observeDetection,
+  observeVisualDetection,
   sampleTracking,
   type CadenceState,
   type TrackingPhase,
   type TrackingState,
 } from './qrTracking'
+import {
+  rgbaToVisualFrame,
+  scaleDetection,
+  VisualObjectTracker,
+  VISUAL_FRAME_MAX_DIMENSION,
+  type VisualFrame,
+} from './visualObjectTracker'
 import {
   CAMERA_CONSTRAINTS,
   configureCameraTrack,
@@ -268,6 +276,9 @@ export default function App({
   const transitionCleanupRef = useRef(new Set<() => void>())
   const overlayRef = useRef<HTMLCanvasElement>(null)
   const captureRef = useRef<HTMLCanvasElement | null>(null)
+  const visualCaptureRef = useRef<HTMLCanvasElement | null>(null)
+  const visualFrameRef = useRef<VisualFrame | null>(null)
+  const visualTrackerRef = useRef(new VisualObjectTracker())
   const streamRef = useRef<MediaStream | null>(null)
   const scheduleRef = useRef<ScheduledFrame>(null)
   const timerFallbackRef = useRef(false)
@@ -276,6 +287,7 @@ export default function App({
   const rememberedRef = useRef<RememberedDetection | null>(null)
   const trackingRefs = useRef(new Map<string, TrackingState>())
   const trackingPhaseRef = useRef('lost')
+  const trackingDiagnosticsRef = useRef('0 active')
   const presenceStateRef = useRef('0 fresh / 0 present')
   const cameraDiagnosticsRef = useRef<CameraDiagnostics | null>(null)
   const diagnosticsRef = useRef<HTMLSpanElement>(null)
@@ -388,6 +400,8 @@ export default function App({
       setCheckInNotice(`Result ${result} recorded. Ratings updated.`)
       reentryLatchRef.current = blockReentryLatch()
       trackingRefs.current.clear()
+      visualTrackerRef.current.clear()
+      visualFrameRef.current = null
       rememberedRef.current = null
       setRemembered(null)
       clearResultMode()
@@ -559,6 +573,8 @@ export default function App({
     if (clearDetection) {
       rememberedRef.current = null
       trackingRefs.current.clear()
+      visualTrackerRef.current.clear()
+      visualFrameRef.current = null
       scanSizeRef.current = null
       setRemembered(null)
     }
@@ -582,7 +598,14 @@ export default function App({
     context.clearRect(0, 0, width, height)
     const scanSize = scanSizeRef.current
     if (!scanSize || !video.videoWidth || !video.videoHeight) return
-    const visible: Array<{ detection: QrDetection; phase: TrackingPhase }> = []
+    const visible: Array<{
+      detection: QrDetection
+      phase: TrackingPhase
+      source: 'decoded' | 'visual'
+      confidence: number
+      ageMs: number
+      actionable: boolean
+    }> = []
     for (const [key, state] of trackingRefs.current) {
       const sample = sampleTracking(state, now)
       if (!sample.detection) {
@@ -596,7 +619,14 @@ export default function App({
         { width, height },
         scanSize,
       )
-      visible.push({ detection: mapped, phase: sample.phase })
+      visible.push({
+        detection: mapped,
+        phase: sample.phase,
+        source: sample.source,
+        confidence: sample.confidence,
+        ageMs: sample.ageMs,
+        actionable: sample.actionable,
+      })
       const corners = Object.values(mapped.location)
       context.beginPath()
       context.moveTo(corners[0].x, corners[0].y)
@@ -611,6 +641,10 @@ export default function App({
     trackingPhaseRef.current = visible.length === 0
       ? 'lost'
       : visible.every(({ phase }) => phase === 'tracking') ? 'tracking' : 'coasting'
+    trackingDiagnosticsRef.current = visible.length === 0
+      ? '0 active'
+      : `${visible.length} active · ${visible.map(({ source, confidence, ageMs }) =>
+        `${source} ${Math.round(confidence * 100)}%/${Math.round(ageMs)}ms`).join(', ')}`
 
     if (visible.length === 1) {
       const corners = Object.values(visible[0].detection.location)
@@ -636,8 +670,8 @@ export default function App({
     }
     const presentPlayerDetections = visible.flatMap(({ detection }) =>
       resolvedPlayerDetection(detection))
-    const freshPlayerDetections = visible.flatMap(({ detection, phase }): PlayerDetection[] => {
-      if (phase !== 'tracking') return []
+    const freshPlayerDetections = visible.flatMap(({ detection, actionable }): PlayerDetection[] => {
+      if (!actionable) return []
       return resolvedPlayerDetection(detection)
     })
     const presentPlayerIds = new Set(presentPlayerDetections.map(({ playerId }) => playerId))
@@ -765,21 +799,82 @@ export default function App({
     cadenceRef.current.paints += visible.length > 0 ? 1 : 0
   }, [clearResultMode, requestPlayerResolution, submitCheckIn, submitResult, updateOverlayMessage])
 
-  const recordDetections = useCallback((detections: readonly QrDetection[], now: number) => {
+  const recordDetections = useCallback((
+    detections: readonly QrDetection[],
+    now: number,
+    sourceSize: { width: number; height: number },
+  ) => {
     cadenceRef.current.decodes += 1
-    for (const detection of detections) {
+    const video = videoRef.current
+    if (!video?.videoWidth || !video.videoHeight) return
+    const videoSize = { width: video.videoWidth, height: video.videoHeight }
+    const normalized = detections.map((detection) =>
+      scaleDetection(detection, sourceSize, videoSize))
+    for (const detection of normalized) {
       const previous = trackingRefs.current.get(detection.data) ?? emptyTrackingState()
       trackingRefs.current.set(detection.data, observeDetection(previous, detection, now))
     }
-    if (detections.length === 1) {
-      const detection = detections[0]
+    const visualFrame = visualFrameRef.current
+    if (visualFrame) {
+      visualTrackerRef.current.anchor(normalized.map((detection) => scaleDetection(
+        detection,
+        videoSize,
+        visualFrame,
+      )), visualFrame, now)
+    }
+    if (normalized.length === 1) {
+      const detection = normalized[0]
       const next = { detection, seenAt: now }
       rememberedRef.current = next
       setRemembered((current) =>
         current?.detection.data === detection.data ? current : next)
-    } else if (detections.length > 1) {
+    } else if (normalized.length > 1) {
       rememberedRef.current = null
       setRemembered(null)
+    }
+  }, [])
+
+  const updateVisualTracking = useCallback((video: HTMLVideoElement, now: number) => {
+    const size = scanDimensions(
+      video.videoWidth,
+      video.videoHeight,
+      VISUAL_FRAME_MAX_DIMENSION,
+    )
+    if (!size.width || !size.height) return
+    const canvas = visualCaptureRef.current ?? document.createElement('canvas')
+    visualCaptureRef.current = canvas
+    if (canvas.width !== size.width) canvas.width = size.width
+    if (canvas.height !== size.height) canvas.height = size.height
+    const context = canvas.getContext('2d', { willReadFrequently: true })
+    if (!context) return
+    try {
+      context.drawImage(video, 0, 0, size.width, size.height)
+      const image = context.getImageData(0, 0, size.width, size.height)
+      const frame = rgbaToVisualFrame(image.data, size.width, size.height, now)
+      if (!frame) return
+      visualFrameRef.current = frame
+      const observations = visualTrackerRef.current.update(frame, now)
+      const visualIdentities = new Set(observations.map(({ detection }) => detection.data))
+      for (const [identity, state] of trackingRefs.current) {
+        if (state.source === 'visual' && !visualIdentities.has(identity)) {
+          trackingRefs.current.delete(identity)
+        }
+      }
+      const videoSize = { width: video.videoWidth, height: video.videoHeight }
+      for (const tracked of observations) {
+        if (tracked.source !== 'visual') continue
+        const previous = trackingRefs.current.get(tracked.detection.data)
+        if (!previous) continue
+        trackingRefs.current.set(tracked.detection.data, observeVisualDetection(
+          previous,
+          scaleDetection(tracked.detection, frame, videoSize),
+          now,
+          tracked.confidence,
+          tracked.actionable,
+        ))
+      }
+    } catch {
+      visualFrameRef.current = null
     }
   }, [])
 
@@ -840,6 +935,8 @@ export default function App({
     nativePendingGenerationRef.current = null
     rememberedRef.current = null
     trackingRefs.current.clear()
+    visualTrackerRef.current.clear()
+    visualFrameRef.current = null
     clearResultMode()
     scanSizeRef.current = null
     setRemembered(null)
@@ -861,6 +958,13 @@ export default function App({
     if (generation !== cameraGenerationRef.current) return
     scheduleRef.current = null
     cadenceRef.current.cameraFrames += 1
+    const video = videoRef.current
+    if (
+      video
+      && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+      && video.videoWidth
+      && video.videoHeight
+    ) updateVisualTracking(video, time)
     drawOverlay(time)
     if (trackingPhaseRef.current === 'lost' && rememberedRef.current) {
       rememberedRef.current = null
@@ -873,11 +977,11 @@ export default function App({
           `${formatCameraDiagnostics(cameraDiagnosticsRef.current)} · `
           + `${rates.cameraFps.toFixed(0)} camera / ${rates.decodeFps.toFixed(0)} decode / ${rates.paintFps.toFixed(0)} paint fps`
           + ` · ${trackingPhaseRef.current} · ${presenceStateRef.current}`
+          + ` · ${trackingDiagnosticsRef.current}`
       }
       cadenceRef.current = { startedAt: time, cameraFrames: 0, decodes: 0, paints: 0 }
       lastDiagnosticsRef.current = time
     }
-    const video = videoRef.current
     const nativeDetector = nativeDetectorRef.current
     const decoder = decoderRef.current
     const scanInterval = nativeDetector ? NATIVE_SCAN_INTERVAL_MS : SCAN_INTERVAL_MS
@@ -898,7 +1002,11 @@ export default function App({
           }
           if (generation !== cameraGenerationRef.current) return
           recordQrActivity(generation, detections)
-          recordDetections(detections, performance.now())
+          recordDetections(
+            detections,
+            performance.now(),
+            { width: video.videoWidth, height: video.videoHeight },
+          )
         }).catch(() => {
           if (nativePendingGenerationRef.current === generation) {
             nativePendingGenerationRef.current = null
@@ -912,7 +1020,7 @@ export default function App({
         const size = scanDimensions(video.videoWidth, video.videoHeight)
         capture.width = size.width
         capture.height = size.height
-        scanSizeRef.current = size
+        scanSizeRef.current = { width: video.videoWidth, height: video.videoHeight }
         const context = capture.getContext('2d', { willReadFrequently: true })
         if (context) {
           context.drawImage(video, 0, 0, size.width, size.height)
@@ -922,7 +1030,7 @@ export default function App({
             if (result.generation !== cameraGenerationRef.current) return
             const detections = result.detection ? [result.detection] : []
             recordQrActivity(generation, detections)
-            recordDetections(detections, performance.now())
+            recordDetections(detections, performance.now(), size)
           }).catch(() => {
             if (generation !== cameraGenerationRef.current) return
             stopCamera(true)
@@ -933,7 +1041,15 @@ export default function App({
       }
     }
     scheduleScan(generation, (nextTime) => scanFrame(nextTime, generation))
-  }, [activateWorkerDecoder, drawOverlay, recordDetections, recordQrActivity, scheduleScan, stopCamera])
+  }, [
+    activateWorkerDecoder,
+    drawOverlay,
+    recordDetections,
+    recordQrActivity,
+    scheduleScan,
+    stopCamera,
+    updateVisualTracking,
+  ])
 
   const startCamera = useCallback(async () => {
     stopCamera(true)

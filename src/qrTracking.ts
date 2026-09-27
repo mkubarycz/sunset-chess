@@ -7,13 +7,21 @@ export interface TrackingState {
   rendered: QrDetection | null
   velocity: Point
   detectedAt: number
+  evidenceAt: number
   renderedAt: number
+  source: 'decoded' | 'visual'
+  confidence: number
+  actionable: boolean
 }
 
 export interface TrackingSample {
   state: TrackingState
   detection: QrDetection | null
   phase: TrackingPhase
+  source: 'decoded' | 'visual'
+  confidence: number
+  ageMs: number
+  actionable: boolean
 }
 
 export const TRACKING_COAST_MS = 180
@@ -28,7 +36,11 @@ export function emptyTrackingState(): TrackingState {
     rendered: null,
     velocity: { x: 0, y: 0 },
     detectedAt: 0,
+    evidenceAt: 0,
     renderedAt: 0,
+    source: 'decoded',
+    confidence: 0,
+    actionable: false,
   }
 }
 
@@ -73,7 +85,11 @@ export function observeDetection(
       rendered: detection,
       velocity: { x: 0, y: 0 },
       detectedAt: now,
+      evidenceAt: now,
       renderedAt: now,
+      source: 'decoded',
+      confidence: 1,
+      actionable: true,
     }
   }
   const oldCenter = center(state.target)
@@ -89,12 +105,44 @@ export function observeDetection(
       y: clamp((newCenter.y - oldCenter.y) / elapsed),
     },
     detectedAt: now,
+    evidenceAt: now,
+    source: 'decoded',
+    confidence: 1,
+    actionable: true,
+  }
+}
+
+export function observeVisualDetection(
+  state: TrackingState,
+  detection: QrDetection,
+  now: number,
+  confidence: number,
+  actionable: boolean,
+): TrackingState {
+  if (!state.target || !state.rendered) return state
+  return {
+    ...state,
+    target: detection,
+    evidenceAt: now,
+    source: 'visual',
+    confidence,
+    actionable,
+    velocity: { x: 0, y: 0 },
   }
 }
 
 export function sampleTracking(state: TrackingState, now: number): TrackingSample {
+  const evidenceAge = now - state.evidenceAt
   if (!state.target || !state.rendered || now - state.detectedAt > TRACKING_LOST_MS) {
-    return { state: emptyTrackingState(), detection: null, phase: 'lost' }
+    return {
+      state: emptyTrackingState(),
+      detection: null,
+      phase: 'lost',
+      source: state.source,
+      confidence: 0,
+      ageMs: Math.max(0, now - state.detectedAt),
+      actionable: false,
+    }
   }
   const age = Math.max(0, now - state.detectedAt)
   const elapsed = Math.max(0, now - state.renderedAt)
@@ -116,7 +164,11 @@ export function sampleTracking(state: TrackingState, now: number): TrackingSampl
   return {
     state: { ...state, rendered, renderedAt: now },
     detection: rendered,
-    phase: age > TRACKING_COAST_MS ? 'coasting' : 'tracking',
+    phase: evidenceAge > TRACKING_COAST_MS ? 'coasting' : 'tracking',
+    source: state.source,
+    confidence: state.confidence,
+    ageMs: age,
+    actionable: evidenceAge <= TRACKING_COAST_MS && state.actionable,
   }
 }
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   emptyTrackingState,
   observeDetection,
+  observeVisualDetection,
   sampleTracking,
   TRACKING_LOST_MS,
 } from './qrTracking'
@@ -38,5 +39,21 @@ describe('QR visual tracking', () => {
     const reacquired = observeDetection(tracked, detection(200), 100 + TRACKING_LOST_MS + 1)
     expect(reacquired.rendered).toEqual(detection(200))
     expect(reacquired.velocity).toEqual({ x: 0, y: 0 })
+  })
+
+  it('exposes visual source, confidence, age, and conservative action eligibility', () => {
+    const decoded = observeDetection(emptyTrackingState(), detection(10), 100)
+    const visual = observeVisualDetection(decoded, detection(18), 150, .84, true)
+    expect(sampleTracking(visual, 160)).toMatchObject({
+      source: 'visual',
+      confidence: .84,
+      ageMs: 60,
+      actionable: true,
+    })
+
+    const uncertain = observeVisualDetection(visual, detection(20), 180, .55, false)
+    const sample = sampleTracking(uncertain, 190)
+    expect(sample.detection?.data).toBe('player')
+    expect(sample.actionable).toBe(false)
   })
 })

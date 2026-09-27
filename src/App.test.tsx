@@ -327,7 +327,7 @@ describe('scanner and player producer', () => {
     expect(getUserMedia).toHaveBeenCalledOnce()
   })
 
-  it('prefers native QR detection without copying camera pixels', async () => {
+  it('prefers native QR decoding while capturing local pixels for visual tracking', async () => {
     const camera = setupCamera()
     const workerFactory = vi.fn(() => new FakeWorker() as unknown as Worker)
     const nativeDetector: NativeBarcodeDetector = {
@@ -356,7 +356,7 @@ describe('scanner and player producer', () => {
 
     expect(await screen.findByText('Mike')).toBeInTheDocument()
     expect(nativeDetector.detect).toHaveBeenCalledWith(video)
-    expect(camera.context.getImageData).not.toHaveBeenCalled()
+    expect(camera.context.getImageData).toHaveBeenCalled()
     expect(workerFactory).not.toHaveBeenCalled()
   })
 
