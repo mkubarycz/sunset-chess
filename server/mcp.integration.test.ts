@@ -293,10 +293,17 @@ describe('Sunset Chess HTTP and MCP', () => {
       name: 'player-delete', arguments: { id: alice.id },
     })).isError).toBe(true);
     await app.client.callTool({ name: 'game-delete', arguments: { id: game.id } });
-    await app.client.callTool({ name: 'player-delete', arguments: { id: alice.id } });
-    await app.client.callTool({ name: 'player-delete', arguments: { id: 1001 } });
+    expect((await app.client.callTool({
+      name: 'player-delete', arguments: { id: alice.id },
+    })).isError).toBe(true);
+    expect((await app.client.callTool({
+      name: 'player-delete', arguments: { id: 1001 },
+    })).isError).toBe(true);
     expect((await app.client.callTool({ name: 'player-list', arguments: {} })).structuredContent)
-      .toEqual({ players: [] });
+      .toEqual({ players: [
+        { id: 1001, name: 'Bob', rating: 700 },
+        alice,
+      ].sort((a, b) => a.id - b.id) });
     await app.close();
   });
 

@@ -441,7 +441,9 @@ unchanged, and the migration verifies the uniqueness invariant before commit.
 the player, optional game, previous/new rating, integer delta, ISO timestamp,
 and an explicit `baseline`, `game`, or `migration` reason; game events also
 record opponent and canonical result. A partial unique index permits one event
-per player/game. `Player.rating` remains a transactionally maintained projection
+per player/game. Ledger foreign keys use `ON DELETE RESTRICT`; after the baseline
+exists, player deletion is intentionally rejected so history remains immutable.
+`Player.rating` remains a transactionally maintained projection
 for compatibility and efficient game-card joins. Reads verify it against the
 latest ledger row (or 700 when no row exists) and fail explicitly on divergence.
 Migration replays completed games in `finishedAt`, then ID order using the same

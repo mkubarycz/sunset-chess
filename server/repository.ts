@@ -207,21 +207,13 @@ export class ChessRepository {
 
   deletePlayer(id: number): Player {
     const player = this.getPlayer(id);
-    this.db.exec('BEGIN IMMEDIATE');
     try {
-      this.db.prepare(`
-        DELETE FROM PlayerRatingEvent
-        WHERE playerId = ? AND reason = 'baseline'
-          AND NOT EXISTS (
-            SELECT 1 FROM PlayerRatingEvent WHERE playerId = ? AND reason <> 'baseline'
-          )
-      `).run(id, id);
       this.db.prepare('DELETE FROM Player WHERE id = ?').run(id);
-      this.db.exec('COMMIT');
     } catch (error) {
-      this.db.exec('ROLLBACK');
       if (sqliteMessage(error).includes('FOREIGN KEY')) {
-        throw new ConflictError(`Player ${id} cannot be deleted while referenced by a game.`);
+        throw new ConflictError(
+          `Player ${id} cannot be deleted while referenced by immutable game or rating history.`,
+        );
       }
       throw error;
     }
