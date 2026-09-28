@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 export interface LeaderboardEntry {
   rank: number
@@ -55,7 +56,10 @@ function Sparkline({ events, name }: { events: RatingEvent[]; name: string }) {
   )
 }
 
-export function Leaderboard({ refreshKey }: { refreshKey: number }) {
+export function Leaderboard({ refreshKey, variant = 'default' }: {
+  refreshKey: number
+  variant?: 'default' | 'rail'
+}) {
   const [entries, setEntries] = useState<LeaderboardEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -111,11 +115,11 @@ export function Leaderboard({ refreshKey }: { refreshKey: number }) {
 
   return (
     <>
-      <section className="leaderboard" aria-labelledby="leaderboard-heading" aria-busy={loading}>
+      <section className={`leaderboard leaderboard-${variant}`} aria-labelledby="leaderboard-heading" aria-busy={loading}>
         <div>
           <p className="eyebrow">Ratings</p>
           <h2 id="leaderboard-heading">Elo Leaderboard</h2>
-          <p>Ordinal rank: Elo, games played, name, then player ID.</p>
+          <p className="leaderboard-intro">Current club standings</p>
         </div>
         <div aria-live="polite">
           {loading && entries.length === 0 && <p>Loading leaderboard…</p>}
@@ -123,26 +127,41 @@ export function Leaderboard({ refreshKey }: { refreshKey: number }) {
         </div>
         {!loading && !error && entries.length === 0 && <p>No players yet. New players begin at 700 Elo.</p>}
         {entries.length > 0 && (
-          <ol className="leaderboard-list" aria-label="Elo rankings">
-            {entries.map((entry) => (
-              <li key={entry.id}>
-                <button type="button" onClick={(event) => {
-                  returnFocusRef.current = event.currentTarget
-                  setProfile(null)
-                  setProfileError('')
-                  setSelectedId(entry.id)
-                }}>
-                  <span className="leaderboard-rank">#{entry.rank}</span>
-                  <strong>{entry.name}</strong>
-                  <span>{entry.currentRating} Elo</span>
-                  <small>{entry.wins}-{entry.losses}-{entry.draws} · {entry.gamesPlayed} games</small>
-                </button>
-              </li>
-            ))}
-          </ol>
+          <div className="leaderboard-table-wrap">
+            <table className="leaderboard-table" aria-label="Elo rankings">
+              <thead><tr><th>Rank</th><th>Player</th><th>Elo</th><th>Record</th></tr></thead>
+              <tbody>{entries.map((entry) => (
+                <tr className={`leaderboard-row rank-${entry.rank}`} key={entry.id}>
+                  <td>
+                    <span
+                      className={`leaderboard-rank${entry.rank <= 3 ? ` podium podium-${entry.rank}` : ''}`}
+                      aria-label={entry.rank === 1 ? 'Rank 1, gold' : entry.rank === 2
+                        ? 'Rank 2, silver' : entry.rank === 3 ? 'Rank 3, bronze' : `Rank ${entry.rank}`}
+                    >
+                      {entry.rank}
+                    </span>
+                  </td>
+                  <td className="leaderboard-player"><strong>{entry.name}</strong></td>
+                  <td className="leaderboard-elo">{entry.currentRating}</td>
+                  <td className="leaderboard-record">
+                    <span>{entry.wins}-{entry.losses}-{entry.draws}</span>
+                    <small>{entry.gamesPlayed}g</small>
+                    <button type="button" className="leaderboard-row-hit" onClick={(event) => {
+                      returnFocusRef.current = event.currentTarget
+                      setProfile(null)
+                      setProfileError('')
+                      setSelectedId(entry.id)
+                    }} aria-label={`${entry.name}, rank ${entry.rank}, ${entry.currentRating} Elo, ${entry.wins}-${entry.losses}-${entry.draws} record`}>
+                      <span className="visually-hidden">View {entry.name} profile</span>
+                    </button>
+                  </td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
         )}
       </section>
-      {selectedId !== null && (
+      {selectedId !== null && createPortal(
         <div className="profile-backdrop" onMouseDown={(event) => {
           if (event.target === event.currentTarget) close()
         }}>
@@ -205,7 +224,8 @@ export function Leaderboard({ refreshKey }: { refreshKey: number }) {
               </>
             )}
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </>
   )

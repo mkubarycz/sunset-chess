@@ -8,7 +8,6 @@ import App, {
 } from './App'
 import { encodeQrDataUrl, PLAYER_QR_RENDER_OPTIONS } from './qrArtwork'
 import type { NativeBarcodeDetector } from './nativeBarcodeDecoder'
-import { truncateRawPayload } from './qrPayload'
 import type { DecodeRequest, DecodeResponse } from './workerProtocol'
 import type { QrDetection } from './scanner'
 import type { OpticalFlowRequest, OpticalFlowResponse } from './opticalFlowProtocol'
@@ -23,6 +22,7 @@ class FakeWorker extends EventTarget {
         generation: request.generation,
         decoder: 'zxing-wasm',
       })
+
       this.postMessage.mockClear()
     })
   })
@@ -145,7 +145,9 @@ describe('scanner and player producer', () => {
     const worker = new FakeWorker()
     const view = render(<App workerFactory={() => worker as unknown as Worker} />)
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Scanning for a QR code'))
-    expect(screen.getByText('Scan your chess piece to log in')).toBeInTheDocument()
+    expect(screen.getByText('Scan your chess piece to begin')).toBeInTheDocument()
+    expect(screen.getByTestId('camera-interaction-layer')).toHaveClass('is-hidden')
+    expect(document.querySelector('video')).toBeInTheDocument()
     expect(camera.getUserMedia).toHaveBeenCalledOnce()
     expect(camera.getUserMedia).toHaveBeenCalledWith({
       audio: false,
@@ -160,6 +162,20 @@ describe('scanner and player producer', () => {
     view.unmount()
     expect(worker.terminate).toHaveBeenCalledOnce()
     expect(camera.track.stop).toHaveBeenCalledOnce()
+  })
+
+  it('forces the hidden camera layer visible during an explicit diagnostic recording', async () => {
+    setupCamera()
+    render(<App />)
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Scanning for a QR code'))
+    const layer = screen.getByTestId('camera-interaction-layer')
+    expect(layer).toHaveClass('is-hidden')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Record 10s tracking diagnostic' }))
+
+    expect(layer).toHaveClass('is-visible')
+    expect(screen.getByRole('button', { name: /Recording/ })).toBeDisabled()
+    expect(document.querySelector('video')).toBeInTheDocument()
   })
 
   it('auto-starts exactly once through StrictMode effect replay', async () => {
@@ -406,7 +422,7 @@ describe('scanner and player producer', () => {
       elapsedMs: 5,
     }))
 
-    expect(await screen.findByText('Mike')).toBeInTheDocument()
+    expect(screen.getByTestId('camera-interaction-layer')).toHaveClass('is-hidden')
     expect(nativeDetector.detect).toHaveBeenCalledWith(video)
     expect(camera.context.getImageData).toHaveBeenCalled()
     expect(workerFactory).toHaveBeenCalledOnce()
@@ -475,7 +491,7 @@ describe('scanner and player producer', () => {
       elapsedMs: 3,
     }))
 
-    expect(await screen.findByText('native-long-range')).toBeInTheDocument()
+    expect(screen.getByTestId('camera-interaction-layer')).toHaveClass('is-hidden')
   })
 
   it('keeps lower-resolution tracking running while decode is pending without a queue', async () => {
@@ -728,6 +744,7 @@ describe('scanner and player producer', () => {
       await act(async () => camera.callbacks.shift()?.(now))
     }
     const resultGroup = screen.getByRole('group', { name: 'Report result for Table 1' })
+    expect(screen.getByTestId('camera-interaction-layer')).toHaveClass('is-visible')
     const winnerZone = screen.getByRole('group', { name: 'White, left lane, choose winner' })
     const progressBeforeGap = Number(
       within(winnerZone).getByRole('progressbar').getAttribute('aria-valuenow'),
@@ -763,6 +780,7 @@ describe('scanner and player producer', () => {
     await act(async () => camera.callbacks.shift()?.(now))
     expect(screen.queryByRole('group', { name: 'Report result for Table 1' })).not.toBeInTheDocument()
     expect(screen.queryByRole('group', { name: 'Game context for Table 1' })).not.toBeInTheDocument()
+    expect(screen.getByTestId('camera-interaction-layer')).toHaveClass('is-hidden')
     expect(finalizeGame).not.toHaveBeenCalled()
   })
 
@@ -1041,12 +1059,13 @@ describe('scanner and player producer', () => {
       detection: { data: '{"v":1,"kind":"player","playerId":1234,"name":"Ada"}', location },
     }))
     expect(await screen.findByText('Ada · #1234')).toBeInTheDocument()
+    expect(screen.getByTestId('camera-interaction-layer')).toHaveClass('is-visible')
     expect(screen.queryByText('Detected payload')).not.toBeInTheDocument()
     Object.defineProperties(video, {
       clientWidth: { configurable: true, value: 240 },
       clientHeight: { configurable: true, value: 180 },
     })
-    const preview = video.parentElement as HTMLElement
+    const preview = video.closest('.preview') as HTMLElement
     Object.defineProperties(preview, {
       clientWidth: { configurable: true, value: 1000 },
       clientHeight: { configurable: true, value: 650 },
@@ -1060,14 +1079,11 @@ describe('scanner and player producer', () => {
     }
     const rawRequest = workers[0].postMessage.mock.calls[1][0] as DecodeRequest
     const rawPayload = `<b>${'raw & safe '.repeat(10)}</b>`
-    const rawLabel = truncateRawPayload(rawPayload)
     act(() => workers[0].respond({
       type: 'result', id: rawRequest.id, generation: rawRequest.generation,
       detection: { data: rawPayload, location },
     }))
-    expect(await screen.findByText(rawLabel)).toBeInTheDocument()
     expect(screen.queryByText('raw & safe')).not.toBeInTheDocument()
-    expect(screen.getByText(`Detected QR code: ${rawLabel}`)).toBeInTheDocument()
     expect(screen.queryByText(`Detected QR code: ${rawPayload}`)).not.toBeInTheDocument()
 
     await userEvent.click(screen.getByRole('button', { name: 'Restart camera' }))
@@ -1736,11 +1752,19 @@ describe('ongoing games', () => {
     expect(dashboard).toContainElement(scanner)
     expect(dashboard).toContainElement(liveGames)
     expect(dashboard).toContainElement(recentGames)
-    expect(dashboard?.nextElementSibling).toBe(producer)
+    const leftRail = document.querySelector<HTMLElement>('.left-rail')
+    const rightRail = document.querySelector<HTMLElement>('.right-rail')
+    const leaderboard = document.querySelector<HTMLElement>('.leaderboard')
+    expect(dashboard).toContainElement(leftRail)
+    expect(leftRail).toContainElement(leaderboard)
+    expect(leftRail).toContainElement(producer)
+    expect(rightRail).toContainElement(liveGames)
+    expect(rightRail).toContainElement(recentGames)
     expect([liveGames, recentGames].map((section) =>
       within(section!).getByRole('heading', { level: 2 }).textContent))
       .toEqual(['Ongoing Games', 'Recent Games'])
-    expect(scanner?.nextElementSibling).toBe(liveGames)
+    expect(leftRail?.nextElementSibling).toBe(scanner)
+    expect(scanner?.nextElementSibling).toBe(rightRail)
     expect(liveGames?.nextElementSibling).toBe(recentGames)
     expect(within(liveGames!).getByRole('region', { name: 'Ongoing games' })).toBe(ongoingList)
     expect(ongoingList).toHaveClass('games-list')

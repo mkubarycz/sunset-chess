@@ -4,6 +4,26 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
 
 ## Features
 
+- A full-height dashboard with a practical three-column desktop template:
+  player tools and a ranked Elo table in the independently scrolling left rail,
+  the largest available interaction stage in the center, and independently
+  scrolling Live/Completed game sections in the right rail
+- Presence-driven camera presentation: capture and decoding continue while the
+  mirrored camera layer is visually hidden; a valid tracked player piece fades
+  the interaction layer in, and the existing bounded tracking expiry fades it
+  out rather than reacting to individual missed decode frames
+- Diagnostic recording explicitly forces the camera layer visible for its
+  10-second run. Permission, error, inactive, and restart controls remain
+  available while the mirror is hidden.
+- An original inline-vector Sunset Chess mark depicts a queen, bishop, and five
+  pawns watching an amber sunset, with accessible SVG naming and no network asset
+- A high-contrast ink/ivory/amber palette, restrained 3–6px surface corners,
+  visible keyboard focus, tabular standings numerals, and distinct
+  success/error/draw colors
+- Responsive reflow: desktop uses left/stage/right columns, tablet preserves a
+  wide stage beside the tools and places game feeds below it, and mobile orders
+  brand → stage → live → completed → leaderboard → player-card creator without
+  horizontal overflow
 - Smooth camera capture using `requestVideoFrameCallback` (with RAF fallback), an ideal
   1920×1080/60 FPS request, and a non-exclusive 3840×2160 ceiling
 - Automatic camera startup on mount, with manual retry when permission or hardware is unavailable

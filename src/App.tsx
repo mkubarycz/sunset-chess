@@ -134,6 +134,7 @@ import {
 } from './trackingTrail'
 import { encodeQrDataUrl } from './qrArtwork'
 import { Leaderboard } from './Leaderboard'
+import { SunsetChessLogo } from './SunsetChessLogo'
 import './App.css'
 
 type CameraState = 'initial' | 'requesting' | 'active' | 'inactive' | 'denied' | 'unavailable' | 'insecure' | 'error'
@@ -248,6 +249,11 @@ type CheckInTransition = {
   sourceZoneId: string
 }
 
+function isPlayerPiece(data: string): boolean {
+  const parsed = parseQrPayload(data)
+  return parsed.kind === 'player' || parsed.kind === 'player-reference'
+}
+
 function actionZonesKey(zones: readonly ActionZone[]): string {
   return zones.map((zone) =>
     `${zone.id}:${zone.rect.x}:${zone.rect.y}:${zone.rect.width}:${zone.rect.height}:`
@@ -317,6 +323,7 @@ export default function App({
   const [actionZones, setActionZones] = useState<ActionZone[]>([])
   const [gameContext, setGameContext] = useState<GameContext | null>(null)
   const [overlayMessage, setOverlayMessage] = useState('')
+  const [piecePresent, setPiecePresent] = useState(false)
   const [diagnosticUi, setDiagnosticUi] = useState<{
     phase: 'idle' | 'recording' | 'ready' | 'error'
     id: string
@@ -355,6 +362,7 @@ export default function App({
   const trackingPhaseRef = useRef('lost')
   const trackingDiagnosticsRef = useRef('0 active')
   const presenceStateRef = useRef('0 fresh / 0 present')
+  const piecePresentRef = useRef(false)
   const cameraDiagnosticsRef = useRef<CameraDiagnostics | null>(null)
   const diagnosticsRef = useRef<HTMLSpanElement>(null)
   const cadenceRef = useRef<CadenceState>({
@@ -704,6 +712,8 @@ export default function App({
     nativePendingGenerationRef.current = null
     timerFallbackRef.current = false
     cameraDiagnosticsRef.current = null
+    piecePresentRef.current = false
+    setPiecePresent(false)
     const stream = streamRef.current
     streamRef.current = null
     if (videoRef.current) videoRef.current.srcObject = null
@@ -1029,6 +1039,11 @@ export default function App({
     }))
     const presentPlayerIds = new Set(presentPlayerDetections.map(({ playerId }) => playerId))
     const freshPlayerIds = new Set(freshPlayerDetections.map(({ playerId }) => playerId))
+    const nextPiecePresent = visible.some(({ detection }) => isPlayerPiece(detection.data))
+    if (piecePresentRef.current !== nextPiecePresent) {
+      piecePresentRef.current = nextPiecePresent
+      setPiecePresent(nextPiecePresent)
+    }
     presenceStateRef.current =
       `${freshPlayerIds.size} fresh / ${presentPlayerIds.size} present`
     reentryLatchRef.current = updateReentryLatch(
@@ -1400,6 +1415,11 @@ export default function App({
     } else if (detections.length > 1) {
       rememberedRef.current = null
       setRemembered(null)
+    }
+    if (!piecePresentRef.current
+      && detections.some(({ detection }) => isPlayerPiece(detection.data))) {
+      piecePresentRef.current = true
+      setPiecePresent(true)
     }
   }, [])
 
@@ -2216,21 +2236,75 @@ export default function App({
     transitionCleanupRef.current.clear()
   }, [])
 
+  const diagnosticRecording = diagnosticUi.phase === 'recording'
+  const interactionVisible = cameraState === 'active' && (piecePresent || diagnosticRecording)
+
   return (
     <main className="shell">
       <h1 className="visually-hidden">Sunset Chess</h1>
       <div className="dashboard">
-        <section className="scanner-card" aria-labelledby="scanner-heading">
+        <aside className="left-rail" aria-label="Sunset Chess player tools">
+          <header className="brand-header">
+            <SunsetChessLogo compact />
+            <div><p className="eyebrow">Club play</p><p className="brand-name">Sunset Chess</p></div>
+          </header>
+          <Leaderboard refreshKey={leaderboardRefresh} variant="rail" />
+          <section className="producer" aria-labelledby="producer-heading">
+            <div className="producer-form">
+              <p className="eyebrow">Player QR</p>
+              <h2 id="producer-heading">Make a player card</h2>
+              <p>Create a local QR identity.</p>
+              <label htmlFor="player-name">Player name</label>
+              <input
+                id="player-name"
+                value={name}
+                maxLength={81}
+                onChange={(event) => setName(event.target.value)}
+                onKeyDown={(event) => { if (event.key === 'Enter') void generatePlayerQr() }}
+              />
+              {producerError && <p className="form-error" role="alert">{producerError}</p>}
+              <button type="button" onClick={() => void generatePlayerQr()}>Generate</button>
+            </div>
+            <div className="qr-card-wrap">
+              {player && qrDataUrl ? (
+                <>
+                  <article className="qr-card" aria-label="Generated player QR card">
+                    <img src={qrDataUrl} alt={`QR code for ${player.name}, player ${player.playerId}`} />
+                    <h3>{player.name}</h3>
+                    <p>Player #{player.playerId}</p>
+                  </article>
+                  <div className="producer-actions">
+                    <button type="button" className="secondary" onClick={() => {
+                      document.body.dataset.printMode = 'card'
+                      window.print()
+                    }}>Print card</button>
+                    <button type="button" className="secondary" onClick={() => {
+                      document.body.dataset.printMode = 'sticker'
+                      window.print()
+                    }}>Print sticker</button>
+                  </div>
+                </>
+              ) : <p className="empty-card">Generated card appears here.</p>}
+            </div>
+          </section>
+        </aside>
+
+        <section className="scanner-card center-stage" aria-labelledby="scanner-heading">
         <div className="preview" ref={previewRef}>
+          <div
+            className={`camera-interaction-layer${interactionVisible ? ' is-visible' : ' is-hidden'}`}
+            aria-hidden={!interactionVisible}
+            data-testid="camera-interaction-layer"
+          >
           <video ref={videoRef} muted playsInline aria-label="Mirrored live camera preview" />
           <canvas ref={overlayRef} aria-hidden="true" />
-          {cameraState === 'active' && (
+          {interactionVisible && (
             <div className="tracking-legend" aria-label="Tracking overlay legend">
               <span><i className="decoded-anchor-key" />Last decoded QR</span>
               <span><i className="tracked-object-key" />Tracked object</span>
             </div>
           )}
-          {parsed && (
+          {interactionVisible && parsed && (
             <div
               className={`payload-label ${parsed.kind}`}
               ref={payloadLabelRef}
@@ -2240,8 +2314,7 @@ export default function App({
               {parsed.label}
             </div>
           )}
-          {cameraState !== 'active' && <div className="preview-placeholder" aria-hidden="true"><span>♙</span></div>}
-          {gameContext && (
+          {interactionVisible && gameContext && (
             <div
               className="camera-game-context"
               role="group"
@@ -2260,7 +2333,7 @@ export default function App({
               )}
             </div>
           )}
-          {cameraState === 'active' && actionZones.length > 0 && (
+          {interactionVisible && actionZones.length > 0 && (
             <div
               className="action-zones"
               role="group"
@@ -2286,15 +2359,22 @@ export default function App({
               ))}
             </div>
           )}
-          {overlayMessage && (
+          {interactionVisible && overlayMessage && (
             <p className="action-zone-message" role="status" aria-live="polite">
               {overlayMessage}
             </p>
           )}
-          {cameraState === 'active' && actionZones.length === 0 && !gameContext && !overlayMessage && (
-            <p className="stage-guidance">Scan your chess piece to log in</p>
+          {interactionVisible && !gameContext?.resultReady && <div className="scan-corners" aria-hidden="true" />}
+          </div>
+          {!interactionVisible && (
+            <div className="idle-stage">
+              <SunsetChessLogo decorative />
+              <h2>{cameraState === 'active' ? 'Scan your chess piece to begin' : copy.title}</h2>
+              <p>{cameraState === 'active'
+                ? 'Hold a player piece in view. Scanning continues while the mirror is hidden.'
+                : copy.detail}</p>
+            </div>
           )}
-          {!gameContext?.resultReady && <div className="scan-corners" aria-hidden="true" />}
         </div>
         <div className="controls">
           <div className="status" role="status" aria-live="polite">
@@ -2312,7 +2392,9 @@ export default function App({
           )}
         </div>
         <p className="visually-hidden" aria-live="polite">
-          {parsed ? `Detected QR code: ${parsed.label}` : ''}
+          {interactionVisible
+            ? 'Piece detected — camera interaction shown'
+            : cameraState === 'active' ? 'No piece detected — camera interaction hidden' : ''}
         </p>
         <p className="scanner-diagnostics" aria-label="Scanner diagnostics">
           <span ref={diagnosticsRef}>Measuring camera / decode / paint cadence…</span>
@@ -2355,6 +2437,7 @@ export default function App({
         )}
         </section>
 
+        <aside className="right-rail" aria-label="Chess games">
         <section
           className="ongoing-games game-column live-games"
           aria-labelledby="ongoing-games-heading"
@@ -2420,47 +2503,8 @@ export default function App({
           </div>
         )}
         </section>
+        </aside>
       </div>
-
-      <section className="producer" aria-labelledby="producer-heading">
-        <Leaderboard refreshKey={leaderboardRefresh} />
-        <div className="producer-form">
-          <p className="eyebrow">Player QR</p>
-          <h2 id="producer-heading">Make your player card</h2>
-          <p>Create a local QR identity to share with another player.</p>
-          <label htmlFor="player-name">Player name</label>
-          <input
-            id="player-name"
-            value={name}
-            maxLength={81}
-            onChange={(event) => setName(event.target.value)}
-            onKeyDown={(event) => { if (event.key === 'Enter') void generatePlayerQr() }}
-          />
-          {producerError && <p className="form-error" role="alert">{producerError}</p>}
-          <button type="button" onClick={() => void generatePlayerQr()}>Generate</button>
-        </div>
-        <div className="qr-card-wrap">
-          {player && qrDataUrl ? (
-            <>
-              <article className="qr-card" aria-label="Generated player QR card">
-                <img src={qrDataUrl} alt={`QR code for ${player.name}, player ${player.playerId}`} />
-                <h3>{player.name}</h3>
-                <p>Player #{player.playerId}</p>
-              </article>
-              <div className="producer-actions">
-                <button type="button" className="secondary" onClick={() => {
-                  document.body.dataset.printMode = 'card'
-                  window.print()
-                }}>Print card</button>
-                <button type="button" className="secondary" onClick={() => {
-                  document.body.dataset.printMode = 'sticker'
-                  window.print()
-                }}>Print sticker</button>
-              </div>
-            </>
-          ) : <p className="empty-card">Your generated card will appear here.</p>}
-        </div>
-      </section>
     </main>
   )
 }
