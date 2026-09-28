@@ -115,6 +115,22 @@ import {
   type TrackingFrame,
 } from './trackingFrameHistory'
 import type { OpticalReplayAnchor } from './opticalFlowProtocol'
+import type { OpticalFlowDiagnostics } from './opticalFlowProtocol'
+import {
+  appendDiagnosticEvent,
+  appendDiagnosticSample,
+  diagnosticRemainingMs,
+  diagnosticSessionId,
+  DiagnosticUrls,
+  startDiagnostic,
+  supportsDiagnosticVideo,
+  type DiagnosticSession,
+} from './trackingDiagnostic'
+import {
+  trailForIdentity,
+  updateTrail,
+  type TrailPoint,
+} from './trackingTrail'
 import { encodeQrDataUrl } from './qrArtwork'
 import './App.css'
 
@@ -298,6 +314,14 @@ export default function App({
   const [actionZones, setActionZones] = useState<ActionZone[]>([])
   const [gameContext, setGameContext] = useState<GameContext | null>(null)
   const [overlayMessage, setOverlayMessage] = useState('')
+  const [diagnosticUi, setDiagnosticUi] = useState<{
+    phase: 'idle' | 'recording' | 'ready' | 'error'
+    id: string
+    remainingMs: number
+    videoUrl: string | null
+    jsonUrl: string | null
+    message: string
+  }>({ phase: 'idle', id: '', remainingMs: 0, videoUrl: null, jsonUrl: null, message: '' })
   const videoRef = useRef<HTMLVideoElement>(null)
   const previewRef = useRef<HTMLDivElement>(null)
   const payloadLabelRef = useRef<HTMLDivElement>(null)
@@ -371,6 +395,17 @@ export default function App({
     evidenceAgeMs: 0,
     lastRejection: '',
   })
+  const latestOpticalDiagnosticsRef = useRef<OpticalFlowDiagnostics['tracks']>([])
+  const trailRef = useRef<TrailPoint[]>([])
+  const lastTrailAtRef = useRef(0)
+  const diagnosticCanvasRef = useRef<HTMLCanvasElement | null>(null)
+  const diagnosticSessionRef = useRef<DiagnosticSession | null>(null)
+  const diagnosticRecorderRef = useRef<MediaRecorder | null>(null)
+  const diagnosticStreamRef = useRef<MediaStream | null>(null)
+  const diagnosticChunksRef = useRef<Blob[]>([])
+  const diagnosticUrlsRef = useRef(new DiagnosticUrls())
+  const finalizeDiagnosticRef = useRef<(() => void) | null>(null)
+  const diagnosticMountedRef = useRef(true)
   const qualityRef = useRef<QualityProfile>(selectQuality({
     wasm: typeof WebAssembly !== 'undefined',
     simd: supportsWasmSimd(),
@@ -626,6 +661,7 @@ export default function App({
   }, [])
 
   const stopCamera = useCallback((clearDetection = false) => {
+    finalizeDiagnosticRef.current?.()
     cancelCheckInTransition()
     cameraGenerationRef.current += 1
     clearInactivityTimer()
@@ -651,6 +687,7 @@ export default function App({
     opticalReadyRef.current = false
     pendingOpticalAnchorsRef.current.clear()
     trackingHistoryRef.current.clear()
+    trailRef.current = []
     decoderReadyRef.current = { zxing: false, jsqr: false }
     decoderFailureRef.current.clear()
     decoderInputStatsRef.current = {}
@@ -672,6 +709,137 @@ export default function App({
       setRemembered(null)
     }
   }, [cancelCheckInTransition, cancelScheduledFrame, clearInactivityTimer, clearResultMode, resetCheckInTargets, updateOverlayMessage])
+
+  const finalizeDiagnostic = useCallback(() => {
+    const session = diagnosticSessionRef.current
+    if (!session) return
+    diagnosticSessionRef.current = null
+    const recorder = diagnosticRecorderRef.current
+    diagnosticRecorderRef.current = null
+    const finish = () => {
+      diagnosticStreamRef.current?.getTracks().forEach((track) => track.stop())
+      diagnosticStreamRef.current = null
+      if (!diagnosticMountedRef.current) {
+        diagnosticChunksRef.current = []
+        return
+      }
+      const videoBlob = diagnosticChunksRef.current.length
+        ? new Blob(diagnosticChunksRef.current, { type: recorder?.mimeType || 'video/webm' })
+        : null
+      diagnosticChunksRef.current = []
+      const track = streamRef.current?.getVideoTracks()[0]
+      const metadata = {
+        schemaVersion: 1,
+        sessionId: session.id,
+        startedAt: session.startedAt,
+        endedAt: performance.now(),
+        durationMs: performance.now() - session.startedAt,
+        appVersion: '1.0.0',
+        commit: null,
+        commitNote: 'Git metadata is not bundled into the production image.',
+        userAgent: navigator.userAgent,
+        devicePixelRatio: window.devicePixelRatio || 1,
+        camera: {
+          settings: track?.getSettings?.() ?? null,
+          capabilities: track?.getCapabilities?.() ?? null,
+          diagnostics: cameraDiagnosticsRef.current,
+        },
+        preview: {
+          width: previewRef.current?.clientWidth ?? 0,
+          height: previewRef.current?.clientHeight ?? 0,
+          videoWidth: videoRef.current?.videoWidth ?? 0,
+          videoHeight: videoRef.current?.videoHeight ?? 0,
+          mirroredExactlyOnce: true,
+        },
+        quality: qualityRef.current,
+        policy: {
+          opticalFlow: {
+            maxForwardBackwardPx: 1.5,
+            maxReprojectionErrorPx: 2.5,
+            minInlierRatio: .65,
+            modelOrder: ['homography', 'affine', 'similarity'],
+          },
+          actionZoneAuthority: 'evidence-qualified detections only',
+        },
+        samples: session.samples,
+        events: session.events,
+        video: {
+          available: Boolean(videoBlob),
+          mimeType: recorder?.mimeType ?? null,
+          limitation: videoBlob ? null : 'MediaRecorder or canvas.captureStream is unavailable.',
+        },
+        privacy: 'Created locally after explicit click; no upload or database mutation.',
+      }
+      const jsonBlob = new Blob([JSON.stringify(metadata, null, 2)], { type: 'application/json' })
+      const urls = diagnosticUrlsRef.current.replace(videoBlob, jsonBlob)
+      setDiagnosticUi({
+        phase: 'ready',
+        id: session.id,
+        remainingMs: 0,
+        videoUrl: urls.video,
+        jsonUrl: urls.telemetry,
+        message: videoBlob
+          ? 'Diagnostic bundle ready for local download.'
+          : 'JSON ready. This browser cannot record the diagnostic WebM.',
+      })
+    }
+    if (recorder && recorder.state !== 'inactive') {
+      recorder.addEventListener('stop', finish, { once: true })
+      recorder.stop()
+    } else {
+      finish()
+    }
+  }, [])
+  finalizeDiagnosticRef.current = finalizeDiagnostic
+
+  const startTrackingDiagnostic = useCallback(() => {
+    if (cameraState !== 'active' || diagnosticSessionRef.current) return
+    diagnosticUrlsRef.current.revoke()
+    const id = diagnosticSessionId()
+    const now = performance.now()
+    diagnosticSessionRef.current = appendDiagnosticEvent(startDiagnostic(now, id), {
+      type: 'recording-started',
+      at: now,
+      explicitUserAction: true,
+    })
+    const canvas = document.createElement('canvas')
+    diagnosticCanvasRef.current = canvas
+    diagnosticChunksRef.current = []
+    let videoSupported = false
+    if (supportsDiagnosticVideo(canvas)) {
+      try {
+        const stream = canvas.captureStream(30)
+        diagnosticStreamRef.current = stream
+        const mimeType = MediaRecorder.isTypeSupported?.('video/webm;codecs=vp9')
+          ? 'video/webm;codecs=vp9'
+          : 'video/webm'
+        const recorder = new MediaRecorder(stream, {
+          mimeType,
+          videoBitsPerSecond: 3_000_000,
+        })
+        recorder.addEventListener('dataavailable', (event) => {
+          if (event.data.size > 0 && diagnosticChunksRef.current.length < 40) {
+            diagnosticChunksRef.current.push(event.data)
+          }
+        })
+        recorder.start(1000)
+        diagnosticRecorderRef.current = recorder
+        videoSupported = true
+      } catch {
+        diagnosticRecorderRef.current = null
+      }
+    }
+    setDiagnosticUi({
+      phase: 'recording',
+      id,
+      remainingMs: 10_000,
+      videoUrl: null,
+      jsonUrl: null,
+      message: videoSupported
+        ? 'Recording camera imagery locally. Nothing is uploaded.'
+        : 'Recording telemetry; WebM is unsupported in this browser.',
+    })
+  }, [cameraState])
 
   const drawOverlay = useCallback((now = performance.now()) => {
     const video = videoRef.current
@@ -766,12 +934,45 @@ export default function App({
       if (sample.source === 'visual') {
         registrationDiagnosticsRef.current.evidenceAgeMs = sample.evidenceAgeMs
       }
+      const model = (latestOpticalDiagnosticsRef.current ?? []).find(
+        (item) => item.identity === mapped.data,
+      )?.model ?? (sample.source === 'visual' ? 'similarity' : 'none')
+      if (sample.source === 'visual' && sample.phase !== 'lost'
+        && now - lastTrailAtRef.current >= 40) {
+        trailRef.current = updateTrail(trailRef.current, {
+          identity: mapped.data,
+          detection: mapped,
+          at: now,
+          confidence: sample.confidence,
+          model,
+        }, now)
+        lastTrailAtRef.current = now
+      }
+      const trail = trailForIdentity(trailRef.current, mapped.data, now)
+      if (trail.length > 1) {
+        context.beginPath()
+        trail.forEach((item, index) => {
+          const trailCenter = Object.values(item.detection.location).reduce(
+            (sum, point) => ({ x: sum.x + point.x / 4, y: sum.y + point.y / 4 }),
+            { x: 0, y: 0 },
+          )
+          if (index === 0) context.moveTo(trailCenter.x, trailCenter.y)
+          else context.lineTo(trailCenter.x, trailCenter.y)
+        })
+        context.shadowBlur = 0
+        context.lineWidth = 2
+        context.strokeStyle = model === 'homography'
+          ? 'rgba(117,214,165,.7)'
+          : model === 'affine' ? 'rgba(100,230,223,.65)' : 'rgba(255,199,125,.55)'
+        context.stroke()
+      }
       drawPolygon(
         mapped,
         sample.phase === 'tracking' ? '#64e6df' : 'rgba(100,230,223,.48)',
         4,
       )
     }
+    trailRef.current = updateTrail(trailRef.current, null, now)
     trackingPhaseRef.current = visible.length === 0
       ? 'lost'
       : visible.every(({ phase }) => phase === 'tracking') ? 'tracking' : 'coasting'
@@ -958,6 +1159,103 @@ export default function App({
         const percentage = Math.round(zone.progress * 100)
         progress.style.transform = `scaleX(${zone.progress})`
         progress.setAttribute('aria-valuenow', String(percentage))
+      }
+    }
+    const diagnostic = diagnosticSessionRef.current
+    if (diagnostic) {
+      const diagnosticCanvas = diagnosticCanvasRef.current
+      const diagnosticContext = diagnosticCanvas?.getContext('2d')
+      if (diagnosticCanvas && diagnosticContext) {
+        if (diagnosticCanvas.width !== Math.round(width * ratio)
+          || diagnosticCanvas.height !== Math.round(height * ratio)) {
+          diagnosticCanvas.width = Math.round(width * ratio)
+          diagnosticCanvas.height = Math.round(height * ratio)
+        }
+        diagnosticContext.setTransform(ratio, 0, 0, ratio, 0, 0)
+        diagnosticContext.fillStyle = '#0d0911'
+        diagnosticContext.fillRect(0, 0, width, height)
+        const coverScale = Math.max(width / video.videoWidth, height / video.videoHeight)
+        const drawnWidth = video.videoWidth * coverScale
+        const drawnHeight = video.videoHeight * coverScale
+        const offsetX = (width - drawnWidth) / 2
+        const offsetY = (height - drawnHeight) / 2
+        diagnosticContext.save()
+        diagnosticContext.translate(width, 0)
+        diagnosticContext.scale(-1, 1)
+        diagnosticContext.drawImage(video, offsetX, offsetY, drawnWidth, drawnHeight)
+        diagnosticContext.restore()
+        diagnosticContext.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, width, height)
+        for (const zone of nextZones) {
+          diagnosticContext.strokeStyle = zone.status === 'holding' ? '#75d6a5' : '#ffe29a'
+          diagnosticContext.lineWidth = 2
+          diagnosticContext.strokeRect(zone.rect.x, zone.rect.y, zone.rect.width, zone.rect.height)
+          diagnosticContext.fillStyle = 'rgba(13,9,17,.76)'
+          diagnosticContext.fillRect(zone.rect.x, zone.rect.y, zone.rect.width, 22)
+          diagnosticContext.fillStyle = '#fff4d7'
+          diagnosticContext.font = '12px sans-serif'
+          diagnosticContext.fillText(
+            `${zone.label} ${Math.round(zone.progress * 100)}%`,
+            zone.rect.x + 5,
+            zone.rect.y + 15,
+          )
+        }
+        const modelDetails = latestOpticalDiagnosticsRef.current ?? []
+        const latestDecoder = [...recentDecoderResultsRef.current.entries()]
+          .sort((left, right) => right[1].completedAt - left[1].completedAt)[0]
+        const lines = [
+          `TRACKING DIAGNOSTIC ${diagnostic.id}  t=${(now - diagnostic.startedAt).toFixed(0)}ms`,
+          `frame ${cadenceRef.current.cameraFrames}  ${video.videoWidth}×${video.videoHeight} → ${Math.round(width)}×${Math.round(height)} @ ${qualityRef.current.tier}`,
+          `decoder ${latestDecoder?.[0] ?? 'none'} capture ${latestDecoder ? latestDecoder[1].capturedAt.toFixed(1) : '-'} completion ${latestDecoder ? latestDecoder[1].completedAt.toFixed(1) : '-'} latency ${decodeLatencyRef.current.toFixed(1)}ms`,
+          `register Δ${registrationDiagnosticsRef.current.lagMs.toFixed(1)}ms replay ${registrationDiagnosticsRef.current.replayFrames}/${registrationDiagnosticsRef.current.replayLatencyMs.toFixed(1)}ms`,
+          modelDetails.length
+            ? modelDetails.map((item) => `${item.identity.slice(0, 16)} ${item.model} f/s/i ${item.features}/${item.survivors}/${item.inliers} cells ${item.distributedCells ?? '-'} mask-out ${item.maskViolations ?? 0} reproj ${item.reprojectionError.toFixed(2)} FB ${item.forwardBackwardError.toFixed(2)} conf ${(item.confidence * 100).toFixed(0)}%${item.rejectionReason ? ` reject ${item.rejectionReason}` : ''}`).join(' | ')
+            : `model none · reject ${opticalRejectionsRef.current.at(-1) ?? 'none'}`,
+          `ActionZone ${nextZones.map((zone) => `${zone.id}:${zone.occupant?.playerId ?? '-'} ${zone.status} ${Math.round(zone.progress * 100)}%`).join(' | ') || 'none'}`,
+          'LEGEND amber dashed=decoded anchor · cyan/green=current planar fit · trail=model confidence',
+        ]
+        const lineHeight = 18
+        diagnosticContext.fillStyle = 'rgba(8,5,12,.8)'
+        diagnosticContext.fillRect(8, 8, width - 16, lines.length * lineHeight + 12)
+        diagnosticContext.font = '12px ui-monospace, monospace'
+        lines.forEach((line, index) => {
+          diagnosticContext.fillStyle = index === lines.length - 1 ? '#ffe29a' : '#f4eff7'
+          diagnosticContext.fillText(line.slice(0, 180), 14, 24 + index * lineHeight)
+        })
+        const sample = {
+          at: now,
+          frameSequence: cadenceRef.current.cameraFrames,
+          decoder: latestDecoder && {
+            source: latestDecoder[0],
+            capturedAt: latestDecoder[1].capturedAt,
+            completedAt: latestDecoder[1].completedAt,
+            latencyMs: latestDecoder[1].completedAt - latestDecoder[1].capturedAt,
+          },
+          registration: { ...registrationDiagnosticsRef.current },
+          tracking: modelDetails,
+          dimensions: {
+            source: scanSize,
+            video: { width: video.videoWidth, height: video.videoHeight },
+            preview: { width, height },
+          },
+          cadence: cadenceRates(cadenceRef.current, now),
+          actionZones: nextZones.map((zone) => ({
+            id: zone.id,
+            occupant: zone.occupant?.playerId ?? null,
+            progress: zone.progress,
+            status: zone.status,
+            qualified: holdQualifiedPlayerIds.has(zone.occupant?.playerId ?? -1),
+            reason: overlayMessageRef.current || null,
+          })),
+          identity: visible.map((item) => item.detection.data),
+          rejectionReason: opticalRejectionsRef.current.at(-1) ?? null,
+        }
+        diagnosticSessionRef.current = appendDiagnosticSample(diagnostic, sample)
+        const remainingMs = diagnosticRemainingMs(diagnostic, now)
+        setDiagnosticUi((current) => {
+          const rounded = Math.ceil(remainingMs / 1000) * 1000
+          return current.remainingMs === rounded ? current : { ...current, remainingMs: rounded }
+        })
+        if (remainingMs === 0) queueMicrotask(() => finalizeDiagnosticRef.current?.())
       }
     }
     cadenceRef.current.paints += visible.length > 0 ? 1 : 0
@@ -1162,6 +1460,7 @@ export default function App({
             opticalAcceptedRef.current += result.diagnostics.accepted
             opticalRejectedRef.current += result.diagnostics.rejected
             opticalRejectionsRef.current = result.diagnostics.rejectionReasons
+            latestOpticalDiagnosticsRef.current = result.diagnostics.tracks ?? []
             applyObservations(result.observations)
                   }).catch(() => {
                     if (generation !== cameraGenerationRef.current) return
@@ -1720,6 +2019,19 @@ export default function App({
     stopCamera()
   }, [stopCamera])
 
+  useEffect(() => {
+    diagnosticMountedRef.current = true
+    const urls = diagnosticUrlsRef.current
+    return () => {
+      diagnosticMountedRef.current = false
+      diagnosticSessionRef.current = null
+      if (diagnosticRecorderRef.current?.state !== 'inactive') diagnosticRecorderRef.current?.stop()
+      diagnosticStreamRef.current?.getTracks().forEach((track) => track.stop())
+      diagnosticStreamRef.current = null
+      urls.revoke()
+    }
+  }, [])
+
   const generatePlayerQr = async () => {
     const request = ++qrRequestRef.current
     playerCreationRef.current?.abort()
@@ -1933,6 +2245,33 @@ export default function App({
         <p className="scanner-diagnostics" aria-label="Scanner diagnostics">
           <span ref={diagnosticsRef}>Measuring camera / decode / paint cadence…</span>
         </p>
+        <div className="tracking-diagnostic-controls">
+          <button
+            type="button"
+            className="secondary"
+            disabled={cameraState !== 'active' || diagnosticUi.phase === 'recording'}
+            onClick={startTrackingDiagnostic}
+          >
+            {diagnosticUi.phase === 'recording'
+              ? `Recording… ${Math.ceil(diagnosticUi.remainingMs / 1000)}s`
+              : 'Record 10s tracking diagnostic'}
+          </button>
+          <p aria-live="polite" aria-label="Tracking diagnostic status">
+            {diagnosticUi.phase === 'idle'
+              ? 'Explicit click records camera imagery locally for 10 seconds; nothing uploads automatically.'
+              : diagnosticUi.message}
+          </p>
+          {diagnosticUi.videoUrl && (
+            <a download={`sunset-chess-tracking-${diagnosticUi.id}.webm`} href={diagnosticUi.videoUrl}>
+              Download {diagnosticUi.id}.webm
+            </a>
+          )}
+          {diagnosticUi.jsonUrl && (
+            <a download={`sunset-chess-tracking-${diagnosticUi.id}.json`} href={diagnosticUi.jsonUrl}>
+              Download {diagnosticUi.id}.json
+            </a>
+          )}
+        </div>
         {checkInNotice && (
           <p
             className={`check-in-notice${checkInError ? ' error' : ''}`}

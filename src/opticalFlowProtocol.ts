@@ -7,6 +7,19 @@ export interface OpticalFlowDiagnostics {
   accepted: number
   rejected: number
   rejectionReasons: string[]
+  tracks?: Array<{
+    identity: string
+    model: 'homography' | 'affine' | 'similarity' | 'none'
+    features: number
+    survivors: number
+    inliers: number
+    reprojectionError: number
+    forwardBackwardError: number
+    distributedCells?: number
+    maskViolations?: number
+    confidence: number
+    rejectionReason: string | null
+  }>
 }
 
 export interface OpticalReplayFrame {

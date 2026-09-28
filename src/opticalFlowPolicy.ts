@@ -13,6 +13,8 @@ export const LK_MIN_SCALE = .75
 export const LK_MAX_SCALE = 1.3
 export const LK_MAX_ROTATION_RADIANS = .7
 export const LK_MAX_REPROJECTION_ERROR_PX = 2.5
+export const LK_RESEED_BELOW = 20
+export const LK_MIN_DISTRIBUTED_CELLS = 3
 export const LK_AMBIGUITY_DISTANCE_RATIO = .7
 export const LK_MIN_UI_CONFIDENCE = .52
 export const LK_ACTION_CONFIDENCE = .82
@@ -29,6 +31,8 @@ export const OPTICAL_FLOW_POLICY = {
   maxScale: LK_MAX_SCALE,
   maxRotationRadians: LK_MAX_ROTATION_RADIANS,
   maxReprojectionErrorPx: LK_MAX_REPROJECTION_ERROR_PX,
+  reseedBelow: LK_RESEED_BELOW,
+  minDistributedCells: LK_MIN_DISTRIBUTED_CELLS,
   ambiguityDistanceRatio: LK_AMBIGUITY_DISTANCE_RATIO,
   minUiConfidence: LK_MIN_UI_CONFIDENCE,
   actionConfidence: LK_ACTION_CONFIDENCE,

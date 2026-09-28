@@ -1,4 +1,5 @@
 import type { Point, QrDetection } from './scanner'
+import type { MotionModel } from './planarTrackerGeometry'
 import {
   TRACKING_ACTION_ANCHOR_MAX_AGE_MS,
   TRACKING_BRIDGE_MAX_ANCHOR_AGE_MS,
@@ -32,6 +33,17 @@ export interface VisualTrackObservation {
   anchoredAt: number
   updatedAt: number
   actionable: boolean
+  diagnostics?: {
+    model: MotionModel
+    features: number
+    survivors: number
+    inliers: number
+    reprojectionError: number
+    forwardBackwardError: number
+    distributedCells?: number
+    maskViolations?: number
+    rejectionReason: string | null
+  }
 }
 
 interface Box {

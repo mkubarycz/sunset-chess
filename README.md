@@ -17,6 +17,8 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
   decoded/visual/coasting/lost state, confidence, anchor age, and stale expiry
 - On-screen negotiated camera settings, optional-control state, camera/decode/paint
   cadence, fresh/present state, and compact per-track source/confidence/age diagnostics
+- Explicit 10-second local tracking diagnostic capture with a composited WebM
+  (when supported) and synchronized bounded JSON telemetry
 - Persisted player QR producer with 2-inch card and 0.9-inch sticker print modes
 - Reusable ActionZones for top-corner check-in and lane-aware per-player
   Win/Draw/Lose choices, with motion-tolerant accumulated two-second holds and
@@ -59,14 +61,27 @@ The preferred tracker is OpenCV.js pyramidal Lucas–Kanade optical flow in a
 dedicated module worker. The maintained `@opencvjs/worker` package is built
 specifically for web workers and Vite bundles its version-matched Emscripten
 module into the worker asset; no CDN or runtime network dependency is used. Up
-to 48 Shi–Tomasi corners are selected with OpenCV `goodFeaturesToTrack` from an
-expanded decoded-quad region that includes the quiet zone and outer edges. Points are
-tracked forward and backward with a 31×31 LK window through pyramid level 4, then fitted
-with a robust similarity transform and a 2.5 px reprojection-inlier pass.
-The track requires at least 8 surviving points, mean LK error ≤24 px,
-forward/backward drift ≤1.5 px, ≥65% affine inliers, scale 0.75–1.30, rotation
-≤0.7 radians, and UI confidence ≥0.52. Converging/ambiguous identities are both
-dropped. Final-result ActionZone authority requires confidence ≥0.82 and a decode
+to 48 Shi–Tomasi corners are selected with OpenCV `goodFeaturesToTrack` only
+inside a 90%-inset decoded quadrilateral mask. Candidates are round-robin
+distributed over a 3×3 grid and carry their source cell through LK; arbitrary
+background padding is never eligible. Points are tracked forward and backward
+with a 31×31 LK window through pyramid level 4. A deterministic robust estimator
+then chooses an explicit model: homography requires at least 10 survivors over
+four cells, affine requires 6 over three cells, and similarity is the final
+4-point/two-cell fallback. Models use a 2.5 px reprojection gate and at least a
+62–65% inlier ratio.
+
+Accepted geometry must retain winding and convexity, finite in-frame corners,
+at least 64 px² area, bounded per-frame area/edge changes, bounded projective
+terms, displacement, and acceleration. Mean LK error must remain ≤24 px and
+forward/backward drift ≤1.5 px; UI confidence must remain ≥0.52. A fit is
+rejected rather than predicted into a new location. When inlier features fall
+below 20 or fewer than three cells remain, features are reseeded inside the
+accepted transformed inset quad without changing identity. Converging/ambiguous
+or crossing identities are dropped. The roughly 0.9-second center trail is
+presentation-only, color-coded by model/confidence, and ages out with evidence;
+it is never ActionZone geometry. Final-result ActionZone authority requires
+confidence ≥0.82 and a decode
 anchor no older than 650 ms; frame gaps over 220 ms expire. Check-in may additionally
 accumulate on accepted visual evidence at confidence ≥0.78 while its decode identity
 anchor remains within the hard 1.6-second bridge. Fresh high-confidence visual
@@ -79,6 +94,37 @@ tracker. It follows the same historical registration and chronological replay
 rule; it never seeds delayed geometry directly on a new frame. Failed fallback
 replay leaves only the dashed decoded reference. Neither tracker creates payload
 identities: only a decoder can identify one.
+
+### Tracking diagnostic capture
+
+While the camera is active, choose **Record 10s tracking diagnostic**. The click
+is required; capture never starts automatically. Status announces that camera
+imagery is being recorded locally and counts down. A dedicated canvas reproduces
+the preview's `object-fit: cover` crop, mirrors camera pixels exactly once, then
+composites the decoded anchor, accepted fit, trail, ActionZones, legend,
+timestamps, decoder timing, registration/replay timing, model,
+feature/survivor/inlier counts, reprojection/forward-backward error, confidence,
+dimensions/cadence, identity, and rejection reason.
+
+At ten seconds, matching timestamp/session-ID downloads appear:
+
+- `sunset-chess-tracking-<session>.webm`
+- `sunset-chess-tracking-<session>.json`
+
+JSON includes browser/camera settings and capabilities, preview/source mapping,
+device pixel ratio, quality tier, policy constants, at most 720 per-frame
+records, at most 400 events, and ActionZone state. WebM is bounded to 40
+one-second chunks. Replacing a bundle revokes old object URLs. No capture is
+uploaded, sent to the server, written to SQLite, or mixed with unrelated app
+data. Camera imagery exists only in the explicitly requested WebM; JSON contains
+geometry and diagnostics, not pixels.
+
+Canvas `captureStream` and `MediaRecorder` WebM work in current Chromium and
+Firefox; Safari support varies. If either API is missing or recorder creation
+fails, the UI explicitly provides JSON only. Reproduce the issue during the
+countdown, download both matching files, and attach the `.webm` and `.json` to
+the next message. If only JSON is offered, attach it and mention the displayed
+browser limitation.
 
 The current-object box disappears after 450 ms without accepted visual evidence;
 the separate decoded anchor may remain as a location reference until its 1.6-second

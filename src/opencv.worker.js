@@ -1,6 +1,15 @@
 /* global self */
 'use strict'
 import { loadOpenCV } from '@opencvjs/worker'
+import {
+  applyMatrix,
+  detectionCorners,
+  distributeFeatures,
+  pointInConvexQuad,
+  robustPlanarFit,
+  shrinkQuad,
+  validateTransformedQuad,
+} from './planarTrackerGeometry'
 
 const tracks = new Map()
 let previous = null
@@ -42,37 +51,48 @@ function grayFrame(pixels, width, height) {
 }
 
 function seedFeatures(gray, detection) {
-  const points = corners(detection)
-  const xs = points.map(({ x }) => x)
-  const ys = points.map(({ y }) => y)
-  const padding = Math.max(6, Math.min(32, (Math.max(...xs) - Math.min(...xs)) * .22))
-  const x = Math.max(0, Math.floor(Math.min(...xs) - padding))
-  const y = Math.max(0, Math.floor(Math.min(...ys) - padding))
-  const right = Math.min(gray.cols - 1, Math.ceil(Math.max(...xs) + padding))
-  const bottom = Math.min(gray.rows - 1, Math.ceil(Math.max(...ys) + padding))
-  if (right - x < 8 || bottom - y < 8) return new cv.Mat()
-  const roi = gray.roi(new cv.Rect(x, y, right - x + 1, bottom - y + 1))
-  const selected = new cv.Mat()
-  const mask = new cv.Mat()
-  try {
-    cv.goodFeaturesToTrack(roi, selected, 48, .01, 3, mask, 5, false, .04)
-    const values = []
-    for (let index = 0; index < selected.rows; index += 1) {
-      values.push(selected.data32F[index * 2] + x, selected.data32F[index * 2 + 1] + y)
+  const quad = detectionCorners(detection)
+  const inner = shrinkQuad(quad, .9)
+  const maskValues = new Uint8Array(gray.rows * gray.cols)
+  const xs = inner.map(({ x }) => x)
+  const ys = inner.map(({ y }) => y)
+  const left = Math.max(0, Math.floor(Math.min(...xs)))
+  const top = Math.max(0, Math.floor(Math.min(...ys)))
+  const right = Math.min(gray.cols - 1, Math.ceil(Math.max(...xs)))
+  const bottom = Math.min(gray.rows - 1, Math.ceil(Math.max(...ys)))
+  for (let y = top; y <= bottom; y += 1) {
+    for (let x = left; x <= right; x += 1) {
+      if (pointInConvexQuad({ x: x + .5, y: y + .5 }, inner)) {
+        maskValues[y * gray.cols + x] = 255
+      }
     }
-    return cv.matFromArray(values.length / 2, 1, cv.CV_32FC2, values)
+  }
+  const selected = new cv.Mat()
+  const mask = cv.matFromArray(gray.rows, gray.cols, cv.CV_8UC1, maskValues)
+  try {
+    cv.goodFeaturesToTrack(gray, selected, 96, .008, 3, mask, 5, false, .04)
+    const candidates = []
+    for (let index = 0; index < selected.rows; index += 1) {
+      candidates.push({
+        x: selected.data32F[index * 2],
+        y: selected.data32F[index * 2 + 1],
+      })
+    }
+    const distributed = distributeFeatures(candidates, quad, 48, 3)
+    const values = distributed.flatMap(({ x, y }) => [x, y])
+    return {
+      points: cv.matFromArray(values.length / 2, 1, cv.CV_32FC2, values),
+      cells: distributed.map(({ cell }) => cell),
+      membership: distributed.map(({ cell, inside }) => ({ cell, inside })),
+    }
   } finally {
-    roi.delete()
     selected.delete()
     mask.delete()
   }
 }
 
-function transformDetection(detection, transform) {
-  const map = ({ x, y }) => ({
-    x: transform[0] * x + transform[1] * y + transform[2],
-    y: transform[3] * x + transform[4] * y + transform[5],
-  })
+function transformDetection(detection, matrix) {
+  const map = (point) => applyMatrix(matrix, point)
   return {
     ...detection,
     location: {
@@ -82,59 +102,6 @@ function transformDetection(detection, transform) {
       bottomLeftCorner: map(detection.location.bottomLeftCorner),
     },
   }
-}
-
-function fitSimilarity(from, to, indices) {
-  let fromX = 0
-  let fromY = 0
-  let toX = 0
-  let toY = 0
-  for (const index of indices) {
-    fromX += from[index * 2]
-    fromY += from[index * 2 + 1]
-    toX += to[index * 2]
-    toY += to[index * 2 + 1]
-  }
-  fromX /= indices.length
-  fromY /= indices.length
-  toX /= indices.length
-  toY /= indices.length
-  let denominator = 0
-  let real = 0
-  let imaginary = 0
-  for (const index of indices) {
-    const x = from[index * 2] - fromX
-    const y = from[index * 2 + 1] - fromY
-    const u = to[index * 2] - toX
-    const v = to[index * 2 + 1] - toY
-    denominator += x * x + y * y
-    real += x * u + y * v
-    imaginary += x * v - y * u
-  }
-  if (denominator < 1) return null
-  const a = real / denominator
-  const b = imaginary / denominator
-  return [a, -b, toX - a * fromX + b * fromY,
-    b, a, toY - b * fromX - a * fromY]
-}
-
-function robustSimilarity(from, to) {
-  const all = Array.from({ length: from.length / 2 }, (_, index) => index)
-  const initial = fitSimilarity(from, to, all)
-  if (!initial) return null
-  const residual = (index, transform) => {
-    const x = from[index * 2]
-    const y = from[index * 2 + 1]
-    return Math.hypot(
-      transform[0] * x + transform[1] * y + transform[2] - to[index * 2],
-      transform[3] * x + transform[4] * y + transform[5] - to[index * 2 + 1],
-    )
-  }
-  const inliers = all.filter((index) =>
-    residual(index, initial) <= policy.maxReprojectionErrorPx)
-  if (inliers.length < policy.minSurvivors) return null
-  const refined = fitSimilarity(from, to, inliers)
-  return refined ? { transform: refined, inlierCount: inliers.length } : null
 }
 
 function flowTrack(track, current, now, previousFrame = previous) {
@@ -151,6 +118,8 @@ function flowTrack(track, current, now, previousFrame = previous) {
     cv.calcOpticalFlowPyrLK(current, previousFrame, forward, backward, backwardStatus, backwardError, win, 4, criteria)
     const from = []
     const to = []
+    const cells = []
+    const memberships = []
     let totalError = 0
     let totalFb = 0
     for (let index = 0; index < track.points.rows; index += 1) {
@@ -160,55 +129,90 @@ function flowTrack(track, current, now, previousFrame = previous) {
       const dy = track.points.data32F[index * 2 + 1] - backward.data32F[index * 2 + 1]
       const fb = Math.hypot(dx, dy)
       if (!status || error > policy.maxError || fb > policy.maxForwardBackwardPx) continue
-      from.push(track.points.data32F[index * 2], track.points.data32F[index * 2 + 1])
-      to.push(forward.data32F[index * 2], forward.data32F[index * 2 + 1])
+      from.push({
+        x: track.points.data32F[index * 2],
+        y: track.points.data32F[index * 2 + 1],
+      })
+      to.push({ x: forward.data32F[index * 2], y: forward.data32F[index * 2 + 1] })
+      cells.push(track.cells[index] ?? 0)
+      memberships.push(track.membership?.[index] ?? { cell: track.cells[index] ?? 0, inside: true })
       totalError += error
       totalFb += fb
     }
-    if (from.length / 2 < policy.minSurvivors) {
-      return { track: null, reason: 'insufficient-features' }
+    if (from.length < policy.minSurvivors) {
+      return { track: null, reason: 'insufficient-features', diagnostics: {
+        model: 'none', features: track.points.rows, survivors: from.length, inliers: 0,
+        reprojectionError: 0, forwardBackwardError: 0, distributedCells: 0, maskViolations: 0,
+      } }
     }
-    const toMat = cv.matFromArray(to.length / 2, 1, cv.CV_32FC2, to)
-    const fit = robustSimilarity(from, to)
-    const transform = fit?.transform
-    const inlierCount = fit?.inlierCount ?? 0
-    const survival = from.length / 2 / Math.max(1, track.points.rows)
-    const inlierRatio = inlierCount / Math.max(1, from.length / 2)
-    const scale = transform?.length ? Math.hypot(transform[0], transform[3]) : 0
-    const rotation = transform?.length ? Math.abs(Math.atan2(transform[3], transform[0])) : Math.PI
+    const fit = robustPlanarFit(from, to, cells, policy.maxReprojectionErrorPx)
+    const transform = fit?.matrix
+    const inlierCount = fit?.inliers.length ?? 0
+    const survival = from.length / Math.max(1, track.points.rows)
+    const inlierRatio = inlierCount / Math.max(1, from.length)
+    const meanError = totalError / from.length
+    const meanFb = totalFb / from.length
+    const diagnostics = {
+      model: fit?.model ?? 'none',
+      features: track.points.rows,
+      survivors: from.length,
+      inliers: inlierCount,
+      reprojectionError: fit?.meanReprojectionError ?? 0,
+      forwardBackwardError: meanFb,
+      distributedCells: new Set(cells).size,
+      maskViolations: (track.membership ?? []).filter(({ inside }) => !inside).length,
+    }
     const confidence = Math.max(0, Math.min(1,
       survival * .3 + inlierRatio * .45
-      + Math.max(0, 1 - totalError / (from.length / 2) / policy.maxError) * .15
-      + Math.max(0, 1 - totalFb / (from.length / 2) / policy.maxForwardBackwardPx) * .1,
+      + Math.max(0, 1 - meanError / policy.maxError) * .15
+      + Math.max(0, 1 - meanFb / policy.maxForwardBackwardPx) * .1,
     ))
     if (!transform?.length || inlierCount < policy.minSurvivors
       || inlierRatio < policy.minInlierRatio) {
-      release(toMat)
-      return { track: null, reason: 'bad-geometry' }
-    }
-    if (scale < policy.minScale || scale > policy.maxScale
-      || rotation > policy.maxRotationRadians) {
-      release(toMat)
-      return { track: null, reason: 'transform-bounds' }
+      return { track: null, reason: 'bad-geometry', diagnostics }
     }
     if (confidence < policy.minUiConfidence) {
-      release(toMat)
-      return { track: null, reason: 'low-confidence' }
+      return { track: null, reason: 'low-confidence', diagnostics }
     }
     const detection = transformDetection(track.detection, transform)
-    if (corners(detection).some(({ x, y }) =>
-      x < 0 || y < 0 || x >= current.cols || y >= current.rows)) {
-      release(toMat)
-      return { track: null, reason: 'left-frame' }
+    const geometryRejection = validateTransformedQuad(
+      corners(track.detection),
+      corners(detection),
+      { width: current.cols, height: current.rows },
+      transform,
+      track.displacement ?? 0,
+    )
+    if (geometryRejection) {
+      return { track: null, reason: geometryRejection, diagnostics }
+    }
+    const retained = fit.inliers.flatMap((index) => [to[index].x, to[index].y])
+    let nextPoints = cv.matFromArray(retained.length / 2, 1, cv.CV_32FC2, retained)
+    let nextCells = fit.inliers.map((index) => cells[index])
+    let nextMembership = fit.inliers.map((index) => memberships[index])
+    if (nextPoints.rows < policy.reseedBelow || new Set(nextCells).size < policy.minDistributedCells) {
+      const reseeded = seedFeatures(current, detection)
+      if (reseeded.points.rows >= policy.minSurvivors) {
+        release(nextPoints)
+        nextPoints = reseeded.points
+        nextCells = reseeded.cells
+        nextMembership = reseeded.membership
+      } else {
+        release(reseeded.points)
+      }
     }
     track.previousCenter = center(track.detection)
     release(track.points)
-    track.points = toMat.clone()
+    const oldCenter = center(track.detection)
+    const newCenter = center(detection)
+    track.displacement = Math.hypot(newCenter.x - oldCenter.x, newCenter.y - oldCenter.y)
+    track.points = nextPoints
+    track.cells = nextCells
+    track.membership = nextMembership
     track.detection = detection
     track.updatedAt = now
     track.confidence = confidence
-    release(toMat)
-    return { track, reason: null }
+    track.diagnostics = diagnostics
+    return { track, reason: null, diagnostics }
   } finally {
     ;[forward, forwardStatus, forwardError, backward, backwardStatus, backwardError].forEach(release)
   }
@@ -234,110 +238,6 @@ function rejectAmbiguity(observations) {
         rejected.add(observations[i].detection.data)
         rejected.add(observations[j].detection.data)
       }
-
-      function replayAnchor(item) {
-        if (!item.frames.length) return { observation: null, reason: 'empty-replay' }
-        let prior = null
-        let track = null
-        const reject = (reason) => {
-          release(prior)
-          release(track?.points)
-          return { observation: null, reason }
-        }
-        for (let index = 0; index < item.frames.length; index += 1) {
-            const frame = item.frames[index]
-            const current = grayFrame(new Uint8ClampedArray(frame.pixels), frame.width, frame.height)
-            if (prior && (prior.cols !== current.cols || prior.rows !== current.rows)) {
-              current.delete()
-              return reject('replay-dimension-change')
-            }
-            if (index === 0) {
-              const points = seedFeatures(current, item.detection)
-              if (points.rows < 8) {
-                points.delete()
-                current.delete()
-                return reject('seed-insufficient-features')
-              }
-              track = {
-                detection: item.detection,
-                points,
-                anchoredAt: item.anchoredAt,
-                updatedAt: frame.capturedAt,
-                confidence: 1,
-              }
-            } else {
-              const outcome = flowTrack(track, current, frame.capturedAt, prior)
-              if (!outcome.track) {
-                current.delete()
-                return reject(`replay-${outcome.reason}`)
-              }
-              track = outcome.track
-            }
-            release(prior)
-            prior = current
-        }
-        return {
-          observation: {
-            detection: track.detection,
-            source: 'visual',
-            confidence: track.confidence,
-            anchoredAt: track.anchoredAt,
-            updatedAt: track.updatedAt,
-            actionable: track.confidence >= policy.actionConfidence
-              && track.updatedAt - track.anchoredAt <= policy.actionAnchorAgeMs,
-          },
-          track,
-          lastFrame: prior,
-          reason: null,
-        }
-      }
-
-      function handleReanchor(data, startedAt) {
-        const observations = []
-        const acceptedTracks = new Map()
-        const rejectionReasons = []
-        let newest = null
-        let newestAt = -Infinity
-        for (const item of data.anchors) {
-          const outcome = replayAnchor(item)
-          if (!outcome.observation) {
-            rejectionReasons.push(outcome.reason)
-            continue
-          }
-          observations.push(outcome.observation)
-          acceptedTracks.set(item.detection.data, outcome.track)
-          if (outcome.observation.updatedAt > newestAt) {
-            release(newest)
-            newest = outcome.lastFrame
-            newestAt = outcome.observation.updatedAt
-          } else {
-            release(outcome.lastFrame)
-          }
-        }
-        clear()
-        for (const [identity, track] of acceptedTracks) tracks.set(identity, track)
-        const safe = rejectAmbiguity(observations)
-        for (const [identity, track] of tracks) {
-          if (!safe.some(({ detection }) => detection.data === identity)) {
-            release(track.points)
-            tracks.delete(identity)
-            rejectionReasons.push('ambiguous-or-crossing')
-          }
-        }
-        previous = newest
-        self.postMessage({
-          type: 'result',
-          id: data.id,
-          generation: data.generation,
-          observations: safe.filter(({ detection }) => tracks.has(detection.data)),
-          elapsedMs: performance.now() - startedAt,
-          diagnostics: {
-            accepted: tracks.size,
-            rejected: data.anchors.length - tracks.size,
-            rejectionReasons: [...new Set(rejectionReasons)].slice(-4),
-          },
-        })
-      }
       const aTrack = tracks.get(observations[i].detection.data)
       const bTrack = tracks.get(observations[j].detection.data)
       if (aTrack?.previousCenter && bTrack?.previousCenter) {
@@ -351,6 +251,130 @@ function rejectAmbiguity(observations) {
     }
   }
   return observations.filter(({ detection }) => !rejected.has(detection.data))
+}
+
+function trackDiagnostic(identity, track, rejectionReason = null) {
+  const details = track?.diagnostics ?? {
+    model: 'none', features: track?.points?.rows ?? 0, survivors: 0, inliers: 0,
+    reprojectionError: 0, forwardBackwardError: 0,
+  }
+  return {
+    identity,
+    ...details,
+    confidence: track?.confidence ?? 0,
+    rejectionReason,
+  }
+}
+
+function replayAnchor(item) {
+  if (!item.frames.length) return { observation: null, reason: 'empty-replay' }
+  let prior = null
+  let track = null
+  const reject = (reason) => {
+    release(prior)
+    release(track?.points)
+    return { observation: null, reason }
+  }
+  for (let index = 0; index < item.frames.length; index += 1) {
+    const frame = item.frames[index]
+    const current = grayFrame(new Uint8ClampedArray(frame.pixels), frame.width, frame.height)
+    if (prior && (prior.cols !== current.cols || prior.rows !== current.rows)) {
+      current.delete()
+      return reject('replay-dimension-change')
+    }
+    if (index === 0) {
+      const seeded = seedFeatures(current, item.detection)
+      if (seeded.points.rows < policy.minSurvivors) {
+        seeded.points.delete()
+        current.delete()
+        return reject('seed-insufficient-features')
+      }
+      track = {
+        detection: item.detection,
+        points: seeded.points,
+        cells: seeded.cells,
+        membership: seeded.membership,
+        anchoredAt: item.anchoredAt,
+        updatedAt: frame.capturedAt,
+        confidence: 1,
+      }
+    } else {
+      const outcome = flowTrack(track, current, frame.capturedAt, prior)
+      if (!outcome.track) {
+        current.delete()
+        return reject(`replay-${outcome.reason}`)
+      }
+      track = outcome.track
+    }
+    release(prior)
+    prior = current
+  }
+  return {
+    observation: {
+      detection: track.detection,
+      source: 'visual',
+      confidence: track.confidence,
+      anchoredAt: track.anchoredAt,
+      updatedAt: track.updatedAt,
+      actionable: track.confidence >= policy.actionConfidence
+        && track.updatedAt - track.anchoredAt <= policy.actionAnchorAgeMs,
+      diagnostics: { ...track.diagnostics, rejectionReason: null },
+    },
+    track,
+    lastFrame: prior,
+    reason: null,
+  }
+}
+
+function handleReanchor(data, startedAt) {
+  const observations = []
+  const acceptedTracks = new Map()
+  const rejectionReasons = []
+  const diagnostics = []
+  let newest = null
+  let newestAt = -Infinity
+  for (const item of data.anchors) {
+    const outcome = replayAnchor(item)
+    if (!outcome.observation) {
+      rejectionReasons.push(outcome.reason)
+      diagnostics.push(trackDiagnostic(item.detection.data, null, outcome.reason))
+      continue
+    }
+    observations.push(outcome.observation)
+    acceptedTracks.set(item.detection.data, outcome.track)
+    diagnostics.push(trackDiagnostic(item.detection.data, outcome.track))
+    if (outcome.observation.updatedAt > newestAt) {
+      release(newest)
+      newest = outcome.lastFrame
+      newestAt = outcome.observation.updatedAt
+    } else {
+      release(outcome.lastFrame)
+    }
+  }
+  clear()
+  for (const [identity, track] of acceptedTracks) tracks.set(identity, track)
+  const safe = rejectAmbiguity(observations)
+  for (const [identity, track] of tracks) {
+    if (!safe.some(({ detection }) => detection.data === identity)) {
+      release(track.points)
+      tracks.delete(identity)
+      rejectionReasons.push('ambiguous-or-crossing')
+    }
+  }
+  previous = newest
+  self.postMessage({
+    type: 'result',
+    id: data.id,
+    generation: data.generation,
+    observations: safe.filter(({ detection }) => tracks.has(detection.data)),
+    elapsedMs: performance.now() - startedAt,
+    diagnostics: {
+      accepted: tracks.size,
+      rejected: data.anchors.length - tracks.size,
+      rejectionReasons: [...new Set(rejectionReasons)].slice(-4),
+      tracks: diagnostics,
+    },
+  })
 }
 
 async function initialize() {
@@ -397,6 +421,7 @@ self.onmessage = async ({ data }) => {
     if (previous && (previous.cols !== current.cols || previous.rows !== current.rows)) clear()
     const observations = []
     const rejectionReasons = []
+    const trackDiagnostics = []
     let accepted = 0
     let rejected = 0
     const anchorIdentities = new Set(data.anchors.map(({ data: identity }) => identity))
@@ -414,6 +439,7 @@ self.onmessage = async ({ data }) => {
         }
         const outcome = flowTrack(track, current, data.capturedAt)
         if (!outcome.track) {
+          trackDiagnostics.push(trackDiagnostic(identity, track, outcome.reason))
           release(track.points)
           tracks.delete(identity)
           rejected += 1
@@ -428,21 +454,26 @@ self.onmessage = async ({ data }) => {
           updatedAt: outcome.track.updatedAt,
           actionable: outcome.track.confidence >= policy.actionConfidence
             && outcome.track.updatedAt - outcome.track.anchoredAt <= policy.actionAnchorAgeMs,
+          diagnostics: { ...outcome.diagnostics, rejectionReason: null },
         })
+        trackDiagnostics.push(trackDiagnostic(identity, outcome.track))
         accepted += 1
       }
     }
     for (const anchor of data.anchors) {
       const existing = tracks.get(anchor.data)
       release(existing?.points)
-      const points = seedFeatures(current, anchor)
-      if (points.rows >= 8) {
+      const seeded = seedFeatures(current, anchor)
+      if (seeded.points.rows >= policy.minSurvivors) {
         tracks.set(anchor.data, {
-          detection: anchor, points, anchoredAt: data.anchorTimes[anchor.data] ?? data.capturedAt,
+          detection: anchor, points: seeded.points, cells: seeded.cells,
+          membership: seeded.membership,
+          anchoredAt: data.anchorTimes[anchor.data] ?? data.capturedAt,
           updatedAt: data.capturedAt, confidence: 1,
         })
       } else {
-        points.delete()
+        trackDiagnostics.push(trackDiagnostic(anchor.data, { points: seeded.points }, 'seed-insufficient-features'))
+        seeded.points.delete()
         tracks.delete(anchor.data)
         rejected += 1
         rejectionReasons.push('seed-insufficient-features')
@@ -469,6 +500,7 @@ self.onmessage = async ({ data }) => {
         accepted: Math.max(0, accepted),
         rejected,
         rejectionReasons: [...new Set(rejectionReasons)].slice(-4),
+        tracks: trackDiagnostics,
       },
     })
   } catch (error) {
