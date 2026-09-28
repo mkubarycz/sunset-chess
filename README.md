@@ -21,7 +21,7 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
   (when supported) and synchronized bounded JSON telemetry
 - Persisted player QR producer with 2-inch card and 0.9-inch sticker print modes
 - Reusable ActionZones for top-corner check-in and lane-aware per-player
-  Win/Draw/Lose choices, with motion-tolerant accumulated two-second holds and
+  Win/Draw/Lose choices, with motion-tolerant accumulated 1.5-second holds and
   bounded DOM-only progress updates
 - Friendly player labels while retaining support for arbitrary QR strings
 - Persistent players and chess games through a local MCP endpoint
@@ -249,14 +249,19 @@ ActionZones share one typed model and renderer across all camera interactions:
 stable ID, semantic action, mirrored screen lane, responsive rectangle, copy,
 occupant, status (including paused), hold duration/progress,
 accessibility, and reset/completion
-identity. Check-in uses mirrored fixed, inset squares in the preview. Their sides are 42% of the preview's shortest
-dimension, clamped to 130–190 CSS pixels, with a 4% inset clamped to 12–20
-pixels. They render only while at least one valid player QR is present; an
+identity. Check-in uses mirrored fixed, inset squares in the preview. Their preferred
+sides are 42% of the preview's shortest dimension, clamped to 130–190 CSS pixels.
+Both lanes target an 11% stage-width horizontal inset clamped to 32–112 pixels;
+narrow stages reduce the square only when needed to preserve a 16-pixel lane gap.
+Their upper inset targets 8% of stage height, clamped to 12–48 pixels, with
+very-short-stage fit protection. Moving the targets toward the optical center makes
+camera optics and QR detection more reliable while preserving recognizable
+upper-left and upper-right placement. They render only while at least one valid player QR is present; an
 empty stage instead says “Scan your chess piece to log in”. Only a valid
 player QR whose mapped center is inside its lane's square can occupy it. Once occupied,
 the center may move within an exit boundary expanded by 20% of the square (at least
 18 CSS pixels); new occupants must still enter the original square. Fresh decoded or
-accepted high-confidence visual evidence accumulates toward the two-second hold.
+accepted high-confidence visual evidence accumulates toward the 1.5-second hold.
 A brief decode miss with weaker evidence keeps
 the zone, name, and game context mounted through the
 bounded visual-presence horizon and pauses the hold for up to 650 ms without a
@@ -276,11 +281,15 @@ players are present, both lanes' Win, Draw, and Lose zones remain visibly
 disabled.
 When both players from the same fully seated game are present in
 opposite lanes, each player's own lane receives vertically stacked square Win,
-Draw, and Lose ActionZones. The stack is inset 12–20 CSS pixels from its outer
-preview edge and scales down to a tested 32-pixel minimum for very short stages;
-the centered game card remains clear. Win + Lose or Lose + Win records a
+Draw, and Lose ActionZones. Each stack targets the shared 11%-of-stage-width
+inset (32–112 pixels), then moves outward or scales down only as needed to preserve
+the centered game card, modeled as a 15%-of-stage half-width clamped to 75–140
+pixels, plus a 2.5%-of-stage safety gap clamped to 6–16 pixels. This central-safe
+positioning improves optical/detection reliability without overlapping the card,
+the opposite lane, or stage bounds, including narrow and very short stages.
+Win + Lose or Lose + Win records a
 decisive result by seat, while Draw + Draw records `1/2-1/2`. Every other pair
-is an explicit conflict. Valid pairs share exactly one accumulated two-second timer with both detections
+is an explicit conflict. Valid pairs share exactly one accumulated 1.5-second timer with both detections
 strictly authoritative. Missing authority pauses progress for at most 450 ms and
 re-acquisition resumes it, but submission is possible only on a currently authoritative
 frame. The displayed preview is
@@ -356,8 +365,8 @@ The restart action always creates a fresh scanner session. For physical-camera
 verification, confirm the inset upper-left square is mirrored correctly; inside-only
 single-card check-in and stable selection when two cards overlap the target;
 the centered game card and opposite-lane waiting copy; each player's square,
-outer-edge Win/Draw/Lose choices; every invalid pair; Draw + Draw; both decisive
-mappings; exact two-second simultaneous result
+inward Win/Draw/Lose choices; every invalid pair; Draw + Draw; both decisive
+mappings; exact 1.5-second simultaneous result
 hold with short authority gaps and natural hand wiggle; reset after retention,
 choice conflicts, lane changes, and camera restart;
 post-result move-away/re-entry; and one request/animation per completion. Also verify

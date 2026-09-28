@@ -1,7 +1,17 @@
 import type { OngoingGame } from './GameCard'
 import type { Point, QrDetection } from './scanner'
 
-export const ACTION_HOLD_MS = 2_000
+export const ACTION_HOLD_MS = 1_500
+export const ACTION_ZONE_HORIZONTAL_INSET_RATIO = .11
+export const ACTION_ZONE_HORIZONTAL_INSET_MIN_PX = 32
+export const ACTION_ZONE_HORIZONTAL_INSET_MAX_PX = 112
+export const ACTION_ZONE_MIN_LANE_GAP_PX = 16
+export const CHECK_IN_VERTICAL_INSET_RATIO = .08
+export const CHECK_IN_VERTICAL_INSET_MIN_PX = 12
+export const CHECK_IN_VERTICAL_INSET_MAX_PX = 48
+export const RESULT_CARD_HALF_WIDTH_RATIO = .15
+export const RESULT_CARD_HALF_WIDTH_MIN_PX = 75
+export const RESULT_CARD_HALF_WIDTH_MAX_PX = 140
 export const LANE_HYSTERESIS_RATIO = .08
 export const REENTRY_DEBOUNCE_MS = 350
 export const CHECK_IN_HOLD_RETENTION_MS = 650
@@ -176,6 +186,18 @@ export function expandRect(rect: Rect, ratio: number, minimumPx: number): Rect {
   }
 }
 
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, value))
+}
+
+export function actionZoneHorizontalInset(width: number): number {
+  return clamp(
+    width * ACTION_ZONE_HORIZONTAL_INSET_RATIO,
+    ACTION_ZONE_HORIZONTAL_INSET_MIN_PX,
+    ACTION_ZONE_HORIZONTAL_INSET_MAX_PX,
+  )
+}
+
 export function screenLane(point: Point, width: number): ActionZoneLane {
   return point.x < width / 2 ? 'left' : 'right'
 }
@@ -334,11 +356,28 @@ export function checkInZoneRect(
   lane: ActionZoneLane = 'left',
 ): Rect {
   const shortestSide = Math.min(width, height)
-  const inset = Math.min(20, Math.max(12, shortestSide * .04))
-  const size = Math.min(190, Math.max(130, shortestSide * .42))
+  const targetInset = actionZoneHorizontalInset(width)
+  const minimumSize = Math.min(48, Math.max(0, width / 2 - ACTION_ZONE_MIN_LANE_GAP_PX))
+  const inset = Math.max(6, Math.min(
+    targetInset,
+    (width - minimumSize * 2 - ACTION_ZONE_MIN_LANE_GAP_PX) / 2,
+  ))
+  const targetVerticalInset = clamp(
+    height * CHECK_IN_VERTICAL_INSET_RATIO,
+    CHECK_IN_VERTICAL_INSET_MIN_PX,
+    CHECK_IN_VERTICAL_INSET_MAX_PX,
+  )
+  const verticalInset = Math.max(6, Math.min(
+    targetVerticalInset,
+    height / 2 - 48 - 6,
+  ))
+  const preferredSize = clamp(shortestSide * .42, 130, 190)
+  const horizontalFit = Math.max(0, (width - inset * 2 - ACTION_ZONE_MIN_LANE_GAP_PX) / 2)
+  const verticalFit = Math.max(0, height / 2 - verticalInset - 6)
+  const size = Math.min(preferredSize, horizontalFit, verticalFit)
   return {
     x: lane === 'left' ? inset : width - inset - size,
-    y: inset,
+    y: verticalInset,
     width: size,
     height: size,
   }
@@ -450,7 +489,7 @@ export function updateCheckInZones(
         instructions: laneOccupant
           ? blocked
             ? 'Move QR away, then re-enter to check in'
-            : hold.paused ? 'Hold paused — keep the same piece nearby' : 'Hold for 2 seconds'
+            : hold.paused ? 'Hold paused — keep the same piece nearby' : 'Hold for 1.5 seconds'
           : 'Place player QR here',
         occupant: laneOccupant,
         status: laneOccupant
@@ -533,13 +572,31 @@ export function resultZoneRect(
   width: number,
   height: number,
 ): Rect {
-  const inset = Math.max(12, Math.min(20, width * .025))
+  const targetInset = actionZoneHorizontalInset(width)
   const gap = Math.max(6, Math.min(10, height * .02))
-  const availableHeight = Math.max(0, height - inset * 2 - gap * 2)
+  const verticalInset = Math.max(12, Math.min(20, height * .04))
+  const availableHeight = Math.max(0, height - verticalInset * 2 - gap * 2)
   const preferredSide = Math.max(48, width * .18)
-  const side = Math.max(0, Math.min(112, preferredSide, availableHeight / 3))
+  const cardHalfWidth = Math.min(
+    width / 2,
+    clamp(
+      width * RESULT_CARD_HALF_WIDTH_RATIO,
+      RESULT_CARD_HALF_WIDTH_MIN_PX,
+      RESULT_CARD_HALF_WIDTH_MAX_PX,
+    ),
+  )
+  const cardGap = clamp(width * .025, 6, 16)
+  const horizontalCapacity = Math.max(0, width / 2 - cardHalfWidth - cardGap - 6)
+  const side = Math.max(0, Math.min(
+    112,
+    preferredSide,
+    availableHeight / 3,
+    horizontalCapacity,
+  ))
+  const maximumInset = Math.max(0, width / 2 - cardHalfWidth - cardGap - side)
+  const inset = Math.max(0, Math.min(targetInset, maximumInset))
   const stackHeight = side * 3 + gap * 2
-  const y = Math.max(inset, (height - stackHeight) / 2)
+  const y = Math.max(verticalInset, (height - stackHeight) / 2)
   const index = (['winner', 'draw', 'loser'] as const).indexOf(action)
   return {
     x: lane === 'left' ? inset : width - inset - side,

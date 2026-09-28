@@ -51,17 +51,17 @@ const player = (playerId: number, x: number, y = 150, name = `P${playerId}`): Pl
 })
 
 describe('generic ActionZone holds and lane assignment', () => {
-  it('holds for exactly two seconds, completes once, and resets on assignment loss/change', () => {
+  it('holds for exactly 1.5 seconds, completes once, and resets on assignment loss/change', () => {
     let update = updateHold(emptyHoldState(), 'a', 100)
     expect(update.progress).toBe(0)
-    update = updateHold(update.state, 'a', 2_099)
+    update = updateHold(update.state, 'a', 1_599)
     expect(update.completedNow).toBe(false)
-    update = updateHold(update.state, 'a', 2_100)
+    update = updateHold(update.state, 'a', 1_600)
     expect(update.completedNow).toBe(true)
-    expect(updateHold(update.state, 'a', 2_500).completedNow).toBe(false)
-    expect(updateHold(update.state, null, 2_501).state).toEqual(emptyHoldState())
-    expect(updateHold(update.state, 'b', 2_501).progress).toBe(0)
-    expect(ACTION_HOLD_MS).toBe(2_000)
+    expect(updateHold(update.state, 'a', 2_000).completedNow).toBe(false)
+    expect(updateHold(update.state, null, 2_001).state).toEqual(emptyHoldState())
+    expect(updateHold(update.state, 'b', 2_001).progress).toBe(0)
+    expect(ACTION_HOLD_MS).toBe(1_500)
   })
 
   it('accumulates qualified time, pauses a brief gap, and only completes while qualified', () => {
@@ -143,20 +143,42 @@ describe('generic ActionZone holds and lane assignment', () => {
 })
 
 describe('check-in ActionZones', () => {
-  it('uses an inset upper-left square with bounded responsive dimensions', () => {
+  it('uses central-safe responsive upper-lane squares', () => {
     expect(checkInZoneRect(960, 540)).toEqual({
-      x: 20, y: 20, width: 190, height: 190,
+      x: 105.6, y: 43.2, width: 190, height: 190,
     })
     expect(checkInZoneRect(320, 480)).toEqual({
-      x: 12.8, y: 12.8, width: 134.4, height: 134.4,
+      x: 35.2, y: 38.4, width: 116.8, height: 116.8,
     })
     expect(checkInZoneRect(400, 300)).toEqual({
-      x: 12, y: 12, width: 130, height: 130,
+      x: 44, y: 24, width: 120, height: 120,
     })
-    expect(checkInZoneRect(400, 300).y + 130).toBeLessThan(300 / 2)
+    expect(checkInZoneRect(400, 300).y + 120).toBeLessThan(300 / 2)
     expect(checkInZoneRect(400, 300, 'right')).toEqual({
-      x: 258, y: 12, width: 130, height: 130,
+      x: 236, y: 24, width: 120, height: 120,
     })
+    expect(checkInZoneRect(960, 120)).toEqual({
+      x: 105.6, y: 6, width: 48, height: 48,
+    })
+  })
+
+  it.each([
+    [960, 540],
+    [400, 300],
+    [320, 480],
+    [960, 120],
+    [220, 160],
+  ])('keeps check-in lanes separate and in bounds at %d×%d', (width, height) => {
+    const left = checkInZoneRect(width, height, 'left')
+    const right = checkInZoneRect(width, height, 'right')
+    expect(left.x).toBeGreaterThan(20)
+    expect(right.x + right.width).toBeLessThan(width - 20)
+    expect(left.x + left.width).toBeLessThanOrEqual(width / 2)
+    expect(right.x).toBeGreaterThanOrEqual(width / 2)
+    expect(right.x - left.x - left.width).toBeGreaterThanOrEqual(16)
+    expect(left.y).toBeGreaterThanOrEqual(6)
+    expect(left.y + left.height).toBeLessThanOrEqual(height / 2)
+    expect(right.x + right.width).toBeLessThanOrEqual(width)
   })
 
   it('only starts and completes the exact hold for a center inside the square', () => {
@@ -174,9 +196,11 @@ describe('check-in ActionZones', () => {
     const inside = player(1000, 60, 60)
     update = updateCheckInZones(update.state, [outside, inside], 400, 300, 100)
     expect(update.zones[0].occupant?.playerId).toBe(1000)
-    update = updateCheckInZones(update.state, [inside], 400, 300, 2_099)
+    expect(update.zones[0].instructions).toBe('Hold for 1.5 seconds')
+    expect(update.zones[0].holdDurationMs).toBe(1_500)
+    update = updateCheckInZones(update.state, [inside], 400, 300, 1_599)
     expect(update.completed).toEqual([])
-    update = updateCheckInZones(update.state, [inside], 400, 300, 2_100)
+    update = updateCheckInZones(update.state, [inside], 400, 300, 1_600)
     expect(update.completed.map(({ playerId }) => playerId)).toEqual([1000])
   })
 
@@ -241,21 +265,21 @@ describe('check-in ActionZones', () => {
       { freshPlayerIds: new Set([1000]) },
     )
     update = updateCheckInZones(
-      update.state, [player(1000, 158, 60)], 400, 300, 500,
+      update.state, [player(1000, 187, 60)], 400, 300, 500,
       { freshPlayerIds: new Set([1000]) },
     )
     expect(update.zones[0]).toMatchObject({
       status: 'holding',
-      progress: .25,
+      progress: 1 / 3,
       occupant: { playerId: 1000 },
     })
     update = updateCheckInZones(
-      update.state, [player(1000, 180, 60)], 400, 300, 600,
+      update.state, [player(1000, 190, 60)], 400, 300, 600,
       { freshPlayerIds: new Set([1000]) },
     )
-    expect(update.zones[0]).toMatchObject({ status: 'paused', progress: .25 })
+    expect(update.zones[0]).toMatchObject({ status: 'paused', progress: 1 / 3 })
     update = updateCheckInZones(
-      update.state, [player(1000, 180, 60)], 400, 300, 1_151,
+      update.state, [player(1000, 190, 60)], 400, 300, 1_151,
       { freshPlayerIds: new Set([1000]) },
     )
     expect(update.zones[0]).toMatchObject({ status: 'idle', progress: 0 })
@@ -280,7 +304,7 @@ describe('check-in ActionZones', () => {
   it('keeps the current occupant stable while another code moves nearer', () => {
     let update = updateCheckInZones(
       emptyCheckInState(),
-      [player(1001, 55, 55), player(1000, 120, 120)],
+      [player(1001, 75, 75), player(1000, 150, 130)],
       400,
       300,
       0,
@@ -294,7 +318,7 @@ describe('check-in ActionZones', () => {
       1_000,
     )
     expect(update.zones[0].occupant?.playerId).toBe(1001)
-    expect(update.zones[0].progress).toBe(.5)
+    expect(update.zones[0].progress).toBeCloseTo(2 / 3)
 
     update = updateCheckInZones(
       update.state,
@@ -343,22 +367,41 @@ describe('game context and per-lane square results', () => {
     )).toBeNull()
   })
 
-  it('places equal Win/Draw/Lose squares at responsive outer edges', () => {
-    for (const [width, height] of [[960, 540], [320, 280], [320, 140]]) {
+  it('places equal Win/Draw/Lose squares inward with card and lane clearance', () => {
+    for (const [width, height] of [
+      [960, 540], [400, 300], [320, 480], [320, 140], [220, 100],
+    ]) {
       const rectangles = (['winner', 'draw', 'loser'] as const)
         .map((choice) => resultZoneRect('left', choice, width, height))
       expect(rectangles.every((rect) => rect.width === rect.height)).toBe(true)
-      expect(rectangles[0].x).toBeGreaterThanOrEqual(12)
-      expect(rectangles[0].x).toBeLessThanOrEqual(20)
+      if (width >= 400) expect(rectangles[0].x).toBeGreaterThan(20)
+      else if (width >= 320) expect(rectangles[0].x).toBeGreaterThan(12)
       expect(rectangles[0].y).toBeLessThan(rectangles[1].y)
       expect(rectangles[1].y).toBeLessThan(rectangles[2].y)
       expect(rectangles[2].y + rectangles[2].height).toBeLessThanOrEqual(height)
       const right = resultZoneRect('right', 'draw', width, height)
       expect(width - right.x - right.width).toBeCloseTo(rectangles[0].x)
-      const centeredCard = { left: width / 2 - 63, right: width / 2 + 63 }
-      expect(rectangles[0].x + rectangles[0].width).toBeLessThan(centeredCard.left)
-      expect(right.x).toBeGreaterThan(centeredCard.right)
+      const cardHalfWidth = Math.min(width / 2, Math.min(140, Math.max(75, width * .15)))
+      const centeredCard = {
+        left: width / 2 - cardHalfWidth,
+        right: width / 2 + cardHalfWidth,
+      }
+      expect(rectangles[0].x + rectangles[0].width).toBeLessThanOrEqual(centeredCard.left - 6)
+      expect(right.x).toBeGreaterThanOrEqual(centeredCard.right + 6)
+      expect(right.x - rectangles[0].x - rectangles[0].width).toBeGreaterThan(0)
+      expect(right.x + right.width).toBeLessThanOrEqual(width)
     }
+    expect(resultZoneRect('left', 'winner', 960, 540)).toEqual({
+      x: 105.6, y: 92, width: 112, height: 112,
+    })
+    expect(resultZoneRect('left', 'winner', 400, 300)).toEqual({
+      x: 43, y: 36, width: 72, height: 72,
+    })
+    const narrowDraw = resultZoneRect('right', 'draw', 320, 480)
+    expect(narrowDraw.x).toBeCloseTo(243)
+    expect(narrowDraw.y).toBeCloseTo(211.2)
+    expect(narrowDraw.width).toBeCloseTo(57.6)
+    expect(narrowDraw.height).toBeCloseTo(57.6)
     expect(resultZoneRect('left', 'winner', 960, 540).width).toBe(112)
     expect(resultZoneRect('left', 'winner', 320, 140).width).toBeCloseTo(34.67, 1)
     const tiny = (['winner', 'draw', 'loser'] as const)
@@ -511,8 +554,8 @@ describe('game context and per-lane square results', () => {
     const engaged = createResultZones(context, 400, 300, hold, evaluation)
       .filter(({ occupant }) => occupant)
     expect(engaged).toHaveLength(2)
-    expect(engaged.map(({ progress }) => progress)).toEqual([.5, .5])
-    expect(updateHold(hold.state, evaluation.assignment!.key, 2_100).completedNow).toBe(true)
+    expect(engaged.map(({ progress }) => progress)).toEqual([2 / 3, 2 / 3])
+    expect(updateHold(hold.state, evaluation.assignment!.key, 1_600).completedNow).toBe(true)
   })
 
   it('resets the pair hold on coasting/loss, game, lane, or choice changes', () => {

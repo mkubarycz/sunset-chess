@@ -91,11 +91,11 @@ describe('QR scanner helpers', () => {
   it.each([
     {
       video: { width: 1920, height: 1080 },
-      sourceCenter: { x: 1664.492308, y: 337.292308 },
+      sourceCenter: { x: 1514.953846, y: 337.292308 },
     },
     {
       video: { width: 400, height: 300 },
-      sourceCenter: { x: 369.6, y: 101.2 },
+      sourceCenter: { x: 333.6, y: 101.2 },
     },
   ])('maps $video.width×$video.height QR centers into CSS-sized result zones', ({
     video,
@@ -114,8 +114,8 @@ describe('QR scanner helpers', () => {
     const mapped = mapDetectionToPreview(sourceDetection, video, viewport)
     const zone = resultZoneRect('left', 'winner', viewport.width, viewport.height)
 
-    expect(zone).toEqual({ x: 20, y: 147, width: 112, height: 112 })
-    expect(detectionCenter(mapped).x).toBeCloseTo(76, 3)
+    expect(zone).toEqual({ x: 110, y: 147, width: 112, height: 112 })
+    expect(detectionCenter(mapped).x).toBeCloseTo(166, 3)
     expect(detectionCenter(mapped).y).toBeCloseTo(203, 3)
     expect(pointInRect(detectionCenter(mapped), zone)).toBe(true)
   })

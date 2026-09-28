@@ -1100,8 +1100,8 @@ describe('scanner and player producer', () => {
     const detection = {
       rawValue: 'SC1:YA',
       cornerPoints: [
-        { x: 350, y: 30 }, { x: 370, y: 30 },
-        { x: 370, y: 50 }, { x: 350, y: 50 },
+        { x: 340, y: 30 }, { x: 360, y: 30 },
+        { x: 360, y: 50 }, { x: 340, y: 50 },
       ],
     }
     render(<App
@@ -1151,8 +1151,8 @@ describe('scanner and player producer', () => {
       nativeDetectorFactory={() => ({ detect: vi.fn().mockResolvedValue([{
         rawValue: 'SC1:YA',
         cornerPoints: [
-          { x: 350, y: 30 }, { x: 370, y: 30 },
-          { x: 370, y: 50 }, { x: 350, y: 50 },
+          { x: 340, y: 30 }, { x: 360, y: 30 },
+          { x: 360, y: 50 }, { x: 340, y: 50 },
         ],
       }]) })}
       resolvePlayer={resolvePlayer}
@@ -1179,8 +1179,8 @@ describe('scanner and player producer', () => {
       nativeDetectorFactory={() => ({ detect: vi.fn().mockResolvedValue([{
         rawValue: 'SC1:YA',
         cornerPoints: [
-          { x: 350, y: 30 }, { x: 370, y: 30 },
-          { x: 370, y: 50 }, { x: 350, y: 50 },
+          { x: 340, y: 30 }, { x: 360, y: 30 },
+          { x: 360, y: 50 }, { x: 340, y: 50 },
         ],
       }]) })}
       resolvePlayer={vi.fn().mockRejectedValue(new Error('Player 1234 was not found.'))}
@@ -1254,8 +1254,8 @@ describe('scanner and player producer', () => {
       readyState: { configurable: true, value: HTMLMediaElement.HAVE_CURRENT_DATA },
     })
     const location = {
-      topLeftCorner: { x: 350, y: 30 }, topRightCorner: { x: 370, y: 30 },
-      bottomRightCorner: { x: 370, y: 50 }, bottomLeftCorner: { x: 350, y: 50 },
+      topLeftCorner: { x: 340, y: 30 }, topRightCorner: { x: 360, y: 30 },
+      bottomRightCorner: { x: 360, y: 50 }, bottomLeftCorner: { x: 340, y: 50 },
     }
     const payload = '{"v":1,"kind":"player","playerId":1234,"name":"Ada"}'
     const scanDetection = async (time: number, detection: QrDetection | null) => {
@@ -1273,12 +1273,13 @@ describe('scanner and player producer', () => {
     expect(await screen.findByText('Waiting for an opponent at Table 1')).toBeInTheDocument()
     expect(checkInPlayer).toHaveBeenCalledTimes(1)
     await waitFor(() => expect(fetchGames).toHaveBeenCalledTimes(2))
-    let cards = screen.getAllByRole('article', { name: /Table \d:/ })
+    const ongoingGames = screen.getByRole('region', { name: 'Ongoing games' })
+    let cards = within(ongoingGames).getAllByRole('article', { name: /Table \d:/ })
     expect(cards.map((card) => card.getAttribute('data-game-id'))).toEqual(['1', '2'])
     expect(cards[0]).toHaveClass('featured-game')
 
     await act(async () => resolveRefresh?.([otherGame, checkedInGame]))
-    cards = screen.getAllByRole('article', { name: /Table \d:/ })
+    cards = within(ongoingGames).getAllByRole('article', { name: /Table \d:/ })
     expect(cards.map((card) => card.getAttribute('data-game-id'))).toEqual(['1', '2'])
     await scanDetection(12_600, { data: payload, location })
     expect(checkInPlayer).toHaveBeenCalledTimes(1)
@@ -1328,8 +1329,8 @@ describe('scanner and player producer', () => {
       detect: vi.fn().mockResolvedValue([{
         rawValue: '{"v":1,"kind":"player","playerId":1234,"name":"Ada"}',
         cornerPoints: [
-          { x: 350, y: 30 }, { x: 370, y: 30 },
-          { x: 370, y: 50 }, { x: 350, y: 50 },
+          { x: 340, y: 30 }, { x: 360, y: 30 },
+          { x: 360, y: 50 }, { x: 340, y: 50 },
         ],
       }]),
     }
@@ -1406,8 +1407,8 @@ describe('scanner and player producer', () => {
       detect: vi.fn().mockResolvedValue([{
         rawValue: '{"v":1,"kind":"player","playerId":1234,"name":"Ada"}',
         cornerPoints: [
-          { x: 350, y: 30 }, { x: 370, y: 30 },
-          { x: 370, y: 50 }, { x: 350, y: 50 },
+          { x: 340, y: 30 }, { x: 360, y: 30 },
+          { x: 360, y: 50 }, { x: 340, y: 50 },
         ],
       }]),
     }
