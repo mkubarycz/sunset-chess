@@ -71,6 +71,24 @@ describe('QR scanner helpers', () => {
   })
 
   it.each([
+    { direction: 'right', from: 100, to: 140, expectedPreviewSign: -1 },
+    { direction: 'left', from: 140, to: 100, expectedPreviewSign: 1 },
+  ])('keeps source motion $direction unmirrored and mirrors preview exactly once', ({
+    from,
+    to,
+    expectedPreviewSign,
+  }) => {
+    const video = { width: 640, height: 480 }
+    const viewport = { width: 640, height: 480 }
+    const sourceDelta = to - from
+    const previewFrom = mirroredCoverPoint({ x: from, y: 100 }, video, viewport).x
+    const previewTo = mirroredCoverPoint({ x: to, y: 100 }, video, viewport).x
+    expect(Math.sign(sourceDelta)).toBe(-expectedPreviewSign)
+    expect(Math.sign(previewTo - previewFrom)).toBe(expectedPreviewSign)
+    expect(Math.abs(previewTo - previewFrom)).toBe(Math.abs(sourceDelta))
+  })
+
+  it.each([
     {
       video: { width: 1920, height: 1080 },
       sourceCenter: { x: 1664.492308, y: 337.292308 },

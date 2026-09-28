@@ -1,5 +1,6 @@
 import type { QrDetection } from './scanner'
 import type { OpticalFlowRequest, OpticalFlowResponse } from './opticalFlowProtocol'
+import type { OpticalReplayAnchor } from './opticalFlowProtocol'
 import type { VisualTrackObservation } from './visualObjectTracker'
 import { OPTICAL_FLOW_POLICY } from './opticalFlowPolicy'
 import type { OpticalFlowDiagnostics } from './opticalFlowProtocol'
@@ -21,6 +22,13 @@ type Pending =
     }
   | {
       kind: 'frame'
+      id: number
+      resolve: (result: OpticalFlowResult) => void
+      reject: (error: Error) => void
+      timer: ReturnType<typeof setTimeout>
+    }
+  | {
+      kind: 'reanchor'
       id: number
       resolve: (result: OpticalFlowResult) => void
       reject: (error: Error) => void
@@ -92,6 +100,26 @@ export class OpticalFlowTracker {
     return promise
   }
 
+  reanchor(
+    anchors: OpticalReplayAnchor[],
+    generation: number,
+  ): Promise<OpticalFlowResult> | null {
+    if (!this.ready || this.pending || this.stopped || this.failure || anchors.length === 0) {
+      return null
+    }
+    const id = this.nextId++
+    const promise = new Promise<OpticalFlowResult>((resolve, reject) => {
+      const timer = setTimeout(
+        () => this.fail(new Error('OpenCV reanchor replay timed out')),
+        this.timeoutMs,
+      )
+      this.pending = { kind: 'reanchor', id, resolve, reject, timer }
+    })
+    const transfers = anchors.flatMap(({ frames }) => frames.map(({ pixels }) => pixels))
+    this.post({ type: 'reanchor', id, generation, anchors }, transfers)
+    return promise
+  }
+
   clear(generation: number): void {
     if (!this.stopped) this.post({ type: 'clear', generation })
   }
@@ -124,7 +152,10 @@ export class OpticalFlowTracker {
     } else if (data.type === 'ready' && pending.kind === 'init') {
       this.ready = true
       pending.resolve()
-    } else if (data.type === 'result' && pending.kind === 'frame') {
+    } else if (
+      data.type === 'result'
+      && (pending.kind === 'frame' || pending.kind === 'reanchor')
+    ) {
       pending.resolve(data)
     } else {
       this.fail(new Error('OpenCV tracker returned an invalid response'), pending)

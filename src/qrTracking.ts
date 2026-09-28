@@ -38,7 +38,6 @@ export interface TrackingSample {
 export { TRACKING_COAST_MS, TRACKING_BRIDGE_MAX_ANCHOR_AGE_MS }
 const SMOOTHING_TIME_MS = 45
 const MAX_PREDICTION_MS = 90
-const MAX_SPEED_PX_PER_MS = 2
 
 export function emptyTrackingState(): TrackingState {
   return {
@@ -64,14 +63,6 @@ function corners(detection: QrDetection): Point[] {
   ]
 }
 
-function center(detection: QrDetection): Point {
-  const points = corners(detection)
-  return {
-    x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
-    y: points.reduce((sum, point) => sum + point.y, 0) / points.length,
-  }
-}
-
 function mapDetection(detection: QrDetection, map: (point: Point) => Point): QrDetection {
   return {
     ...detection,
@@ -89,39 +80,11 @@ export function observeDetection(
   detection: QrDetection,
   now: number,
 ): TrackingState {
-  const gap = now - state.decodedAt
-  if (!state.target || !state.rendered || gap > TRACKING_BRIDGE_MAX_ANCHOR_AGE_MS) {
-    return {
-      decodedAnchor: detection,
-      target: detection,
-      rendered: detection,
-      velocity: { x: 0, y: 0 },
-      decodedAt: now,
-      visualEvidenceAt: now,
-      renderedAt: now,
-      source: 'decoded',
-      confidence: 1,
-      actionable: true,
-    }
-  }
-  const oldCenter = center(state.target)
-  const newCenter = center(detection)
-  const elapsed = Math.max(1, gap)
-  const clamp = (value: number) =>
-    Math.max(-MAX_SPEED_PX_PER_MS, Math.min(MAX_SPEED_PX_PER_MS, value))
   return {
     ...state,
     decodedAnchor: detection,
-    target: detection,
-    velocity: {
-      x: clamp((newCenter.x - oldCenter.x) / elapsed),
-      y: clamp((newCenter.y - oldCenter.y) / elapsed),
-    },
     decodedAt: now,
-    visualEvidenceAt: now,
-    source: 'decoded',
-    confidence: 1,
-    actionable: true,
+    actionable: state.source === 'visual' && state.actionable,
   }
 }
 
@@ -132,10 +95,11 @@ export function observeVisualDetection(
   confidence: number,
   actionable: boolean,
 ): TrackingState {
-  if (!state.target || !state.rendered) return state
   return {
     ...state,
     target: detection,
+    rendered: state.rendered ?? detection,
+    renderedAt: state.renderedAt || now,
     visualEvidenceAt: now,
     source: 'visual',
     confidence,
@@ -158,12 +122,7 @@ export function rejectVisualDetection(state: TrackingState): TrackingState {
 export function sampleTracking(state: TrackingState, now: number): TrackingSample {
   const evidenceAge = now - state.visualEvidenceAt
   const decodedAge = now - state.decodedAt
-  if (
-    !state.decodedAnchor
-    || !state.target
-    || !state.rendered
-    || decodedAge > TRACKING_BRIDGE_MAX_ANCHOR_AGE_MS
-  ) {
+  if (!state.decodedAnchor || decodedAge > TRACKING_BRIDGE_MAX_ANCHOR_AGE_MS) {
     return {
       state: emptyTrackingState(),
       detection: null,
@@ -179,6 +138,21 @@ export function sampleTracking(state: TrackingState, now: number): TrackingSampl
     }
   }
   const age = Math.max(0, decodedAge)
+  if (!state.target || !state.rendered) {
+    return {
+      state,
+      detection: null,
+      decodedAnchor: state.decodedAnchor,
+      phase: 'lost',
+      source: state.source,
+      confidence: 0,
+      ageMs: age,
+      evidenceAgeMs: Number.POSITIVE_INFINITY,
+      actionable: false,
+      holdQualified: false,
+      expired: false,
+    }
+  }
   const elapsed = Math.max(0, now - state.renderedAt)
   const predictionMs = Math.min(age, MAX_PREDICTION_MS)
   const predicted = mapDetection(state.target, (point) => ({

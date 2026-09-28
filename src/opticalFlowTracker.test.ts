@@ -57,4 +57,42 @@ describe('OpticalFlowTracker worker lifecycle', () => {
     tracker.terminate()
     expect(worker.terminate).toHaveBeenCalledOnce()
   })
+
+  it('prioritizes one bounded chronological reanchor and never queues another request', async () => {
+    const worker = new FakeWorker()
+    const tracker = new OpticalFlowTracker(worker as unknown as Worker, vi.fn())
+    await initialize(tracker, worker)
+    const anchor = {
+      detection: {
+        data: 'a',
+        location: {
+          topLeftCorner: { x: 0, y: 0 }, topRightCorner: { x: 1, y: 0 },
+          bottomRightCorner: { x: 1, y: 1 }, bottomLeftCorner: { x: 0, y: 1 },
+        },
+      },
+      anchoredAt: 100,
+      frames: [100, 120, 140].map((capturedAt) => ({
+        width: 2, height: 2, capturedAt, pixels: new ArrayBuffer(16),
+      })),
+    }
+    const pending = tracker.reanchor([anchor], 3)
+    expect(tracker.process(new ArrayBuffer(16), 2, 2, 160, 3)).toBeNull()
+    const request = worker.postMessage.mock.calls.at(-1)![0] as OpticalFlowRequest
+    if (request.type !== 'reanchor') throw new Error('expected reanchor request')
+    expect(request).toMatchObject({
+      type: 'reanchor',
+      anchors: [{ frames: [
+        { capturedAt: 100 }, { capturedAt: 120 }, { capturedAt: 140 },
+      ] }],
+    })
+    worker.respond({
+      type: 'result',
+      id: request.id,
+      generation: 2,
+      observations: [],
+      elapsedMs: 3,
+      diagnostics: { accepted: 0, rejected: 1, rejectionReasons: ['stale-generation'] },
+    })
+    await expect(pending).resolves.toMatchObject({ generation: 2 })
+  })
 })

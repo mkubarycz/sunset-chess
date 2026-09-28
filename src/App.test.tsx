@@ -103,7 +103,13 @@ function setupCamera() {
     closePath: vi.fn(),
     stroke: vi.fn(),
     getImageData: vi.fn((_x: number, _y: number, width: number, height: number) => ({
-      data: new Uint8ClampedArray(width * height * 4),
+      data: Uint8ClampedArray.from(
+        { length: width * height * 4 },
+        (_, index) => index % 4 === 3
+          ? 255
+          : (((Math.floor(index / 4) % width) * 17
+            + Math.floor(Math.floor(index / 4) / width) * 29) % 256),
+      ),
       width,
       height,
     })),
@@ -489,11 +495,11 @@ describe('scanner and player producer', () => {
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Scanning for a QR code'))
     act(() => camera.callbacks.shift()?.(performance.now() + 400))
     const request = worker.postMessage.mock.calls[0][0] as DecodeRequest
-    expect(camera.context.drawImage).toHaveBeenCalledTimes(1)
+    expect(camera.context.drawImage).toHaveBeenCalledTimes(2)
 
     act(() => camera.callbacks.shift()?.(performance.now() + 500))
-    expect(camera.context.drawImage).toHaveBeenCalledTimes(2)
-    expect(camera.context.drawImage).toHaveBeenLastCalledWith(video, 0, 0, 640, 360)
+    expect(camera.context.drawImage).toHaveBeenCalledTimes(3)
+    expect(camera.context.drawImage).toHaveBeenCalledWith(video, 0, 0, 640, 360)
 
     act(() => worker.respond({
       type: 'result',
@@ -503,10 +509,10 @@ describe('scanner and player producer', () => {
       elapsedMs: 3,
     }))
     act(() => camera.callbacks.shift()?.(performance.now() + 510))
-    expect(camera.context.drawImage).toHaveBeenLastCalledWith(video, 0, 0, 640, 360)
+    expect(camera.context.drawImage).toHaveBeenCalledWith(video, 0, 0, 640, 360)
   })
 
-  it('seeds the first decode into the next exact tracking frame and never queues optical frames', async () => {
+  it('registers the first decode to its source frame, replays it, and never queues optical frames', async () => {
     const camera = setupCamera()
     const decoder = new FakeWorker()
     const optical = new FakeOpticalWorker()
@@ -542,41 +548,40 @@ describe('scanner and player producer', () => {
     }))
 
     act(() => camera.callbacks.shift()?.(performance.now() + 500))
-    const firstFrame = optical.postMessage.mock.calls
+    const reanchor = optical.postMessage.mock.calls
       .map(([request]) => request as OpticalFlowRequest)
-      .find((request) => request.type === 'frame')
-    if (!firstFrame || firstFrame.type !== 'frame') throw new Error('expected optical frame')
+      .find((request) => request.type === 'reanchor')
+    if (!reanchor || reanchor.type !== 'reanchor') throw new Error('expected optical reanchor')
+    expect(reanchor).toMatchObject({
+      type: 'reanchor',
+      anchors: [{
+        detection: {
+          data: 'first-anchor',
+          location: {
+            topLeftCorner: { x: 320, y: 180 },
+            topRightCorner: { x: 360, y: 180 },
+          },
+        },
+        anchoredAt: decodeCapturedAt,
+        frames: expect.arrayContaining([
+          expect.objectContaining({ capturedAt: decodeCapturedAt, width: 640, height: 360 }),
+        ]),
+      }],
+    })
     act(() => camera.callbacks.shift()?.(performance.now() + 600))
-    expect(optical.postMessage.mock.calls.filter(([request]) => request.type === 'frame'))
+    expect(optical.postMessage.mock.calls.filter(([request]) => request.type === 'reanchor'))
       .toHaveLength(1)
     act(() => optical.respond({
       type: 'result',
-      id: firstFrame.id,
-      generation: firstFrame.generation,
+      id: reanchor.id,
+      generation: reanchor.generation,
       observations: [],
       elapsedMs: 4,
       diagnostics: { accepted: 0, rejected: 0, rejectionReasons: [] },
     }))
     act(() => camera.callbacks.shift()?.(performance.now() + 700))
-    const frame = optical.postMessage.mock.calls
-      .map(([request]) => request as OpticalFlowRequest)
-      .find((request) => request.type === 'frame' && request.anchors.length > 0)
-    expect(frame).toMatchObject({
-      type: 'frame',
-      width: 640,
-      height: 360,
-      anchors: [{
-        data: 'first-anchor',
-        location: {
-          topLeftCorner: { x: 320, y: 180 },
-          topRightCorner: { x: 360, y: 180 },
-        },
-      }],
-      anchorTimes: { 'first-anchor': decodeCapturedAt },
-    })
-
     expect(optical.postMessage.mock.calls.filter(([request]) => request.type === 'frame'))
-      .toHaveLength(2)
+      .toHaveLength(1)
   })
 
   it('reports negotiated camera settings, optional tuning, and opt-in zoom', async () => {
@@ -735,10 +740,9 @@ describe('scanner and player producer', () => {
     expect(screen.getByRole('group', { name: 'Report result for Table 1' })).toBe(resultGroup)
     expect(screen.getByRole('group', { name: 'White, left lane, choose winner' })).toBe(winnerZone)
     expect(screen.queryByText('Reacquiring… actions paused')).not.toBeInTheDocument()
-    expect(winnerZone).toHaveClass('status-paused')
-    expect(within(winnerZone).getByText(/hold paused at .* percent/i)).toBeInTheDocument()
-    expect(within(winnerZone).getByRole('progressbar'))
-      .toHaveAttribute('aria-valuenow', String(progressBeforeGap))
+    expect(winnerZone).toHaveClass('status-holding')
+    expect(Number(within(winnerZone).getByRole('progressbar').getAttribute('aria-valuenow')))
+      .toBeGreaterThanOrEqual(progressBeforeGap)
     expect(finalizeGame).not.toHaveBeenCalled()
 
     detections = visible
@@ -997,7 +1001,7 @@ describe('scanner and player producer', () => {
     expect(screen.queryByRole('group', { name: 'Player check-in action zones' })).not.toBeInTheDocument()
 
     detections = detections.slice(0, 2)
-    for (let index = 0; index < 5; index += 1) {
+    for (let index = 0; index < 7; index += 1) {
       now += 100
       await act(async () => camera.callbacks.shift()?.(now))
     }
@@ -1051,6 +1055,9 @@ describe('scanner and player producer', () => {
     expect(camera.context.clearRect).toHaveBeenLastCalledWith(0, 0, 1000, 650)
 
     act(() => camera.callbacks.shift()?.(performance.now() + 400))
+    if (workers[0].postMessage.mock.calls.length < 2) {
+      act(() => camera.callbacks.shift()?.(performance.now() + 450))
+    }
     const rawRequest = workers[0].postMessage.mock.calls[1][0] as DecodeRequest
     const rawPayload = `<b>${'raw & safe '.repeat(10)}</b>`
     const rawLabel = truncateRawPayload(rawPayload)

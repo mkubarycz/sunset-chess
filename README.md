@@ -75,11 +75,10 @@ TTL, while evidence itself expires after 450 ms without another accepted flow.
 
 If OpenCV fails initialization, lacks required APIs, times out, or fails at
 runtime, diagnostics explicitly switch to the existing bounded normalized-template
-tracker. That fallback uses a 640-pixel maximum frame dimension, 16×16 templates,
-a 6–30 px search radius, 0.9/1.0/1.1 scale candidates, UI confidence ≥0.48,
-ActionZone confidence ≥0.78, the same 650 ms authority ceiling, and the same
-1.6-second hard bridge ceiling. Neither
-tracker creates payload identities: only a decoder can seed or re-anchor one.
+tracker. It follows the same historical registration and chronological replay
+rule; it never seeds delayed geometry directly on a new frame. Failed fallback
+replay leaves only the dashed decoded reference. Neither tracker creates payload
+identities: only a decoder can identify one.
 
 The current-object box disappears after 450 ms without accepted visual evidence;
 the separate decoded anchor may remain as a location reference until its 1.6-second
@@ -106,18 +105,35 @@ capable Apple Silicon Macs naturally high quality without excluding equally
 capable non-Mac systems. Camera acquisition still requests the existing high
 ideals and safely accepts lower negotiated modes.
 
-Decode and tracking are independent single-flight pipelines. A tick that performs
-a full-resolution ZXing/jsQR capture gives that capture priority and skips a
-second main-thread readback, but subsequent ticks continue lower-resolution
-tracking while the decoder worker is busy. Tracking never queues pixel frames.
-Capture cost is measured; work above the 10 ms budget progressively spaces
-tracking captures, capped at a 120 ms interval. Every successful decode leaves a
-bounded identity/coordinate anchor that is scaled into the exact next tracking
-frame before either OpenCV or the fallback processes it, so the first decode
-seeds tracking and tier-size changes cannot mix coordinate spaces. Diagnostics
-report tracking-capture FPS and cost, optical requests/completions,
-accepted/rejected counts and recent rejection reasons, tracker ready/busy state,
-plus source resolution and decoder input dimensions/cadence.
+Decode and tracking are independent single-flight pipelines. Every native dispatch
+registers a tracking-resolution copy on the same video tick; ZXing/jsQR derive
+their copy from the exact unmirrored decoder canvas. Regular tracking captures
+continue independently. Registration history is chronological and bounded to 12
+frames, 650 ms, and 24 MiB (whichever limit is reached first); high-tier
+960×540 RGBA therefore retains 12 frames/about 23.7 MiB, while balanced
+640×360 retains all 12/about 10.5 MiB. Generation, tier, or dimensions changing,
+and camera stop, clear it.
+
+When decoded geometry returns, its own decoder and `capturedAt` remain paired.
+The freshest geometry per identity wins; timestamps are never borrowed from a
+different decoder. The anchor must match an exact/nearest compatible historical
+frame within 24 ms. OpenCV seeds on those historical pixels and replays the
+bounded chronological history to its newest frame before publishing the cyan
+current-object box. Reanchor has priority over the next live frame, is
+single-flight/no-queue, and explicitly resets/reseeds worker tracks from all
+currently registered identities. Missing history, mismatched generation/tier/
+dimensions, excessive latency, ambiguous/crossing tracks, or failed LK validation
+rejects current evidence fail-closed; the historical dashed anchor may remain,
+but cannot advance an ActionZone hold.
+
+History keeps its own pixel buffers and only transferred copies are detached.
+Diagnostics report capture→completion latency, history depth/age/memory,
+registration delta, replay frame count/latency, current visual-evidence age,
+last registration/replay rejection, tracking-capture FPS/cost, optical
+requests/completions, accepted/rejected counts, tracker ready/busy state, source
+resolution, and per-decoder input dimensions/cadence. Source video, decoder
+canvases, history, and LK coordinates stay unmirrored. CSS mirrors the video once,
+and source polygons are mirrored exactly once during preview mapping.
 
 ### Long-range regression fixed
 

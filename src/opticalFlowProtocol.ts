@@ -9,6 +9,19 @@ export interface OpticalFlowDiagnostics {
   rejectionReasons: string[]
 }
 
+export interface OpticalReplayFrame {
+  width: number
+  height: number
+  capturedAt: number
+  pixels: ArrayBuffer
+}
+
+export interface OpticalReplayAnchor {
+  detection: QrDetection
+  anchoredAt: number
+  frames: OpticalReplayFrame[]
+}
+
 export type OpticalFlowRequest =
   | { type: 'init'; id: number; generation: number; policy: OpticalFlowPolicy }
   | {
@@ -21,6 +34,12 @@ export type OpticalFlowRequest =
       pixels: ArrayBuffer
       anchors: QrDetection[]
       anchorTimes: Record<string, number>
+    }
+  | {
+      type: 'reanchor'
+      id: number
+      generation: number
+      anchors: OpticalReplayAnchor[]
     }
   | { type: 'clear'; generation: number }
 

@@ -17,6 +17,18 @@ export interface DecoderInputStats {
   intervalMs?: number
 }
 
+export interface TimedDecoderResult {
+  decoder: DecoderName
+  capturedAt: number
+  detections: readonly QrDetection[]
+}
+
+export interface TimedDetection {
+  decoder: DecoderName
+  capturedAt: number
+  detection: QrDetection
+}
+
 export function workerDecodeDimensions(
   sourceWidth: number,
   sourceHeight: number,
@@ -51,6 +63,29 @@ export function mergeDecoderDetections(
     const current = byPayload.get(detection.data)
     if (!current || polygonArea(detection) > polygonArea(current)) {
       byPayload.set(detection.data, detection)
+    }
+  }
+  return [...byPayload.values()]
+}
+
+export function mergeTimedDecoderDetections(
+  results: readonly TimedDecoderResult[],
+): TimedDetection[] {
+  const byPayload = new Map<string, TimedDetection>()
+  for (const result of results) {
+    for (const detection of result.detections) {
+      const candidate = {
+        decoder: result.decoder,
+        capturedAt: result.capturedAt,
+        detection,
+      }
+      const current = byPayload.get(detection.data)
+      if (
+        !current
+        || candidate.capturedAt > current.capturedAt
+        || (candidate.capturedAt === current.capturedAt
+          && polygonArea(candidate.detection) > polygonArea(current.detection))
+      ) byPayload.set(detection.data, candidate)
     }
   }
   return [...byPayload.values()]

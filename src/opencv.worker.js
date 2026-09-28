@@ -137,7 +137,7 @@ function robustSimilarity(from, to) {
   return refined ? { transform: refined, inlierCount: inliers.length } : null
 }
 
-function flowTrack(track, current, now) {
+function flowTrack(track, current, now, previousFrame = previous) {
   const forward = new cv.Mat()
   const forwardStatus = new cv.Mat()
   const forwardError = new cv.Mat()
@@ -147,8 +147,8 @@ function flowTrack(track, current, now) {
   const win = new cv.Size(31, 31)
   const criteria = new cv.TermCriteria(cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 30, .02)
   try {
-    cv.calcOpticalFlowPyrLK(previous, current, track.points, forward, forwardStatus, forwardError, win, 4, criteria)
-    cv.calcOpticalFlowPyrLK(current, previous, forward, backward, backwardStatus, backwardError, win, 4, criteria)
+    cv.calcOpticalFlowPyrLK(previousFrame, current, track.points, forward, forwardStatus, forwardError, win, 4, criteria)
+    cv.calcOpticalFlowPyrLK(current, previousFrame, forward, backward, backwardStatus, backwardError, win, 4, criteria)
     const from = []
     const to = []
     let totalError = 0
@@ -234,6 +234,110 @@ function rejectAmbiguity(observations) {
         rejected.add(observations[i].detection.data)
         rejected.add(observations[j].detection.data)
       }
+
+      function replayAnchor(item) {
+        if (!item.frames.length) return { observation: null, reason: 'empty-replay' }
+        let prior = null
+        let track = null
+        const reject = (reason) => {
+          release(prior)
+          release(track?.points)
+          return { observation: null, reason }
+        }
+        for (let index = 0; index < item.frames.length; index += 1) {
+            const frame = item.frames[index]
+            const current = grayFrame(new Uint8ClampedArray(frame.pixels), frame.width, frame.height)
+            if (prior && (prior.cols !== current.cols || prior.rows !== current.rows)) {
+              current.delete()
+              return reject('replay-dimension-change')
+            }
+            if (index === 0) {
+              const points = seedFeatures(current, item.detection)
+              if (points.rows < 8) {
+                points.delete()
+                current.delete()
+                return reject('seed-insufficient-features')
+              }
+              track = {
+                detection: item.detection,
+                points,
+                anchoredAt: item.anchoredAt,
+                updatedAt: frame.capturedAt,
+                confidence: 1,
+              }
+            } else {
+              const outcome = flowTrack(track, current, frame.capturedAt, prior)
+              if (!outcome.track) {
+                current.delete()
+                return reject(`replay-${outcome.reason}`)
+              }
+              track = outcome.track
+            }
+            release(prior)
+            prior = current
+        }
+        return {
+          observation: {
+            detection: track.detection,
+            source: 'visual',
+            confidence: track.confidence,
+            anchoredAt: track.anchoredAt,
+            updatedAt: track.updatedAt,
+            actionable: track.confidence >= policy.actionConfidence
+              && track.updatedAt - track.anchoredAt <= policy.actionAnchorAgeMs,
+          },
+          track,
+          lastFrame: prior,
+          reason: null,
+        }
+      }
+
+      function handleReanchor(data, startedAt) {
+        const observations = []
+        const acceptedTracks = new Map()
+        const rejectionReasons = []
+        let newest = null
+        let newestAt = -Infinity
+        for (const item of data.anchors) {
+          const outcome = replayAnchor(item)
+          if (!outcome.observation) {
+            rejectionReasons.push(outcome.reason)
+            continue
+          }
+          observations.push(outcome.observation)
+          acceptedTracks.set(item.detection.data, outcome.track)
+          if (outcome.observation.updatedAt > newestAt) {
+            release(newest)
+            newest = outcome.lastFrame
+            newestAt = outcome.observation.updatedAt
+          } else {
+            release(outcome.lastFrame)
+          }
+        }
+        clear()
+        for (const [identity, track] of acceptedTracks) tracks.set(identity, track)
+        const safe = rejectAmbiguity(observations)
+        for (const [identity, track] of tracks) {
+          if (!safe.some(({ detection }) => detection.data === identity)) {
+            release(track.points)
+            tracks.delete(identity)
+            rejectionReasons.push('ambiguous-or-crossing')
+          }
+        }
+        previous = newest
+        self.postMessage({
+          type: 'result',
+          id: data.id,
+          generation: data.generation,
+          observations: safe.filter(({ detection }) => tracks.has(detection.data)),
+          elapsedMs: performance.now() - startedAt,
+          diagnostics: {
+            accepted: tracks.size,
+            rejected: data.anchors.length - tracks.size,
+            rejectionReasons: [...new Set(rejectionReasons)].slice(-4),
+          },
+        })
+      }
       const aTrack = tracks.get(observations[i].detection.data)
       const bTrack = tracks.get(observations[j].detection.data)
       if (aTrack?.previousCenter && bTrack?.previousCenter) {
@@ -284,6 +388,10 @@ self.onmessage = async ({ data }) => {
     if (data.generation !== generation) {
       clear()
       generation = data.generation
+    }
+    if (data.type === 'reanchor') {
+      handleReanchor(data, startedAt)
+      return
     }
     current = grayFrame(new Uint8ClampedArray(data.pixels), data.width, data.height)
     if (previous && (previous.cols !== current.cols || previous.rows !== current.rows)) clear()

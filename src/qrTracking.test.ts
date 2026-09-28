@@ -20,9 +20,10 @@ const detection = (x: number): QrDetection => ({
 })
 
 describe('QR visual tracking', () => {
-  it('smooths motion between decoder observations and predicts with a bounded horizon', () => {
+  it('smooths motion between registered visual observations', () => {
     let state = observeDetection(emptyTrackingState(), detection(0), 100)
-    state = observeDetection(state, detection(20), 200)
+    state = observeVisualDetection(state, detection(0), 100, .9, true)
+    state = observeVisualDetection(state, detection(20), 200, .9, true)
     const first = sampleTracking(state, 216)
     const second = sampleTracking(first.state, 232)
     expect(first.phase).toBe('tracking')
@@ -35,15 +36,35 @@ describe('QR visual tracking', () => {
   })
 
   it('drops stale markers and snaps cleanly when reacquired', () => {
-    const tracked = observeDetection(emptyTrackingState(), detection(10), 100)
+    const tracked = observeVisualDetection(
+      observeDetection(emptyTrackingState(), detection(10), 100),
+      detection(10),
+      100,
+      .9,
+      true,
+    )
     expect(sampleTracking(tracked, 100 + TRACKING_BRIDGE_MAX_ANCHOR_AGE_MS + 1).phase).toBe('lost')
     const reacquired = observeDetection(
       tracked,
       detection(200),
       100 + TRACKING_BRIDGE_MAX_ANCHOR_AGE_MS + 1,
     )
-    expect(reacquired.rendered).toEqual(detection(200))
-    expect(reacquired.velocity).toEqual({ x: 0, y: 0 })
+    expect(reacquired.decodedAnchor).toEqual(detection(200))
+    expect(sampleTracking(reacquired, reacquired.decodedAt)).toMatchObject({
+      detection: null,
+      actionable: false,
+      holdQualified: false,
+    })
+  })
+
+  it('shows an unregistered decode only as a historical anchor and never advances holds', () => {
+    const decoded = observeDetection(emptyTrackingState(), detection(10), 100)
+    expect(sampleTracking(decoded, 120)).toMatchObject({
+      decodedAnchor: detection(10),
+      detection: null,
+      actionable: false,
+      holdQualified: false,
+    })
   })
 
   it('bridges past 900ms on fresh visual evidence but expires authority and the hard TTL', () => {
