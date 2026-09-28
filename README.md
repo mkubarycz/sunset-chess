@@ -419,7 +419,8 @@ automatic hardware zoom.
 
 The Node 22 server serves the built Vite SPA and stateless Streamable HTTP MCP
 on one port. SQLite defaults to `.data/sunset-chess.sqlite`; override it with
-`SUNSET_CHESS_DB_PATH`. The v4 schema uses STRICT `Player` and `ChessGame` tables,
+`SUNSET_CHESS_DB_PATH`. The v5 schema uses STRICT `Player`, `ChessGame`, and
+`PlayerRatingEvent` tables,
 foreign keys with `ON DELETE RESTRICT`, and transactional `schema_migrations`.
 Every migrated game is ongoing. `ChessGame.tableNumber` is positive and unique
 among ongoing games; completed games retain their historical table number.
@@ -436,9 +437,24 @@ their seat in the lowest-ID game; later occurrences are cleared, and games left
 with both seats empty are removed. IDs and table numbers of retained games are
 unchanged, and the migration verifies the uniqueness invariant before commit.
 
+`PlayerRatingEvent` is the append-only rating source of truth. Each row records
+the player, optional game, previous/new rating, integer delta, ISO timestamp,
+and an explicit `baseline`, `game`, or `migration` reason; game events also
+record opponent and canonical result. A partial unique index permits one event
+per player/game. `Player.rating` remains a transactionally maintained projection
+for compatibility and efficient game-card joins. Reads verify it against the
+latest ledger row (or 700 when no row exists) and fail explicitly on divergence.
+Migration replays completed games in `finishedAt`, then ID order using the same
+production Elo function. A player whose reconstructed total matches the cached
+rating receives a 700 baseline and real game events. A mismatch receives one
+`migration` event at the preserved cached rating; no delta or unavailable
+pre-ledger history is fabricated. Startup is transactional and idempotent.
+
 MCP is published at <http://localhost:4175/mcp>. Tools are `player-list`,
 `player-get`, `player-create`, `player-upsert`, `player-check-in`, `player-delete`,
 `game-list`, `game-get`, `game-create`, `game-result-set`, and `game-delete`.
+Read tools also include `leaderboard-list` and `player-profile-get` for ranked
+records, recent games, and chronological rating history.
 Use `game-result-set` to finalize a fully seated game. It accepts only canonical
 PGN results and atomically applies the rating update; a finalized result cannot
 be changed. Use `player-create` with a name for
@@ -467,6 +483,16 @@ player, and returns HTTP 201 before compact QR generation. `GET
 /api/players/:id` safely resolves compact references and returns 404 when the
 player does not exist.
 
+`GET /api/leaderboard?limit=100` returns ordinal ranks in stable order: rating
+descending, games played descending, case-insensitive name ascending, then ID.
+The bounded limit is 1–200. `GET /api/players/:id/profile?recentLimit=10`
+returns record/rank, newest-first completed games (maximum 50), and full
+chronological Elo history. Malformed bounds return 400 and missing players 404.
+The Elo Leaderboard appears below the viewport dashboard, immediately before
+the player-card creator. Rows are native keyboard buttons. The profile is an
+ARIA modal with focus entry/return, Escape/close/backdrop dismissal, a textual
+recent-game/history table, and an accessible SVG sparkline.
+
 ## Elo rating policy
 
 Players start at **700**. Finalization uses the standard logistic expectation
@@ -484,9 +510,9 @@ Pre-production policy decisions are intentionally explicit:
 - Federation compatibility: local ratings are not FIDE/USCF ratings and are not
   interchangeable with federation records.
 - Inactivity: no decay.
-- Retroactive migration/audit: existing players begin at 700 and migrated games
-  remain ongoing; no historical results are inferred. Preserve database backups
-  before any future replay/audit migration.
+- Retroactive migration/audit: the v5 migration reconstructs only verifiable
+  completed-game history; mismatches preserve current Elo in a migration marker.
+  Preserve database backups before any future replay/audit migration.
 - Result correction/admin workflow: normal mutation is immutable; correction
   requires a future audited admin workflow that reverses the original rating
   transaction before applying a replacement.

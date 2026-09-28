@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { randomInt } from 'node:crypto';
 import { ConflictError, NotFoundError, ValidationError } from './errors.js';
+import { calculateElo, INITIAL_RATING } from './ratings.js';
 
 export interface Player {
   id: number;
@@ -23,6 +24,46 @@ export interface ChessGame {
 export interface JoinedChessGame extends ChessGame {
   blackPlayer: Player | null;
   whitePlayer: Player | null;
+}
+
+export interface LeaderboardEntry {
+  rank: number;
+  id: number;
+  name: string;
+  currentRating: number;
+  gamesPlayed: number;
+  wins: number;
+  losses: number;
+  draws: number;
+  lastPlayedAt: string | null;
+}
+
+export interface RatingEvent {
+  id: number;
+  gameId: number | null;
+  previousRating: number;
+  rating: number;
+  delta: number;
+  recordedAt: string;
+  reason: 'baseline' | 'game' | 'migration';
+  opponentId: number | null;
+  result: GameResult | null;
+}
+
+export interface PlayerProfile extends LeaderboardEntry {
+  recentGames: Array<{
+    id: number;
+    tableNumber: number;
+    opponent: { id: number; name: string };
+    color: 'black' | 'white';
+    result: GameResult;
+    outcome: 'W' | 'L' | 'D';
+    finishedAt: string;
+    ratingBefore: number;
+    ratingAfter: number;
+    delta: number;
+  }>;
+  ratingHistory: RatingEvent[];
 }
 
 export type RandomIndex = (maxExclusive: number) => number;
@@ -61,22 +102,78 @@ export class ChessRepository {
   ) {}
 
   listPlayers(): Player[] {
-    return this.db.prepare('SELECT id, name, rating FROM Player ORDER BY id').all().map(playerRow);
+    this.assertRatingProjectionIntegrity();
+    return this.db.prepare(`
+      SELECT p.id, p.name, COALESCE((
+        SELECT rating FROM PlayerRatingEvent
+        WHERE playerId = p.id ORDER BY id DESC LIMIT 1
+      ), 700) AS rating
+      FROM Player p ORDER BY p.id
+    `).all().map(playerRow);
   }
 
   getPlayer(id: number): Player {
-    const row = this.db.prepare('SELECT id, name, rating FROM Player WHERE id = ?').get(id);
+    const row = this.db.prepare(`
+      SELECT p.id, p.name, p.rating AS cachedRating, COALESCE((
+        SELECT rating FROM PlayerRatingEvent
+        WHERE playerId = p.id ORDER BY id DESC LIMIT 1
+      ), 700) AS rating
+      FROM Player p WHERE p.id = ?
+    `).get(id) as unknown as (Player & { cachedRating: number }) | undefined;
     if (!row) throw new NotFoundError(`Player ${id} was not found.`);
-    return playerRow(row);
+    if (row.cachedRating !== row.rating) {
+      throw new Error(`Rating projection divergence for player ${id}: cache ${row.cachedRating}, ledger ${row.rating}.`);
+    }
+    return { id: row.id, name: row.name, rating: row.rating };
+  }
+
+  assertRatingProjectionIntegrity(): void {
+    const divergent = this.db.prepare(`
+      SELECT p.id, p.rating AS cachedRating, COALESCE((
+        SELECT rating FROM PlayerRatingEvent
+        WHERE playerId = p.id ORDER BY id DESC LIMIT 1
+      ), 700) AS ledgerRating
+      FROM Player p
+      WHERE p.rating <> COALESCE((
+        SELECT rating FROM PlayerRatingEvent
+        WHERE playerId = p.id ORDER BY id DESC LIMIT 1
+      ), 700)
+      ORDER BY p.id LIMIT 1
+    `).get() as { id: number; cachedRating: number; ledgerRating: number } | undefined;
+    if (divergent) {
+      throw new Error(
+        `Rating projection divergence for player ${divergent.id}: `
+        + `cache ${divergent.cachedRating}, ledger ${divergent.ledgerRating}.`,
+      );
+    }
+  }
+
+  private ensureBaseline(playerId: number, recordedAt = new Date().toISOString()): void {
+    this.db.prepare(`
+      INSERT INTO PlayerRatingEvent(
+        playerId, previousRating, rating, delta, recordedAt, reason
+      )
+      SELECT ?, 700, 700, 0, ?, 'baseline'
+      WHERE NOT EXISTS (SELECT 1 FROM PlayerRatingEvent WHERE playerId = ?)
+    `).run(playerId, recordedAt, playerId);
   }
 
   upsertPlayer(id: number, rawName: string): Player {
     const name = validatePlayerInput(id, rawName);
-    this.db.prepare(`
-      INSERT INTO Player(id, name) VALUES (?, ?)
-      ON CONFLICT(id) DO UPDATE SET name = excluded.name
-    `).run(id, name);
-    return this.getPlayer(id);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare(`
+        INSERT INTO Player(id, name) VALUES (?, ?)
+        ON CONFLICT(id) DO UPDATE SET name = excluded.name
+      `).run(id, name);
+      this.ensureBaseline(id);
+      const player = this.getPlayer(id);
+      this.db.exec('COMMIT');
+      return player;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   createPlayer(rawName: string): Player {
@@ -99,8 +196,9 @@ export class ChessRepository {
       }
       const id = available[index];
       this.db.prepare('INSERT INTO Player(id, name) VALUES (?, ?)').run(id, name);
+      this.ensureBaseline(id);
       this.db.exec('COMMIT');
-      return { id, name, rating: 700 };
+      return { id, name, rating: INITIAL_RATING };
     } catch (error) {
       this.db.exec('ROLLBACK');
       throw error;
@@ -109,9 +207,19 @@ export class ChessRepository {
 
   deletePlayer(id: number): Player {
     const player = this.getPlayer(id);
+    this.db.exec('BEGIN IMMEDIATE');
     try {
+      this.db.prepare(`
+        DELETE FROM PlayerRatingEvent
+        WHERE playerId = ? AND reason = 'baseline'
+          AND NOT EXISTS (
+            SELECT 1 FROM PlayerRatingEvent WHERE playerId = ? AND reason <> 'baseline'
+          )
+      `).run(id, id);
       this.db.prepare('DELETE FROM Player WHERE id = ?').run(id);
+      this.db.exec('COMMIT');
     } catch (error) {
+      this.db.exec('ROLLBACK');
       if (sqliteMessage(error).includes('FOREIGN KEY')) {
         throw new ConflictError(`Player ${id} cannot be deleted while referenced by a game.`);
       }
@@ -128,6 +236,7 @@ export class ChessRepository {
   }
 
   listJoinedGames(result: 'ongoing' | 'finished' = 'ongoing', limit?: number): JoinedChessGame[] {
+    this.assertRatingProjectionIntegrity();
     const where = result === 'ongoing' ? 'g.result IS NULL' : 'g.result IS NOT NULL';
     const order = result === 'ongoing'
       ? 'g.tableNumber'
@@ -233,6 +342,7 @@ export class ChessRepository {
         INSERT INTO Player(id, name) VALUES (?, ?)
         ON CONFLICT(id) DO UPDATE SET name = excluded.name
       `).run(player.id, name);
+      this.ensureBaseline(player.id, now());
 
       const existing = this.db.prepare(`
         SELECT id, blackPlayerId, whitePlayerId
@@ -341,16 +451,6 @@ export class ChessRepository {
       }
       const black = this.getPlayer(game.blackPlayerId);
       const white = this.getPlayer(game.whitePlayerId);
-      const whiteActual = result === '1-0' ? 1 : result === '0-1' ? 0 : 0.5;
-      const whiteExpected = 1 / (1 + 10 ** ((black.rating - white.rating) / 400));
-      const rawDelta = 32 * (whiteActual - whiteExpected);
-      const delta = rawDelta < 0 ? -Math.round(-rawDelta) : Math.round(rawDelta);
-      this.db.prepare('UPDATE Player SET rating = rating + ? WHERE id = ?').run(
-        delta, white.id,
-      );
-      this.db.prepare('UPDATE Player SET rating = rating - ? WHERE id = ?').run(
-        delta, black.id,
-      );
       const finishedAt = now();
       if (typeof finishedAt !== 'string' || Number.isNaN(Date.parse(finishedAt))) {
         throw new Error('Clock source returned an invalid ISO timestamp.');
@@ -360,6 +460,26 @@ export class ChessRepository {
         WHERE id = ? AND result IS NULL
       `).run(result, finishedAt, id);
       if (updated.changes !== 1) throw new ConflictError(`Game ${id} already has a final result.`);
+      const { whiteDelta, blackDelta } = calculateElo(white.rating, black.rating, result);
+      const insertEvent = this.db.prepare(`
+        INSERT INTO PlayerRatingEvent(
+          playerId, gameId, previousRating, rating, delta, recordedAt,
+          reason, opponentId, result
+        ) VALUES (?, ?, ?, ?, ?, ?, 'game', ?, ?)
+      `);
+      insertEvent.run(
+        white.id, id, white.rating, white.rating + whiteDelta,
+        whiteDelta, finishedAt, black.id, result,
+      );
+      insertEvent.run(
+        black.id, id, black.rating, black.rating + blackDelta,
+        blackDelta, finishedAt, white.id, result,
+      );
+      this.db.prepare('UPDATE Player SET rating = ? WHERE id = ?')
+        .run(white.rating + whiteDelta, white.id);
+      this.db.prepare('UPDATE Player SET rating = ? WHERE id = ?')
+        .run(black.rating + blackDelta, black.id);
+      this.assertRatingProjectionIntegrity();
       const finalized = this.getGame(id);
       this.db.exec('COMMIT');
       return finalized;
@@ -367,5 +487,92 @@ export class ChessRepository {
       this.db.exec('ROLLBACK');
       throw error;
     }
+  }
+
+  listLeaderboard(limit = 100): LeaderboardEntry[] {
+      if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+        throw new ValidationError('Leaderboard limit must be an integer between 1 and 200.');
+      }
+      this.assertRatingProjectionIntegrity();
+      return this.db.prepare(`
+        WITH records AS (
+          SELECT p.id, p.name, p.rating AS currentRating,
+            COUNT(g.id) AS gamesPlayed,
+            SUM(CASE
+              WHEN (g.whitePlayerId = p.id AND g.result = '1-0')
+                OR (g.blackPlayerId = p.id AND g.result = '0-1') THEN 1 ELSE 0 END) AS wins,
+            SUM(CASE
+              WHEN (g.whitePlayerId = p.id AND g.result = '0-1')
+                OR (g.blackPlayerId = p.id AND g.result = '1-0') THEN 1 ELSE 0 END) AS losses,
+            SUM(CASE WHEN g.result = '1/2-1/2' THEN 1 ELSE 0 END) AS draws,
+            MAX(g.finishedAt) AS lastPlayedAt
+          FROM Player p
+          LEFT JOIN ChessGame g
+            ON g.result IS NOT NULL AND (g.whitePlayerId = p.id OR g.blackPlayerId = p.id)
+          GROUP BY p.id
+        )
+        SELECT ROW_NUMBER() OVER (
+          ORDER BY currentRating DESC, gamesPlayed DESC, name COLLATE NOCASE ASC, id ASC
+        ) AS rank, *
+        FROM records
+        ORDER BY currentRating DESC, gamesPlayed DESC, name COLLATE NOCASE ASC, id ASC
+        LIMIT ?
+      `).all(limit) as unknown as LeaderboardEntry[];
+  }
+
+  getPlayerProfile(id: number, recentLimit = 10): PlayerProfile {
+      if (!Number.isInteger(id) || id < 1000 || id > 2000) {
+        throw new ValidationError('Player id must be between 1000 and 2000.');
+      }
+      if (!Number.isInteger(recentLimit) || recentLimit < 1 || recentLimit > 50) {
+        throw new ValidationError('Recent game limit must be an integer between 1 and 50.');
+      }
+      const player = this.getPlayer(id);
+      const entry = this.listLeaderboard(200).find((candidate) => candidate.id === id);
+      if (!entry) throw new NotFoundError(`Player ${id} was not found.`);
+      const ratingHistory = this.db.prepare(`
+        SELECT id, gameId, previousRating, rating, delta, recordedAt, reason, opponentId, result
+        FROM PlayerRatingEvent WHERE playerId = ?
+        ORDER BY recordedAt ASC, id ASC
+      `).all(id) as unknown as RatingEvent[];
+      const recentRows = this.db.prepare(`
+        SELECT g.id, g.tableNumber, g.whitePlayerId, g.blackPlayerId, g.result, g.finishedAt,
+          opponent.id AS opponentId, opponent.name AS opponentName,
+          event.previousRating AS ratingBefore, event.rating AS ratingAfter, event.delta
+        FROM ChessGame g
+        JOIN PlayerRatingEvent event ON event.gameId = g.id AND event.playerId = ?
+        JOIN Player opponent ON opponent.id = event.opponentId
+        WHERE g.result IS NOT NULL
+        ORDER BY g.finishedAt DESC, g.id DESC
+        LIMIT ?
+      `).all(id, recentLimit) as unknown as Array<{
+        id: number; tableNumber: number; whitePlayerId: number; blackPlayerId: number;
+        result: GameResult; finishedAt: string; opponentId: number; opponentName: string;
+        ratingBefore: number; ratingAfter: number; delta: number;
+      }>;
+      return {
+        ...entry,
+        name: player.name,
+        recentGames: recentRows.map((game) => {
+          const color = game.whitePlayerId === id ? 'white' as const : 'black' as const;
+          const outcome = game.result === '1/2-1/2'
+            ? 'D' as const
+            : (color === 'white' && game.result === '1-0')
+                || (color === 'black' && game.result === '0-1') ? 'W' as const : 'L' as const;
+          return {
+            id: game.id,
+            tableNumber: game.tableNumber,
+            opponent: { id: game.opponentId, name: game.opponentName },
+            color,
+            result: game.result,
+            outcome,
+            finishedAt: game.finishedAt,
+            ratingBefore: game.ratingBefore,
+            ratingAfter: game.ratingAfter,
+            delta: game.delta,
+          };
+        }),
+        ratingHistory,
+      };
   }
 }

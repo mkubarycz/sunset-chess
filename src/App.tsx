@@ -133,6 +133,7 @@ import {
   type TrailPoint,
 } from './trackingTrail'
 import { encodeQrDataUrl } from './qrArtwork'
+import { Leaderboard } from './Leaderboard'
 import './App.css'
 
 type CameraState = 'initial' | 'requesting' | 'active' | 'inactive' | 'denied' | 'unavailable' | 'insecure' | 'error'
@@ -308,6 +309,7 @@ export default function App({
   const [recentGames, setRecentGames] = useState<OngoingGame[]>([])
   const [gamesLoading, setGamesLoading] = useState(true)
   const [gamesError, setGamesError] = useState('')
+  const [leaderboardRefresh, setLeaderboardRefresh] = useState(0)
   const [checkInNotice, setCheckInNotice] = useState('')
   const [checkInError, setCheckInError] = useState(false)
   const [featuredGame, setFeaturedGame] = useState<GameIdentity | null>(null)
@@ -493,6 +495,7 @@ export default function App({
         setRecentGames(recent)
         setFeaturedGame((current) => retainFeaturedGame(next, current))
         setGamesError('')
+        setLeaderboardRefresh((value) => value + 1)
       }
     } catch (error) {
       if (!controller.signal.aborted) {
@@ -2420,6 +2423,7 @@ export default function App({
       </div>
 
       <section className="producer" aria-labelledby="producer-heading">
+        <Leaderboard refreshKey={leaderboardRefresh} />
         <div className="producer-form">
           <p className="eyebrow">Player QR</p>
           <h2 id="producer-heading">Make your player card</h2>

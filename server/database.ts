@@ -1,6 +1,7 @@
 import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { calculateElo, INITIAL_RATING } from './ratings.js';
 
 const migrations = [
   {
@@ -173,7 +174,98 @@ const migrations = [
       END;
     `,
   },
+  {
+    version: 5,
+    sql: `
+      CREATE TABLE PlayerRatingEvent (
+        id INTEGER PRIMARY KEY,
+        playerId INTEGER NOT NULL REFERENCES Player(id) ON DELETE RESTRICT,
+        gameId INTEGER REFERENCES ChessGame(id) ON DELETE RESTRICT,
+        previousRating INTEGER NOT NULL CHECK (previousRating BETWEEN 0 AND 10000),
+        rating INTEGER NOT NULL CHECK (rating BETWEEN 0 AND 10000),
+        delta INTEGER NOT NULL CHECK (delta BETWEEN -1000 AND 1000),
+        recordedAt TEXT NOT NULL CHECK (
+          length(recordedAt) >= 20 AND datetime(recordedAt) IS NOT NULL
+        ),
+        reason TEXT NOT NULL CHECK (reason IN ('baseline', 'game', 'migration')),
+        opponentId INTEGER REFERENCES Player(id) ON DELETE RESTRICT,
+        result TEXT CHECK (result IS NULL OR result IN ('1-0', '0-1', '1/2-1/2')),
+        CHECK (rating = previousRating + delta),
+        CHECK (
+          (reason = 'game' AND gameId IS NOT NULL AND opponentId IS NOT NULL AND result IS NOT NULL)
+          OR (reason <> 'game' AND gameId IS NULL AND opponentId IS NULL AND result IS NULL)
+        )
+      ) STRICT;
+      CREATE UNIQUE INDEX PlayerRatingEvent_player_game
+      ON PlayerRatingEvent(playerId, gameId) WHERE gameId IS NOT NULL;
+      CREATE INDEX PlayerRatingEvent_player_latest
+      ON PlayerRatingEvent(playerId, id DESC);
+      CREATE INDEX PlayerRatingEvent_leaderboard
+      ON PlayerRatingEvent(rating DESC, playerId, recordedAt DESC);
+      CREATE INDEX PlayerRatingEvent_game ON PlayerRatingEvent(gameId);
+    `,
+  },
 ] as const;
+
+function backfillRatingLedger(db: DatabaseSync, recordedAt: string): void {
+  const players = db.prepare('SELECT id, rating FROM Player ORDER BY id').all() as unknown as
+    Array<{ id: number; rating: number }>;
+  if (players.length === 0) return;
+  const ratings = new Map(players.map((player) => [player.id, INITIAL_RATING]));
+  const histories = new Map<number, Array<{
+    gameId: number; previousRating: number; rating: number; delta: number;
+    recordedAt: string; opponentId: number; result: '1-0' | '0-1' | '1/2-1/2';
+  }>>();
+  for (const player of players) histories.set(player.id, []);
+  const games = db.prepare(`
+    SELECT id, blackPlayerId, whitePlayerId, result, finishedAt
+    FROM ChessGame WHERE result IS NOT NULL
+    ORDER BY finishedAt ASC, id ASC
+  `).all() as unknown as Array<{
+    id: number; blackPlayerId: number; whitePlayerId: number;
+    result: '1-0' | '0-1' | '1/2-1/2'; finishedAt: string;
+  }>;
+  for (const game of games) {
+    const whiteBefore = ratings.get(game.whitePlayerId) ?? INITIAL_RATING;
+    const blackBefore = ratings.get(game.blackPlayerId) ?? INITIAL_RATING;
+    const { whiteDelta, blackDelta } = calculateElo(whiteBefore, blackBefore, game.result);
+    const whiteAfter = whiteBefore + whiteDelta;
+    const blackAfter = blackBefore + blackDelta;
+    ratings.set(game.whitePlayerId, whiteAfter);
+    ratings.set(game.blackPlayerId, blackAfter);
+    histories.get(game.whitePlayerId)?.push({
+      gameId: game.id, previousRating: whiteBefore, rating: whiteAfter,
+      delta: whiteDelta, recordedAt: game.finishedAt,
+      opponentId: game.blackPlayerId, result: game.result,
+    });
+    histories.get(game.blackPlayerId)?.push({
+      gameId: game.id, previousRating: blackBefore, rating: blackAfter,
+      delta: blackDelta, recordedAt: game.finishedAt,
+      opponentId: game.whitePlayerId, result: game.result,
+    });
+  }
+  const insert = db.prepare(`
+    INSERT INTO PlayerRatingEvent(
+      playerId, gameId, previousRating, rating, delta, recordedAt, reason, opponentId, result
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const player of players) {
+    const history = histories.get(player.id) ?? [];
+    const consistent = ratings.get(player.id) === player.rating;
+    if (!consistent) {
+      insert.run(player.id, null, player.rating, player.rating, 0, recordedAt, 'migration', null, null);
+      continue;
+    }
+    const baselineAt = history[0]?.recordedAt ?? recordedAt;
+    insert.run(player.id, null, INITIAL_RATING, INITIAL_RATING, 0, baselineAt, 'baseline', null, null);
+    for (const event of history) {
+      insert.run(
+        player.id, event.gameId, event.previousRating, event.rating, event.delta,
+        event.recordedAt, 'game', event.opponentId, event.result,
+      );
+    }
+  }
+}
 
 function assertUniqueGameParticipation(db: DatabaseSync): void {
   const hasResult = (db.prepare('PRAGMA table_info(ChessGame)').all() as Array<{ name: string }>)
@@ -229,6 +321,7 @@ export function openDatabase(path = process.env.SUNSET_CHESS_DB_PATH || defaultD
         continue;
       }
       db.exec(migration.sql);
+      if (migration.version === 5) backfillRatingLedger(db, new Date().toISOString());
       if (migration.version === 3) assertUniqueGameParticipation(db);
       db.prepare('INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)')
         .run(migration.version, new Date().toISOString());

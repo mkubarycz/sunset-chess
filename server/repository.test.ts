@@ -23,6 +23,76 @@ afterEach(() => {
 });
 
 describe('ChessRepository', () => {
+  it('backfills honest rating history and preserves inconsistent cached ratings', () => {
+    const { db, path } = fixture();
+    db.exec(`
+      INSERT INTO Player(id, name, rating) VALUES
+        (1000, 'Alice', 684), (1001, 'Bob', 716), (1002, 'Manual', 950);
+      INSERT INTO ChessGame(
+        id, tableNumber, createdAt, finishedAt, blackPlayerId, whitePlayerId, result
+      ) VALUES (
+        1, 1, '2026-01-01T11:00:00.000Z', '2026-01-01T12:00:00.000Z',
+        1000, 1001, '1-0'
+      );
+      DROP TABLE PlayerRatingEvent;
+      DELETE FROM schema_migrations WHERE version = 5;
+    `);
+    db.close();
+
+    const migrated = openDatabase(path);
+    expect(migrated.prepare(`
+      SELECT playerId, gameId, previousRating, rating, delta, reason
+      FROM PlayerRatingEvent ORDER BY playerId, id
+    `).all()).toEqual([
+      { playerId: 1000, gameId: null, previousRating: 700, rating: 700, delta: 0, reason: 'baseline' },
+      { playerId: 1000, gameId: 1, previousRating: 700, rating: 684, delta: -16, reason: 'game' },
+      { playerId: 1001, gameId: null, previousRating: 700, rating: 700, delta: 0, reason: 'baseline' },
+      { playerId: 1001, gameId: 1, previousRating: 700, rating: 716, delta: 16, reason: 'game' },
+      { playerId: 1002, gameId: null, previousRating: 950, rating: 950, delta: 0, reason: 'migration' },
+    ]);
+    const reopened = openDatabase(path);
+    expect(reopened.prepare('SELECT COUNT(*) AS count FROM PlayerRatingEvent').get())
+      .toEqual({ count: 5 });
+    reopened.close();
+    migrated.close();
+  });
+
+  it('lists stable Elo rankings and detailed profiles from ledger events', () => {
+    const { db, repository } = fixture();
+    repository.upsertPlayer(1000, 'Alice');
+    repository.upsertPlayer(1001, 'Bob');
+    repository.upsertPlayer(1002, 'Carol');
+    const game = repository.createGame(1000, 1001);
+    repository.finalizeGame(game.id, '1-0', () => '2027-01-02T12:00:00.000Z');
+    expect(repository.listLeaderboard()).toEqual([
+      expect.objectContaining({ rank: 1, id: 1001, currentRating: 716, wins: 1, gamesPlayed: 1 }),
+      expect.objectContaining({ rank: 2, id: 1002, currentRating: 700, gamesPlayed: 0 }),
+      expect.objectContaining({ rank: 3, id: 1000, currentRating: 684, losses: 1 }),
+    ]);
+    expect(repository.getPlayerProfile(1001)).toMatchObject({
+      rank: 1,
+      currentRating: 716,
+      recentGames: [{
+        id: game.id,
+        opponent: { id: 1000, name: 'Alice' },
+        color: 'white',
+        outcome: 'W',
+        ratingBefore: 700,
+        ratingAfter: 716,
+        delta: 16,
+      }],
+      ratingHistory: [
+        { reason: 'baseline', rating: 700 },
+        { reason: 'game', gameId: game.id, rating: 716 },
+      ],
+    });
+    db.prepare('UPDATE Player SET rating = 999 WHERE id = 1000').run();
+    expect(() => repository.assertRatingProjectionIntegrity()).toThrow(
+      'Rating projection divergence for player 1000',
+    );
+    db.close();
+  });
+
   it('migrates idempotently and persists players and games', () => {
     const { db, repository, path } = fixture();
     repository.upsertPlayer(1000, '  Alice  ');
@@ -36,9 +106,9 @@ describe('ChessRepository', () => {
     ]);
     expect(persisted.getGame(game.id)).toEqual(game);
     expect(reopened.prepare('SELECT count(*) AS count FROM schema_migrations').get())
-      .toEqual({ count: 4 });
+      .toEqual({ count: 5 });
     expect(db.prepare('SELECT count(*) AS count FROM schema_migrations').get())
-      .toEqual({ count: 4 });
+      .toEqual({ count: 5 });
     reopened.close();
     db.close();
   });
@@ -83,7 +153,7 @@ describe('ChessRepository', () => {
     migrated.close();
     const reopened = openDatabase(path);
     expect(reopened.prepare('SELECT count(*) AS count FROM ChessGame').get()).toEqual({ count: 1 });
-    expect(reopened.prepare('SELECT count(*) AS count FROM schema_migrations').get()).toEqual({ count: 4 });
+    expect(reopened.prepare('SELECT count(*) AS count FROM schema_migrations').get()).toEqual({ count: 5 });
     reopened.close();
   });
 
@@ -387,6 +457,11 @@ describe('ChessRepository', () => {
     expect([repository.getPlayer(1004).rating, repository.getPlayer(1005).rating])
       .toEqual([700, 700]);
 
+    db.prepare(`
+      INSERT INTO PlayerRatingEvent(
+        playerId, previousRating, rating, delta, recordedAt, reason
+      ) VALUES (1006, 700, 900, 200, '2026-01-01T00:00:00.000Z', 'migration')
+    `).run();
     db.prepare('UPDATE Player SET rating = 900 WHERE id = 1006').run();
     finish(1006, 1007, '1-0');
     expect([repository.getPlayer(1006).rating, repository.getPlayer(1007).rating])

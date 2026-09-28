@@ -227,11 +227,14 @@ describe('Sunset Chess HTTP and MCP', () => {
     const tools = await app.client.listTools();
     expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
       'game-create', 'game-delete', 'game-get', 'game-list', 'game-result-set',
-      'player-check-in', 'player-create', 'player-delete', 'player-get', 'player-list', 'player-upsert',
+      'leaderboard-list', 'player-check-in', 'player-create', 'player-delete',
+      'player-get', 'player-list', 'player-profile-get', 'player-upsert',
     ]);
     expect(Object.fromEntries(tools.tools.map((tool) => [tool.name, tool.annotations]))).toMatchObject({
       'player-list': { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       'player-get': { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      'leaderboard-list': { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      'player-profile-get': { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       'player-upsert': { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       'player-create': { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       'player-check-in': { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },

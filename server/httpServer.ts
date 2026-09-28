@@ -129,6 +129,23 @@ export function createSunsetServer(
           recentGames: repository.listJoinedGames('finished', 20),
         });
       }
+      if (url.pathname === '/api/leaderboard') {
+        if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed.' });
+        const rawLimit = url.searchParams.get('limit');
+        if (rawLimit !== null && !/^\d+$/.test(rawLimit)) {
+          return sendJson(res, 400, { error: 'limit must be an integer between 1 and 200.' });
+        }
+        try {
+          return sendJson(res, 200, {
+            leaderboard: repository.listLeaderboard(rawLimit === null ? 100 : Number(rawLimit)),
+          });
+        } catch (error) {
+          if (error instanceof DomainError) {
+            return sendJson(res, 400, { error: error.message, code: error.code });
+          }
+          throw error;
+        }
+      }
       if (url.pathname === '/api/players') {
         if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed.' });
         if (req.headers['content-type']?.split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
@@ -153,6 +170,30 @@ export function createSunsetServer(
         } catch (error) {
           if (error instanceof DomainError) {
             return sendJson(res, error.code === 'conflict' ? 409 : 400, {
+              error: error.message,
+              code: error.code,
+            });
+          }
+          throw error;
+        }
+      }
+      const profileMatch = url.pathname.match(/^\/api\/players\/(\d+)\/profile$/);
+      if (profileMatch) {
+        if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed.' });
+        const rawLimit = url.searchParams.get('recentLimit');
+        if (rawLimit !== null && !/^\d+$/.test(rawLimit)) {
+          return sendJson(res, 400, { error: 'recentLimit must be an integer between 1 and 50.' });
+        }
+        try {
+          return sendJson(res, 200, {
+            profile: repository.getPlayerProfile(
+              Number(profileMatch[1]),
+              rawLimit === null ? 10 : Number(rawLimit),
+            ),
+          });
+        } catch (error) {
+          if (error instanceof DomainError) {
+            return sendJson(res, error.code === 'not_found' ? 404 : 400, {
               error: error.message,
               code: error.code,
             });

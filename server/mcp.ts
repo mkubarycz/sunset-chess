@@ -38,6 +38,20 @@ export function createMcpServer(repository: ChessRepository): McpServer {
     inputSchema: { id: playerId },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ id }) => domainResult(() => ({ player: repository.getPlayer(id) })));
+  server.registerTool('leaderboard-list', {
+    description: 'List players by authoritative Elo, then games played, case-insensitive name, and id.',
+    inputSchema: { limit: z.number().int().min(1).max(200).optional() },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ limit }) => domainResult(() => ({ leaderboard: repository.listLeaderboard(limit) })));
+  server.registerTool('player-profile-get', {
+    description: 'Get a player profile with Elo rank and record, recent completed games, and chronological immutable rating history.',
+    inputSchema: {
+      id: playerId,
+      recentLimit: z.number().int().min(1).max(50).optional(),
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ id, recentLimit }) =>
+    domainResult(() => ({ profile: repository.getPlayerProfile(id, recentLimit) })));
   server.registerTool('player-upsert', {
     description: 'Idempotently create or update a player with a known ID, such as one read from a QR code or scanner.',
     inputSchema: { id: playerId, name: z.string().trim().min(1).max(80) },
