@@ -96,6 +96,17 @@ describe('identity-preserving visual object tracking', () => {
     expect(observations[0].detection.location.topLeftCorner.x).toBe(30)
   })
 
+  it('refreshes decode authority without replacing tracked geometry', () => {
+    const tracker = new VisualObjectTracker()
+    tracker.anchor([detection('player-a', 12)], patternedFrame([{ x: 12, seed: 3 }], 0), 0)
+    tracker.update(patternedFrame([{ x: 20, seed: 3 }], 50), 50)
+    const before = tracker.observations()[0].detection
+    tracker.refreshAuthority('player-a', 500)
+    const refreshed = tracker.observations()[0]
+    expect(refreshed.anchoredAt).toBe(500)
+    expect(refreshed.detection).toEqual(before)
+  })
+
   it('drops an old identity when a different decoded identity occupies the same object', () => {
     const tracker = new VisualObjectTracker()
     tracker.anchor([detection('player-a', 12)], patternedFrame([{ x: 12, seed: 3 }], 0), 0)

@@ -66,10 +66,15 @@ inside a 90%-inset decoded quadrilateral mask. Candidates are round-robin
 distributed over a 3×3 grid and carry their source cell through LK; arbitrary
 background padding is never eligible. Points are tracked forward and backward
 with a 31×31 LK window through pyramid level 4. A deterministic robust estimator
-then chooses an explicit model: homography requires at least 10 survivors over
-four cells, affine requires 6 over three cells, and similarity is the final
-4-point/two-cell fallback. Models use a 2.5 px reprojection gate and at least a
-62–65% inlier ratio.
+then fits every eligible model independently: similarity requires 4 survivors
+over two cells, affine requires 6 over three cells, and homography requires 10
+over four cells. Models use a 2.5 px reprojection gate and at least a 62–65%
+inlier ratio. Selection starts at the lowest-complexity valid fit. Affine can
+replace similarity, and homography can replace the current simpler fit, only
+when it preserves inlier evidence within 8% and reduces mean robust reprojection
+error by more than both 0.18 px and 15% of the simpler model's error. This
+explicit complexity penalty prevents projective terms from fitting subpixel LK
+noise while retaining homography for materially perspective motion.
 
 Accepted geometry must retain winding and convexity, finite in-frame corners,
 at least 64 px² area, bounded per-frame area/edge changes, bounded projective
@@ -88,6 +93,37 @@ anchor remains within the hard 1.6-second bridge. Fresh high-confidence visual
 evidence may preserve display continuity through a hard 1.6-second decode-anchor
 TTL, while evidence itself expires after 450 ms without another accepted flow.
 
+Every decoder result still refreshes identity authority, decode time, and the
+amber dashed decoded anchor. It does not automatically replace cyan geometry.
+A repeated registered decode is suppressed when the current track has
+confidence ≥0.78, visual evidence no older than 180 ms, center disagreement
+≤6% of √area, bounding-box IoU ≥0.72, corner RMS disagreement ≤8% of √area,
+area ratio 0.80–1.25, and aspect ratio 0.85–1.18. Thus alternating native/ZXing
+corner estimates cannot repeatedly replay the track. A new identity, stale or
+rejected evidence, low confidence, material disagreement, capture
+dimension/generation change, or the 2.5-second drift-control interval forces a
+registered chronological replay. An unregistered decode can refresh authority
+but cannot seed geometry on a later frame.
+
+Accepted visual quads pass through one coherent per-identity adaptive filter;
+raw evidence remains diagnostic-only. With object size `s = √area`, stationary
+entry requires five consecutive measurements with center change ≤`0.020 × s` and
+translation-removed corner-shape RMS ≤`0.035 × s`. Stationary exit occurs immediately
+at center change >`0.040 × s`, raw-to-filtered corner RMS >`0.055 × s`, or accumulated
+center residual >`0.025 × s`. Stationary cutoff is 0.55 Hz with a `0.003 × s` deadband.
+Moving cutoff is `min(24, 4 + 5v)` Hz, where `v` is center speed in object
+widths/second, and gain is `1 − exp(−2π·cutoff·Δt)`. Trustworthy displacement
+≥`0.35 × s` snaps/reacquires. There is no extrapolation without visual evidence.
+Both cyan display geometry and ActionZone hit testing consume the same filtered
+quad; the trail also records filtered centers.
+
+At 960×540, deterministic tests drive ±2 px per-corner stationary noise plus
+periodic decoder offsets for five seconds and require settled center RMS
+≤0.35 px and corner RMS ≤0.60 px. A one-width 320 ms ramp must reach at least
+85% within 160 ms after the move ends with <2 px overshoot; slow motion must
+advance continuously rather than stair-step. Boundary-noise tests require one
+stable ActionZone occupant and uninterrupted hold completion.
+
 If OpenCV fails initialization, lacks required APIs, times out, or fails at
 runtime, diagnostics explicitly switch to the existing bounded normalized-template
 tracker. It follows the same historical registration and chronological replay
@@ -104,7 +140,10 @@ the preview's `object-fit: cover` crop, mirrors camera pixels exactly once, then
 composites the decoded anchor, accepted fit, trail, ActionZones, legend,
 timestamps, decoder timing, registration/replay timing, model,
 feature/survivor/inlier counts, reprojection/forward-backward error, confidence,
-dimensions/cadence, identity, and rejection reason.
+dimensions/cadence, identity, and rejection reason. It also reports all
+candidate-model errors and the selection reason, decode refresh/suppressed/forced
+reanchor counters and reason, stationary/moving state, raw and filtered
+centers/quads, raw-filter delta, normalized speed, cutoff, and gain.
 
 At ten seconds, matching timestamp/session-ID downloads appear:
 

@@ -19,6 +19,8 @@ export interface OpticalFlowDiagnostics {
     maskViolations?: number
     confidence: number
     rejectionReason: string | null
+    candidateErrors?: Partial<Record<'homography' | 'affine' | 'similarity', number>>
+    selectedModelReason?: string
   }>
 }
 

@@ -13,6 +13,8 @@ export interface PlanarFit {
   matrix: Matrix3
   inliers: number[]
   meanReprojectionError: number
+  candidateErrors: Partial<Record<Exclude<MotionModel, 'none'>, number>>
+  selectedReason: string
 }
 
 export interface GeometryPolicy {
@@ -36,6 +38,12 @@ export const PLANAR_GEOMETRY_POLICY: GeometryPolicy = {
   maxDisplacementRatio: 1.4,
   maxAccelerationRatio: 1,
 }
+
+export const MODEL_SELECTION_POLICY = {
+  absoluteImprovementPx: .18,
+  relativeImprovement: .15,
+  maximumInlierDeficit: .08,
+} as const
 
 export function detectionCorners(detection: QrDetection): Point[] {
   return [
@@ -226,9 +234,10 @@ export function robustPlanarFit(
   if (from.length !== to.length) return null
   const uniqueCells = new Set(cells).size
   const candidates: Array<{ model: Exclude<MotionModel, 'none'>; minimum: number }> = []
-  if (from.length >= 10 && uniqueCells >= 4) candidates.push({ model: 'homography', minimum: 4 })
-  if (from.length >= 6 && uniqueCells >= 3) candidates.push({ model: 'affine', minimum: 3 })
   if (from.length >= 4 && uniqueCells >= 2) candidates.push({ model: 'similarity', minimum: 2 })
+  if (from.length >= 6 && uniqueCells >= 3) candidates.push({ model: 'affine', minimum: 3 })
+  if (from.length >= 10 && uniqueCells >= 4) candidates.push({ model: 'homography', minimum: 4 })
+  const valid: PlanarFit[] = []
   for (const { model, minimum } of candidates) {
     let best: { matrix: Matrix3; inliers: number[]; error: number } | null = null
     for (const sample of samples(from.length, minimum)) {
@@ -252,14 +261,44 @@ export function robustPlanarFit(
       const mapped = applyMatrix(refined, from[index])
       return Math.hypot(mapped.x - to[index].x, mapped.y - to[index].y)
     })
-    return {
+    valid.push({
       model,
       matrix: refined,
       inliers: best.inliers,
       meanReprojectionError: errors.reduce((sum, value) => sum + value, 0) / errors.length,
+      candidateErrors: {},
+      selectedReason: '',
+    })
+  }
+  if (valid.length === 0) return null
+  const candidateErrors = Object.fromEntries(
+    valid.map((candidate) => [candidate.model, candidate.meanReprojectionError]),
+  ) as PlanarFit['candidateErrors']
+  let selected = valid[0]
+  const decisions: string[] = [`${selected.model} baseline`]
+  for (const complex of valid.slice(1)) {
+    const requiredImprovement = Math.max(
+      MODEL_SELECTION_POLICY.absoluteImprovementPx,
+      selected.meanReprojectionError * MODEL_SELECTION_POLICY.relativeImprovement,
+    )
+    const improvement = selected.meanReprojectionError - complex.meanReprojectionError
+    const allowedDeficit = Math.ceil(from.length * MODEL_SELECTION_POLICY.maximumInlierDeficit)
+    const preservesEvidence = complex.inliers.length + allowedDeficit >= selected.inliers.length
+    if (preservesEvidence && improvement > requiredImprovement) {
+      decisions.push(
+        `${complex.model} won: ${improvement.toFixed(3)}px improvement`
+        + ` > ${requiredImprovement.toFixed(3)}px threshold`,
+      )
+      selected = complex
+    } else {
+      decisions.push(
+        `${complex.model} rejected: ${improvement.toFixed(3)}px improvement`
+        + ` <= ${requiredImprovement.toFixed(3)}px threshold`
+        + `${preservesEvidence ? '' : ' or insufficient inliers'}`,
+      )
     }
   }
-  return null
+  return { ...selected, candidateErrors, selectedReason: decisions.join('; ') }
 }
 
 function edgeLengths(points: readonly Point[]): number[] {

@@ -43,6 +43,8 @@ export interface VisualTrackObservation {
     distributedCells?: number
     maskViolations?: number
     rejectionReason: string | null
+    candidateErrors?: Partial<Record<'homography' | 'affine' | 'similarity', number>>
+    selectedModelReason?: string
   }
 }
 
@@ -245,6 +247,11 @@ export class VisualObjectTracker {
 
   clear(): void {
     this.tracks.clear()
+  }
+
+  refreshAuthority(identity: string, decodedAt: number): void {
+    const track = this.tracks.get(identity)
+    if (track) track.anchoredAt = Math.max(track.anchoredAt, decodedAt)
   }
 
   anchor(

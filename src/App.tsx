@@ -38,6 +38,7 @@ import {
 } from './scanner'
 import {
   cadenceRates,
+  decideDecodeReanchor,
   emptyTrackingState,
   observeDetection,
   observeVisualDetection,
@@ -394,6 +395,10 @@ export default function App({
     replayLatencyMs: 0,
     evidenceAgeMs: 0,
     lastRejection: '',
+    decodeRefreshes: 0,
+    suppressedReanchors: 0,
+    forcedReanchors: 0,
+    lastReanchorReason: '',
   })
   const latestOpticalDiagnosticsRef = useRef<OpticalFlowDiagnostics['tracks']>([])
   const trailRef = useRef<TrailPoint[]>([])
@@ -868,6 +873,7 @@ export default function App({
       evidenceAgeMs: number
       actionable: boolean
       holdQualified: boolean
+      stabilization: ReturnType<typeof sampleTracking>['stabilization']
     }> = []
     const anchorOnlyDiagnostics: string[] = []
     for (const [key, state] of trackingRefs.current) {
@@ -930,6 +936,7 @@ export default function App({
         evidenceAgeMs: sample.evidenceAgeMs,
         actionable: sample.actionable,
         holdQualified: sample.holdQualified,
+        stabilization: sample.stabilization,
       })
       if (sample.source === 'visual') {
         registrationDiagnosticsRef.current.evidenceAgeMs = sample.evidenceAgeMs
@@ -979,9 +986,10 @@ export default function App({
     trackingDiagnosticsRef.current = visible.length === 0
       ? anchorOnlyDiagnostics.length > 0 ? anchorOnlyDiagnostics.join(', ') : '0 active'
       : `${visible.length} active · ${visible.map(({
-        source, confidence, ageMs, evidenceAgeMs,
+        source, confidence, ageMs, evidenceAgeMs, stabilization,
       }) => `${source} ${Math.round(confidence * 100)}% anchor ${Math.round(ageMs)}ms`
-        + `/evidence ${Math.round(evidenceAgeMs)}ms`).join(', ')}`
+        + `/evidence ${Math.round(evidenceAgeMs)}ms ${stabilization.motion}`
+        + ` Δ${stabilization.rawFilteredDeltaPx.toFixed(2)}px`).join(', ')}`
         + `${anchorOnlyDiagnostics.length ? ` · ${anchorOnlyDiagnostics.join(', ')}` : ''}`
 
     if (visible.length === 1) {
@@ -1207,9 +1215,12 @@ export default function App({
           `frame ${cadenceRef.current.cameraFrames}  ${video.videoWidth}×${video.videoHeight} → ${Math.round(width)}×${Math.round(height)} @ ${qualityRef.current.tier}`,
           `decoder ${latestDecoder?.[0] ?? 'none'} capture ${latestDecoder ? latestDecoder[1].capturedAt.toFixed(1) : '-'} completion ${latestDecoder ? latestDecoder[1].completedAt.toFixed(1) : '-'} latency ${decodeLatencyRef.current.toFixed(1)}ms`,
           `register Δ${registrationDiagnosticsRef.current.lagMs.toFixed(1)}ms replay ${registrationDiagnosticsRef.current.replayFrames}/${registrationDiagnosticsRef.current.replayLatencyMs.toFixed(1)}ms`,
+          `decode refresh ${registrationDiagnosticsRef.current.decodeRefreshes} suppressed ${registrationDiagnosticsRef.current.suppressedReanchors} forced ${registrationDiagnosticsRef.current.forcedReanchors} ${registrationDiagnosticsRef.current.lastReanchorReason || '-'}`,
           modelDetails.length
-            ? modelDetails.map((item) => `${item.identity.slice(0, 16)} ${item.model} f/s/i ${item.features}/${item.survivors}/${item.inliers} cells ${item.distributedCells ?? '-'} mask-out ${item.maskViolations ?? 0} reproj ${item.reprojectionError.toFixed(2)} FB ${item.forwardBackwardError.toFixed(2)} conf ${(item.confidence * 100).toFixed(0)}%${item.rejectionReason ? ` reject ${item.rejectionReason}` : ''}`).join(' | ')
+            ? modelDetails.map((item) => `${item.identity.slice(0, 16)} ${item.model} f/s/i ${item.features}/${item.survivors}/${item.inliers} cells ${item.distributedCells ?? '-'} mask-out ${item.maskViolations ?? 0} reproj ${item.reprojectionError.toFixed(2)} [${Object.entries(item.candidateErrors ?? {}).map(([model, error]) => `${model[0]}=${error.toFixed(2)}`).join(' ')}] FB ${item.forwardBackwardError.toFixed(2)} conf ${(item.confidence * 100).toFixed(0)}%${item.rejectionReason ? ` reject ${item.rejectionReason}` : ''}`).join(' | ')
             : `model none · reject ${opticalRejectionsRef.current.at(-1) ?? 'none'}`,
+          `selection ${modelDetails.map((item) => item.selectedModelReason ?? 'none').join(' | ') || 'none'}`,
+          `stabilizer ${visible.map((item) => `${item.detection.data.slice(0, 10)} ${item.stabilization.motion} Δ${item.stabilization.rawFilteredDeltaPx.toFixed(2)}px speed ${item.stabilization.normalizedSpeed.toFixed(2)}/s cutoff ${item.stabilization.cutoffHz.toFixed(2)}Hz gain ${item.stabilization.gain.toFixed(2)}`).join(' | ') || 'none'}`,
           `ActionZone ${nextZones.map((zone) => `${zone.id}:${zone.occupant?.playerId ?? '-'} ${zone.status} ${Math.round(zone.progress * 100)}%`).join(' | ') || 'none'}`,
           'LEGEND amber dashed=decoded anchor · cyan/green=current planar fit · trail=model confidence',
         ]
@@ -1232,6 +1243,26 @@ export default function App({
           },
           registration: { ...registrationDiagnosticsRef.current },
           tracking: modelDetails,
+          stabilization: visible.map((item) => ({
+            identity: item.detection.data,
+            state: item.stabilization.motion,
+            rawQuad: item.stabilization.raw,
+            filteredQuad: item.stabilization.filtered,
+            rawCenter: item.stabilization.raw && Object.values(item.stabilization.raw.location)
+              .reduce((sum, point) => ({
+                x: sum.x + point.x / 4,
+                y: sum.y + point.y / 4,
+              }), { x: 0, y: 0 }),
+            filteredCenter: item.stabilization.filtered
+              && Object.values(item.stabilization.filtered.location).reduce((sum, point) => ({
+                x: sum.x + point.x / 4,
+                y: sum.y + point.y / 4,
+              }), { x: 0, y: 0 }),
+            rawFilteredDeltaPx: item.stabilization.rawFilteredDeltaPx,
+            normalizedSpeed: item.stabilization.normalizedSpeed,
+            cutoffHz: item.stabilization.cutoffHz,
+            gain: item.stabilization.gain,
+          })),
           dimensions: {
             source: scanSize,
             video: { width: video.videoWidth, height: video.videoHeight },
@@ -1317,15 +1348,43 @@ export default function App({
     const video = videoRef.current
     if (!video?.videoWidth || !video.videoHeight) return
     for (const { detection, capturedAt, registration } of detections) {
-      const previous = trackingRefs.current.get(detection.data) ?? emptyTrackingState()
-      trackingRefs.current.set(detection.data, observeDetection(previous, detection, capturedAt))
-      if (registration) {
+      const existing = trackingRefs.current.get(detection.data)
+      const latestFrame = trackingHistoryRef.current.latest()
+      const dimensionsAndGenerationMatch = Boolean(
+        registration
+        && registration.generation === cameraGenerationRef.current
+        && (!latestFrame || (
+          registration.width === latestFrame.width
+          && registration.height === latestFrame.height
+          && registration.tier === latestFrame.tier
+        )),
+      )
+      const decision = decideDecodeReanchor(existing, detection, capturedAt, {
+        registered: registration !== null,
+        dimensionsAndGenerationMatch,
+      })
+      const registrationDiagnostics = registrationDiagnosticsRef.current
+      registrationDiagnostics.decodeRefreshes += 1
+      registrationDiagnostics.lastReanchorReason = decision.reason
+      const forced = decision.reason !== 'consistent-refresh'
+        && decision.reason !== 'unregistered-refresh'
+      if (forced) registrationDiagnostics.forcedReanchors += 1
+      else registrationDiagnostics.suppressedReanchors += 1
+      const previous = existing ?? emptyTrackingState()
+      const refreshed = observeDetection(previous, detection, capturedAt)
+      trackingRefs.current.set(detection.data, decision.reanchor
+        ? { ...refreshed, lastReanchorAt: capturedAt }
+        : refreshed)
+      if (!decision.reanchor) {
+        visualTrackerRef.current.refreshAuthority(detection.data, capturedAt)
+      }
+      if (decision.reanchor && registration) {
         pendingOpticalAnchorsRef.current.set(detection.data, {
           detection,
           capturedAt,
           ...registration,
         })
-      } else {
+      } else if (forced && !registration) {
         registrationDiagnosticsRef.current.lastRejection = 'decoder-frame-not-registered'
       }
     }
@@ -1439,6 +1498,11 @@ export default function App({
               size.height,
               now,
               generation,
+              [],
+              Object.fromEntries([...trackingRefs.current].map(([identity, state]) => [
+                identity,
+                state.decodedAt,
+              ])),
             )
         if (request) {
           opticalRequestsRef.current += 1
@@ -1687,6 +1751,11 @@ export default function App({
           + ` · register Δ${registration.lagMs.toFixed(0)}ms`
           + ` replay ${registration.replayFrames}/${registration.replayLatencyMs.toFixed(0)}ms`
           + ` evidence ${registration.evidenceAgeMs.toFixed(0)}ms`
+          + ` decode ${registration.decodeRefreshes}`
+          + ` suppress ${registration.suppressedReanchors}`
+          + ` force ${registration.forcedReanchors}`
+          + `${registration.lastReanchorReason
+            ? ` (${registration.lastReanchorReason})` : ''}`
           + `${registration.lastRejection ? ` reject ${registration.lastRejection}` : ''}`
           + ` · tracker ${opticalReadyRef.current ? 'ready' : 'fallback'}`
           + `${opticalTrackerRef.current?.busy ? '/busy' : '/idle'}`
@@ -1870,7 +1939,7 @@ export default function App({
         workerDecodeLaunched = runWorkerDecode('jsqr', jsqr)
       }
     }
-    if (usableVideo && !workerDecodeLaunched) {
+    if (usableVideo && (!workerDecodeLaunched || !opticalReadyRef.current)) {
       updateVisualTracking(video, time, pendingOpticalAnchorsRef.current.size > 0)
     }
     drawOverlay(time)

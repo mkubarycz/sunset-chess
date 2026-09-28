@@ -161,6 +161,8 @@ function flowTrack(track, current, now, previousFrame = previous) {
       forwardBackwardError: meanFb,
       distributedCells: new Set(cells).size,
       maskViolations: (track.membership ?? []).filter(({ inside }) => !inside).length,
+      candidateErrors: fit?.candidateErrors ?? {},
+      selectedModelReason: fit?.selectedReason ?? 'no valid model',
     }
     const confidence = Math.max(0, Math.min(1,
       survival * .3 + inlierRatio * .45
@@ -425,6 +427,10 @@ self.onmessage = async ({ data }) => {
     let accepted = 0
     let rejected = 0
     const anchorIdentities = new Set(data.anchors.map(({ data: identity }) => identity))
+    for (const [identity, anchoredAt] of Object.entries(data.anchorTimes ?? {})) {
+      const track = tracks.get(identity)
+      if (track) track.anchoredAt = Math.max(track.anchoredAt, anchoredAt)
+    }
     if (previous) {
       for (const [identity, track] of tracks) {
         if (anchorIdentities.has(identity)) continue

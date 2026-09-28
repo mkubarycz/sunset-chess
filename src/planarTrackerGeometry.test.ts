@@ -59,12 +59,35 @@ describe('planar tracker geometry', () => {
   it('selects explicit homography, affine, and similarity fallbacks', () => {
     const all = distributeFeatures(grid(), quad, 30)
     const translated = all.map((point) => ({ x: point.x + 4, y: point.y - 2 }))
-    expect(robustPlanarFit(all, translated, all.map(({ cell }) => cell))?.model).toBe('homography')
+    const translatedFit = robustPlanarFit(all, translated, all.map(({ cell }) => cell))
+    expect(translatedFit?.model).toBe('similarity')
+    expect(translatedFit?.candidateErrors).toEqual(expect.objectContaining({
+      similarity: expect.any(Number),
+      affine: expect.any(Number),
+      homography: expect.any(Number),
+    }))
+    expect(translatedFit?.selectedReason).toContain('homography rejected')
     expect(robustPlanarFit(all.slice(0, 8), translated.slice(0, 8), all.slice(0, 8).map(({ cell }) => cell))?.model)
-      .toBe('affine')
+      .toBe('similarity')
     const local = all.filter(({ cell }) => cell === 0 || cell === 1).slice(0, 5)
     expect(robustPlanarFit(local, local.map((point) => ({ x: point.x + 2, y: point.y })), local.map(({ cell }) => cell))?.model)
       .toBe('similarity')
+  })
+
+  it('uses affine only for material shear and homography only for material perspective', () => {
+    const all = distributeFeatures(grid(), quad, 36)
+    const cells = all.map(({ cell }) => cell)
+    const affine: Matrix3 = [1.08, .18, 3, -.04, .93, 5, 0, 0, 1]
+    const perspective: Matrix3 = [1.02, -.06, 8, .08, .97, -4, .0012, -.0009, 1]
+    const affineFit = robustPlanarFit(all, all.map((point) => applyMatrix(affine, point)), cells)
+    const perspectiveFit = robustPlanarFit(
+      all,
+      all.map((point) => applyMatrix(perspective, point)),
+      cells,
+    )
+    expect(affineFit?.model).toBe('affine')
+    expect(perspectiveFit?.model).toBe('homography')
+    expect(perspectiveFit?.selectedReason).toContain('homography won')
   })
 
   it('rejects invalid and excessive transforms', () => {
@@ -81,4 +104,3 @@ describe('planar tracker geometry', () => {
       .toBe('projective-distortion')
   })
 })
-

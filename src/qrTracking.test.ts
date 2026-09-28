@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   emptyTrackingState,
+  decideDecodeReanchor,
   observeDetection,
   observeVisualDetection,
   rejectVisualDetection,
@@ -20,7 +21,7 @@ const detection = (x: number): QrDetection => ({
 })
 
 describe('QR visual tracking', () => {
-  it('smooths motion between registered visual observations', () => {
+  it('smooths registered observations without predicting between evidence frames', () => {
     let state = observeDetection(emptyTrackingState(), detection(0), 100)
     state = observeVisualDetection(state, detection(0), 100, .9, true)
     state = observeVisualDetection(state, detection(20), 200, .9, true)
@@ -29,10 +30,99 @@ describe('QR visual tracking', () => {
     expect(first.phase).toBe('tracking')
     expect(first.detection!.location.topLeftCorner.x).toBeGreaterThan(0)
     expect(second.detection!.location.topLeftCorner.x)
-      .toBeGreaterThan(first.detection!.location.topLeftCorner.x)
+      .toBe(first.detection!.location.topLeftCorner.x)
     const coast = sampleTracking(second.state, 500)
     expect(coast.phase).toBe('coasting')
     expect(coast.detection!.location.topLeftCorner.x).toBeLessThan(50)
+  })
+
+  it('suppresses consistent decoder refreshes but forces material and stale reanchors', () => {
+    let state = observeDetection(emptyTrackingState(), detection(10), 100)
+    state = observeVisualDetection(state, detection(10), 100, .92, true)
+    state = { ...state, lastReanchorAt: 100 }
+    expect(decideDecodeReanchor(state, detection(10.5), 150, {
+      registered: true,
+      dimensionsAndGenerationMatch: true,
+    })).toMatchObject({ reanchor: false, reason: 'consistent-refresh' })
+    expect(decideDecodeReanchor(state, detection(80), 160, {
+      registered: true,
+      dimensionsAndGenerationMatch: true,
+    })).toMatchObject({ reanchor: true, reason: 'material-disagreement' })
+    expect(decideDecodeReanchor(state, detection(10), 400, {
+      registered: true,
+      dimensionsAndGenerationMatch: true,
+    })).toMatchObject({ reanchor: true, reason: 'visual-evidence-stale' })
+  })
+
+  it('keeps identities independent and requires registration for a new anchor', () => {
+    const first = observeVisualDetection(
+      observeDetection(emptyTrackingState(), detection(10), 100),
+      detection(10),
+      100,
+      .9,
+      true,
+    )
+    const secondDetection = { ...detection(200), data: 'other-player' }
+    const second = observeVisualDetection(
+      observeDetection(emptyTrackingState(), secondDetection, 100),
+      secondDetection,
+      100,
+      .9,
+      true,
+    )
+    expect(first.stabilizer?.filtered.data).toBe('player')
+    expect(second.stabilizer?.filtered.data).toBe('other-player')
+    expect(decideDecodeReanchor(undefined, detection(10), 100, {
+      registered: false,
+      dimensionsAndGenerationMatch: true,
+    })).toMatchObject({ reanchor: false, reason: 'new-identity' })
+  })
+
+  it('refreshes alternating decoder geometry without moving the stabilized current quad', () => {
+    let state = observeDetection(emptyTrackingState(), detection(10), 100)
+    state = observeVisualDetection(state, detection(10), 100, .94, true)
+    state = { ...state, lastReanchorAt: 100 }
+    const stabilized = state.stabilizer?.filtered
+    for (let frame = 1; frame <= 8; frame += 1) {
+      state = observeVisualDetection(state, detection(10), 95 + frame * 40, .94, true)
+      const decoded = detection(10 + (frame % 2 ? .45 : -.45))
+      const decision = decideDecodeReanchor(state, decoded, 100 + frame * 40, {
+        registered: true,
+        dimensionsAndGenerationMatch: true,
+      })
+      expect(decision.reason).toBe('consistent-refresh')
+      state = observeDetection(state, decoded, 100 + frame * 40)
+    }
+    expect(state.decodedAt).toBe(420)
+    expect(state.decodedAnchor).not.toEqual(detection(10))
+    expect(state.stabilizer?.filtered).toEqual(stabilized)
+  })
+
+  it('forces periodic drift control, low-confidence, and dimension changes', () => {
+    let state = observeVisualDetection(
+      observeDetection(emptyTrackingState(), detection(10), 100),
+      detection(10),
+      100,
+      .9,
+      true,
+    )
+    state = { ...state, lastReanchorAt: 100 }
+    expect(decideDecodeReanchor(state, detection(10), 2_601, {
+      registered: true,
+      dimensionsAndGenerationMatch: true,
+    }).reason).toBe('visual-evidence-stale')
+    expect(decideDecodeReanchor({ ...state, visualEvidenceAt: 2_590 }, detection(10), 2_601, {
+      registered: true,
+      dimensionsAndGenerationMatch: true,
+    }).reason).toBe('periodic-drift-control')
+    expect(decideDecodeReanchor({ ...state, confidence: .5 }, detection(10), 150, {
+      registered: true,
+      dimensionsAndGenerationMatch: true,
+    }).reason).toBe('low-confidence')
+    expect(decideDecodeReanchor(state, detection(10), 150, {
+      registered: true,
+      dimensionsAndGenerationMatch: false,
+    }).reason).toBe('dimension-or-generation-change')
   })
 
   it('drops stale markers and snaps cleanly when reacquired', () => {

@@ -5,6 +5,16 @@ import {
   TRACKING_COAST_MS,
   TRACKING_EVIDENCE_MAX_AGE_MS,
 } from './trackingPolicy'
+import {
+  quadArea,
+  quadCenter,
+  quadCornerRms,
+  quadCorners,
+  quadObjectSize,
+  updateQuadStabilizer,
+  type QuadStabilizerState,
+  type StabilizerMotion,
+} from './quadStabilizer'
 
 export type TrackingPhase = 'tracking' | 'coasting' | 'lost'
 
@@ -19,6 +29,8 @@ export interface TrackingState {
   source: 'decoded' | 'visual'
   confidence: number
   actionable: boolean
+  stabilizer: QuadStabilizerState | null
+  lastReanchorAt: number
 }
 
 export interface TrackingSample {
@@ -33,12 +45,18 @@ export interface TrackingSample {
   actionable: boolean
   holdQualified: boolean
   expired: boolean
+  stabilization: {
+    motion: StabilizerMotion
+    raw: QrDetection | null
+    filtered: QrDetection | null
+    rawFilteredDeltaPx: number
+    normalizedSpeed: number
+    cutoffHz: number
+    gain: number
+  }
 }
 
 export { TRACKING_COAST_MS, TRACKING_BRIDGE_MAX_ANCHOR_AGE_MS }
-const SMOOTHING_TIME_MS = 45
-const MAX_PREDICTION_MS = 90
-
 export function emptyTrackingState(): TrackingState {
   return {
     decodedAnchor: null,
@@ -51,27 +69,8 @@ export function emptyTrackingState(): TrackingState {
     source: 'decoded',
     confidence: 0,
     actionable: false,
-  }
-}
-
-function corners(detection: QrDetection): Point[] {
-  return [
-    detection.location.topLeftCorner,
-    detection.location.topRightCorner,
-    detection.location.bottomRightCorner,
-    detection.location.bottomLeftCorner,
-  ]
-}
-
-function mapDetection(detection: QrDetection, map: (point: Point) => Point): QrDetection {
-  return {
-    ...detection,
-    location: {
-      topLeftCorner: map(detection.location.topLeftCorner),
-      topRightCorner: map(detection.location.topRightCorner),
-      bottomRightCorner: map(detection.location.bottomRightCorner),
-      bottomLeftCorner: map(detection.location.bottomLeftCorner),
-    },
+    stabilizer: null,
+    lastReanchorAt: 0,
   }
 }
 
@@ -95,16 +94,18 @@ export function observeVisualDetection(
   confidence: number,
   actionable: boolean,
 ): TrackingState {
+  const stabilizer = updateQuadStabilizer(state.stabilizer, detection, now)
   return {
     ...state,
     target: detection,
-    rendered: state.rendered ?? detection,
-    renderedAt: state.renderedAt || now,
+    rendered: stabilizer.filtered,
+    renderedAt: now,
     visualEvidenceAt: now,
     source: 'visual',
     confidence,
-    actionable,
+    actionable: actionable || confidence >= .78,
     velocity: { x: 0, y: 0 },
+    stabilizer,
   }
 }
 
@@ -135,6 +136,7 @@ export function sampleTracking(state: TrackingState, now: number): TrackingSampl
       actionable: false,
       holdQualified: false,
       expired: true,
+      stabilization: stabilizationDiagnostics(state),
     }
   }
   const age = Math.max(0, decodedAge)
@@ -151,26 +153,12 @@ export function sampleTracking(state: TrackingState, now: number): TrackingSampl
       actionable: false,
       holdQualified: false,
       expired: false,
+      stabilization: stabilizationDiagnostics(state),
     }
   }
-  const elapsed = Math.max(0, now - state.renderedAt)
-  const predictionMs = Math.min(age, MAX_PREDICTION_MS)
-  const predicted = mapDetection(state.target, (point) => ({
-    x: point.x + state.velocity.x * predictionMs,
-    y: point.y + state.velocity.y * predictionMs,
-  }))
-  const alpha = 1 - Math.exp(-elapsed / SMOOTHING_TIME_MS)
-  const renderedPoints = corners(state.rendered)
-  let index = 0
-  const rendered = mapDetection(predicted, (point) => {
-    const previous = renderedPoints[index++]
-    return {
-      x: previous.x + (point.x - previous.x) * alpha,
-      y: previous.y + (point.y - previous.y) * alpha,
-    }
-  })
+  const rendered = state.stabilizer?.filtered ?? state.rendered
   return {
-    state: { ...state, rendered, renderedAt: now },
+    state: { ...state, rendered },
     detection: evidenceAge <= TRACKING_EVIDENCE_MAX_AGE_MS ? rendered : null,
     decodedAnchor: state.decodedAnchor,
     phase: evidenceAge > TRACKING_EVIDENCE_MAX_AGE_MS
@@ -187,7 +175,144 @@ export function sampleTracking(state: TrackingState, now: number): TrackingSampl
       && decodedAge <= TRACKING_BRIDGE_MAX_ANCHOR_AGE_MS
       && (state.source === 'decoded' || state.confidence >= .78),
     expired: false,
+    stabilization: stabilizationDiagnostics(state),
   }
+}
+
+function stabilizationDiagnostics(state: TrackingState): TrackingSample['stabilization'] {
+  const stabilizer = state.stabilizer
+  return {
+    motion: stabilizer?.motion ?? 'moving',
+    raw: stabilizer?.raw ?? state.target,
+    filtered: stabilizer?.filtered ?? state.rendered,
+    rawFilteredDeltaPx: stabilizer?.rawFilteredDeltaPx ?? 0,
+    normalizedSpeed: stabilizer?.normalizedSpeed ?? 0,
+    cutoffHz: stabilizer?.cutoffHz ?? 0,
+    gain: stabilizer?.gain ?? 0,
+  }
+}
+
+export const DECODE_REANCHOR_POLICY = {
+  minimumConfidence: .78,
+  maximumEvidenceAgeMs: 180,
+  periodicDriftControlMs: 2_500,
+  maximumCenterRatio: .06,
+  minimumIou: .72,
+  maximumCornerRmsRatio: .08,
+  minimumAreaRatio: .8,
+  maximumAreaRatio: 1.25,
+  minimumAspectRatio: .85,
+  maximumAspectRatio: 1.18,
+} as const
+
+export type DecodeReanchorReason =
+  | 'new-identity'
+  | 'visual-evidence-stale'
+  | 'visual-evidence-rejected'
+  | 'low-confidence'
+  | 'material-disagreement'
+  | 'periodic-drift-control'
+  | 'dimension-or-generation-change'
+  | 'consistent-refresh'
+  | 'unregistered-refresh'
+
+export interface DecodeReanchorDecision {
+  reanchor: boolean
+  reason: DecodeReanchorReason
+  metrics: {
+    centerRatio: number
+    iou: number
+    cornerRmsRatio: number
+    areaRatio: number
+    aspectRatio: number
+  } | null
+}
+
+function bounds(detection: QrDetection) {
+  const points = quadCorners(detection)
+  const xs = points.map(({ x }) => x)
+  const ys = points.map(({ y }) => y)
+  const left = Math.min(...xs)
+  const top = Math.min(...ys)
+  return {
+    left,
+    top,
+    width: Math.max(1, Math.max(...xs) - left),
+    height: Math.max(1, Math.max(...ys) - top),
+  }
+}
+
+function boxIou(left: ReturnType<typeof bounds>, right: ReturnType<typeof bounds>): number {
+  const x = Math.max(left.left, right.left)
+  const y = Math.max(left.top, right.top)
+  const width = Math.max(0, Math.min(left.left + left.width, right.left + right.width) - x)
+  const height = Math.max(0, Math.min(left.top + left.height, right.top + right.height) - y)
+  const intersection = width * height
+  return intersection / Math.max(
+    1,
+    left.width * left.height + right.width * right.height - intersection,
+  )
+}
+
+export function decideDecodeReanchor(
+  state: TrackingState | undefined,
+  decoded: QrDetection,
+  capturedAt: number,
+  options: { registered: boolean; dimensionsAndGenerationMatch: boolean },
+): DecodeReanchorDecision {
+  if (!state?.target || !state.stabilizer) {
+    return { reanchor: options.registered, reason: 'new-identity', metrics: null }
+  }
+  if (!options.dimensionsAndGenerationMatch) {
+    return { reanchor: options.registered, reason: 'dimension-or-generation-change', metrics: null }
+  }
+  if (!Number.isFinite(state.visualEvidenceAt)) {
+    return { reanchor: options.registered, reason: 'visual-evidence-rejected', metrics: null }
+  }
+  if (capturedAt - state.visualEvidenceAt > DECODE_REANCHOR_POLICY.maximumEvidenceAgeMs) {
+    return { reanchor: options.registered, reason: 'visual-evidence-stale', metrics: null }
+  }
+  if (state.confidence < DECODE_REANCHOR_POLICY.minimumConfidence) {
+    return { reanchor: options.registered, reason: 'low-confidence', metrics: null }
+  }
+  if (capturedAt - state.lastReanchorAt >= DECODE_REANCHOR_POLICY.periodicDriftControlMs) {
+    return { reanchor: options.registered, reason: 'periodic-drift-control', metrics: null }
+  }
+
+  const tracked = state.stabilizer.filtered
+  const trackedCenter = quadCenter(tracked)
+  const decodedCenter = quadCenter(decoded)
+  const size = quadObjectSize(tracked)
+  const trackedBounds = bounds(tracked)
+  const decodedBounds = bounds(decoded)
+  const trackedArea = quadArea(tracked)
+  const decodedArea = quadArea(decoded)
+  const metrics = {
+    centerRatio: Math.hypot(
+      trackedCenter.x - decodedCenter.x,
+      trackedCenter.y - decodedCenter.y,
+    ) / size,
+    iou: boxIou(trackedBounds, decodedBounds),
+    cornerRmsRatio: quadCornerRms(tracked, decoded) / size,
+    areaRatio: decodedArea / Math.max(1, trackedArea),
+    aspectRatio: (decodedBounds.width / decodedBounds.height)
+      / (trackedBounds.width / trackedBounds.height),
+  }
+  const consistent = metrics.centerRatio <= DECODE_REANCHOR_POLICY.maximumCenterRatio
+    && metrics.iou >= DECODE_REANCHOR_POLICY.minimumIou
+    && metrics.cornerRmsRatio <= DECODE_REANCHOR_POLICY.maximumCornerRmsRatio
+    && metrics.areaRatio >= DECODE_REANCHOR_POLICY.minimumAreaRatio
+    && metrics.areaRatio <= DECODE_REANCHOR_POLICY.maximumAreaRatio
+    && metrics.aspectRatio >= DECODE_REANCHOR_POLICY.minimumAspectRatio
+    && metrics.aspectRatio <= DECODE_REANCHOR_POLICY.maximumAspectRatio
+  if (consistent) {
+    return {
+      reanchor: false,
+      reason: options.registered ? 'consistent-refresh' : 'unregistered-refresh',
+      metrics,
+    }
+  }
+  return { reanchor: options.registered, reason: 'material-disagreement', metrics }
 }
 
 export interface CadenceState {
