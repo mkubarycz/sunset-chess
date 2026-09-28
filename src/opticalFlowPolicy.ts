@@ -1,4 +1,9 @@
 import type { QrDetection } from './scanner'
+import {
+  TRACKING_ACTION_ANCHOR_MAX_AGE_MS,
+  TRACKING_BRIDGE_MAX_ANCHOR_AGE_MS,
+  TRACKING_MAX_FRAME_GAP_MS,
+} from './trackingPolicy'
 
 export const LK_MIN_SURVIVORS = 8
 export const LK_MAX_ERROR = 24
@@ -7,10 +12,30 @@ export const LK_MIN_INLIER_RATIO = .65
 export const LK_MIN_SCALE = .75
 export const LK_MAX_SCALE = 1.3
 export const LK_MAX_ROTATION_RADIANS = .7
+export const LK_MAX_REPROJECTION_ERROR_PX = 2.5
+export const LK_AMBIGUITY_DISTANCE_RATIO = .7
 export const LK_MIN_UI_CONFIDENCE = .52
 export const LK_ACTION_CONFIDENCE = .82
-export const LK_ACTION_ANCHOR_AGE_MS = 650
-export const LK_TRACK_EXPIRY_MS = 1_100
+export const LK_ACTION_ANCHOR_AGE_MS = TRACKING_ACTION_ANCHOR_MAX_AGE_MS
+export const LK_TRACK_EXPIRY_MS = TRACKING_BRIDGE_MAX_ANCHOR_AGE_MS
+export const LK_MAX_FRAME_GAP_MS = TRACKING_MAX_FRAME_GAP_MS
+
+export const OPTICAL_FLOW_POLICY = {
+  minSurvivors: LK_MIN_SURVIVORS,
+  maxError: LK_MAX_ERROR,
+  maxForwardBackwardPx: LK_MAX_FORWARD_BACKWARD_PX,
+  minInlierRatio: LK_MIN_INLIER_RATIO,
+  minScale: LK_MIN_SCALE,
+  maxScale: LK_MAX_SCALE,
+  maxRotationRadians: LK_MAX_ROTATION_RADIANS,
+  maxReprojectionErrorPx: LK_MAX_REPROJECTION_ERROR_PX,
+  ambiguityDistanceRatio: LK_AMBIGUITY_DISTANCE_RATIO,
+  minUiConfidence: LK_MIN_UI_CONFIDENCE,
+  actionConfidence: LK_ACTION_CONFIDENCE,
+  actionAnchorAgeMs: LK_ACTION_ANCHOR_AGE_MS,
+  trackExpiryMs: LK_TRACK_EXPIRY_MS,
+  maxFrameGapMs: LK_MAX_FRAME_GAP_MS,
+} as const
 
 export interface FlowValidation {
   originalCount: number

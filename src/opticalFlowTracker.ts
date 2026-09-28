@@ -1,11 +1,14 @@
 import type { QrDetection } from './scanner'
 import type { OpticalFlowRequest, OpticalFlowResponse } from './opticalFlowProtocol'
 import type { VisualTrackObservation } from './visualObjectTracker'
+import { OPTICAL_FLOW_POLICY } from './opticalFlowPolicy'
+import type { OpticalFlowDiagnostics } from './opticalFlowProtocol'
 
 export interface OpticalFlowResult {
   generation: number
   observations: VisualTrackObservation[]
   elapsedMs: number
+  diagnostics: OpticalFlowDiagnostics
 }
 
 type Pending =
@@ -30,7 +33,6 @@ export class OpticalFlowTracker {
   private ready = false
   private stopped = false
   private failure: Error | null = null
-  private anchors: QrDetection[] = []
 
   constructor(
     private readonly worker: Worker,
@@ -46,6 +48,10 @@ export class OpticalFlowTracker {
     return this.pending !== null
   }
 
+  get isReady(): boolean {
+    return this.ready
+  }
+
   initialize(generation: number): Promise<void> {
     if (this.failure) return Promise.reject(this.failure)
     if (this.stopped) return Promise.reject(new Error('OpenCV tracker stopped'))
@@ -59,12 +65,8 @@ export class OpticalFlowTracker {
       )
       this.pending = { kind: 'init', id, resolve, reject, timer }
     })
-    this.post({ type: 'init', id, generation })
+    this.post({ type: 'init', id, generation, policy: OPTICAL_FLOW_POLICY })
     return promise
-  }
-
-  anchor(detections: readonly QrDetection[]): void {
-    this.anchors = [...new Map(detections.map((item) => [item.data, item])).values()]
   }
 
   process(
@@ -73,23 +75,24 @@ export class OpticalFlowTracker {
     height: number,
     capturedAt: number,
     generation: number,
+    anchors: readonly QrDetection[] = [],
+    anchorTimes: Readonly<Record<string, number>> = {},
   ): Promise<OpticalFlowResult> | null {
     if (!this.ready || this.pending || this.stopped || this.failure) return null
     const id = this.nextId++
-    const anchors = this.anchors
-    this.anchors = []
     const promise = new Promise<OpticalFlowResult>((resolve, reject) => {
       const timer = setTimeout(() => this.fail(new Error('OpenCV tracking timed out')), this.timeoutMs)
       this.pending = { kind: 'frame', id, resolve, reject, timer }
     })
     this.post({
-      type: 'frame', id, generation, pixels, width, height, capturedAt, anchors,
+      type: 'frame', id, generation, pixels, width, height, capturedAt,
+      anchors: [...new Map(anchors.map((item) => [item.data, item])).values()],
+      anchorTimes: { ...anchorTimes },
     }, [pixels])
     return promise
   }
 
   clear(generation: number): void {
-    this.anchors = []
     if (!this.stopped) this.post({ type: 'clear', generation })
   }
 

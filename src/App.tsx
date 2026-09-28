@@ -86,6 +86,11 @@ import { GameCard, type OngoingGame } from './GameCard'
 import { createJsQrWorker, createQrWorker, WorkerDecoder } from './workerDecoder'
 import { createOpenCvWorker, OpticalFlowTracker } from './opticalFlowTracker'
 import {
+  TRACKING_CAPTURE_BUDGET_MS,
+  TRACKING_CAPTURE_MAX_INTERVAL_MS,
+  TRACKING_BRIDGE_MAX_ANCHOR_AGE_MS,
+} from './trackingPolicy'
+import {
   selectQuality,
   supportsWasmSimd,
   type QualityProfile,
@@ -329,13 +334,24 @@ export default function App({
   const decoderInputStatsRef = useRef<Partial<Record<DecoderName, DecoderInputStats>>>({})
   const recentDecoderResultsRef = useRef(new Map<
     DecoderName,
-    { completedAt: number; detections: QrDetection[] }
+    { completedAt: number; capturedAt: number; detections: QrDetection[] }
   >())
   const trackerModeRef = useRef<'opencv-lk' | 'lightweight'>('lightweight')
   const trackerFailureRef = useRef('')
   const decodeLatencyRef = useRef(0)
   const trackLatencyRef = useRef(0)
   const lastTrackRef = useRef(0)
+  const trackingCaptureCostRef = useRef(0)
+  const trackingCaptureCountRef = useRef(0)
+  const opticalRequestsRef = useRef(0)
+  const opticalCompletionsRef = useRef(0)
+  const opticalAcceptedRef = useRef(0)
+  const opticalRejectedRef = useRef(0)
+  const opticalRejectionsRef = useRef<string[]>([])
+  const pendingOpticalAnchorsRef = useRef(new Map<string, {
+    detection: QrDetection
+    decodedAt: number
+  }>())
   const qualityRef = useRef<QualityProfile>(selectQuality({
     wasm: typeof WebAssembly !== 'undefined',
     simd: supportsWasmSimd(),
@@ -611,6 +627,7 @@ export default function App({
     opticalTrackerRef.current?.terminate()
     opticalTrackerRef.current = null
     opticalReadyRef.current = false
+    pendingOpticalAnchorsRef.current.clear()
     decoderReadyRef.current = { zxing: false, jsqr: false }
     decoderFailureRef.current.clear()
     decoderInputStatsRef.current = {}
@@ -657,6 +674,7 @@ export default function App({
       source: 'decoded' | 'visual'
       confidence: number
       ageMs: number
+      evidenceAgeMs: number
       actionable: boolean
     }> = []
     for (const [key, state] of trackingRefs.current) {
@@ -678,6 +696,7 @@ export default function App({
         source: sample.source,
         confidence: sample.confidence,
         ageMs: sample.ageMs,
+        evidenceAgeMs: sample.evidenceAgeMs,
         actionable: sample.actionable,
       })
       const corners = Object.values(mapped.location)
@@ -696,8 +715,10 @@ export default function App({
       : visible.every(({ phase }) => phase === 'tracking') ? 'tracking' : 'coasting'
     trackingDiagnosticsRef.current = visible.length === 0
       ? '0 active'
-      : `${visible.length} active · ${visible.map(({ source, confidence, ageMs }) =>
-        `${source} ${Math.round(confidence * 100)}%/${Math.round(ageMs)}ms`).join(', ')}`
+      : `${visible.length} active · ${visible.map(({
+        source, confidence, ageMs, evidenceAgeMs,
+      }) => `${source} ${Math.round(confidence * 100)}% anchor ${Math.round(ageMs)}ms`
+        + `/evidence ${Math.round(evidenceAgeMs)}ms`).join(', ')}`
 
     if (visible.length === 1) {
       const corners = Object.values(visible[0].detection.location)
@@ -856,6 +877,7 @@ export default function App({
     detections: readonly QrDetection[],
     now: number,
     sourceSize: { width: number; height: number },
+    decodedAtByIdentity: Readonly<Record<string, number>> = {},
   ) => {
     cadenceRef.current.decodes += 1
     const video = videoRef.current
@@ -864,18 +886,10 @@ export default function App({
     const normalized = detections.map((detection) =>
       scaleDetection(detection, sourceSize, videoSize))
     for (const detection of normalized) {
+      const decodedAt = decodedAtByIdentity[detection.data] ?? now
       const previous = trackingRefs.current.get(detection.data) ?? emptyTrackingState()
-      trackingRefs.current.set(detection.data, observeDetection(previous, detection, now))
-    }
-    const visualFrame = visualFrameRef.current
-    if (visualFrame) {
-      const scaled = normalized.map((detection) => scaleDetection(
-        detection,
-        videoSize,
-        visualFrame,
-      ))
-      visualTrackerRef.current.anchor(scaled, visualFrame, now)
-      opticalTrackerRef.current?.anchor(scaled)
+      trackingRefs.current.set(detection.data, observeDetection(previous, detection, decodedAt))
+      pendingOpticalAnchorsRef.current.set(detection.data, { detection, decodedAt })
     }
     if (normalized.length === 1) {
       const detection = normalized[0]
@@ -889,9 +903,24 @@ export default function App({
     }
   }, [])
 
-  const updateVisualTracking = useCallback((video: HTMLVideoElement, now: number) => {
+  const updateVisualTracking = useCallback((
+    video: HTMLVideoElement,
+    now: number,
+    forceAnchorCapture = false,
+  ) => {
     const profile = qualityRef.current
-    if (now - lastTrackRef.current < profile.trackIntervalMs) return
+    const adaptiveInterval = Math.min(
+      TRACKING_CAPTURE_MAX_INTERVAL_MS,
+      Math.max(
+        profile.trackIntervalMs,
+        trackingCaptureCostRef.current > TRACKING_CAPTURE_BUDGET_MS
+          ? trackingCaptureCostRef.current * 3
+          : 0,
+      ),
+    )
+    if (!forceAnchorCapture && now - lastTrackRef.current < adaptiveInterval) return
+    const optical = opticalTrackerRef.current
+    if (opticalReadyRef.current && optical?.busy) return
     lastTrackRef.current = now
     const size = scanDimensions(
       video.videoWidth,
@@ -906,10 +935,20 @@ export default function App({
     const context = canvas.getContext('2d', { willReadFrequently: true })
     if (!context) return
     try {
+      const captureStartedAt = performance.now()
       context.drawImage(video, 0, 0, size.width, size.height)
       const image = context.getImageData(0, 0, size.width, size.height)
+      trackingCaptureCostRef.current = performance.now() - captureStartedAt
+      trackingCaptureCountRef.current += 1
       const frame = rgbaToVisualFrame(image.data, size.width, size.height, now)
       if (!frame) return
+      if (
+        visualFrameRef.current
+        && (visualFrameRef.current.width !== frame.width
+          || visualFrameRef.current.height !== frame.height)
+      ) {
+        visualTrackerRef.current.clear()
+      }
       visualFrameRef.current = frame
       const applyObservations = (observations: ReturnType<VisualObjectTracker['update']>) => {
         const visualIdentities = new Set(observations.map(({ detection }) => detection.data))
@@ -926,20 +965,49 @@ export default function App({
           trackingRefs.current.set(tracked.detection.data, observeVisualDetection(
             previous,
             scaleDetection(tracked.detection, frame, videoSize),
-            now,
+            tracked.updatedAt,
             tracked.confidence,
             tracked.actionable,
           ))
         }
       }
-      const optical = opticalTrackerRef.current
+      const pendingAnchors = [...pendingOpticalAnchorsRef.current.values()]
+        .filter(({ detection, decodedAt }) => {
+          if (now - decodedAt <= TRACKING_BRIDGE_MAX_ANCHOR_AGE_MS) return true
+          pendingOpticalAnchorsRef.current.delete(detection.data)
+          return false
+        })
+      const videoSize = { width: video.videoWidth, height: video.videoHeight }
+      const frameAnchors = pendingAnchors.map(({ detection }) =>
+        scaleDetection(detection, videoSize, frame))
+      const anchorTimes = Object.fromEntries(
+        pendingAnchors.map(({ detection, decodedAt }) => [detection.data, decodedAt]),
+      )
+      if (frameAnchors.length > 0) {
+        visualTrackerRef.current.anchor(
+          frameAnchors,
+          frame,
+          now,
+          anchorTimes,
+        )
+      }
       if (opticalReadyRef.current && optical && !optical.busy) {
         const generation = cameraGenerationRef.current
         const buffer = image.data.buffer.slice(0) as ArrayBuffer
-        optical.process(buffer, size.width, size.height, now, generation)
-          ?.then((result) => {
+        const request = optical.process(
+          buffer, size.width, size.height, now, generation, frameAnchors, anchorTimes,
+        )
+        if (request) {
+          opticalRequestsRef.current += 1
+          frameAnchors.forEach(({ data }) => pendingOpticalAnchorsRef.current.delete(data))
+        }
+        request?.then((result) => {
             if (result.generation !== cameraGenerationRef.current) return
             trackLatencyRef.current = result.elapsedMs
+            opticalCompletionsRef.current += 1
+            opticalAcceptedRef.current += result.diagnostics.accepted
+            opticalRejectedRef.current += result.diagnostics.rejected
+            opticalRejectionsRef.current = result.diagnostics.rejectionReasons
             applyObservations(result.observations)
           }).catch(() => {
             if (generation !== cameraGenerationRef.current) return
@@ -948,6 +1016,7 @@ export default function App({
           })
         return
       }
+      frameAnchors.forEach(({ data }) => pendingOpticalAnchorsRef.current.delete(data))
       const observations = visualTrackerRef.current.update(frame, now)
       applyObservations(observations)
     } catch (error) {
@@ -1013,6 +1082,7 @@ export default function App({
     completedAt: number,
     sourceSize: { width: number; height: number },
     generation: number,
+    capturedAt = completedAt,
   ) => {
     if (generation !== cameraGenerationRef.current) return
     const stats = decoderInputStatsRef.current[name]
@@ -1022,7 +1092,7 @@ export default function App({
     const videoSize = { width: video.videoWidth, height: video.videoHeight }
     const normalized = detections.map((detection) =>
       scaleDetection(detection, sourceSize, videoSize))
-    recentDecoderResultsRef.current.set(name, { completedAt, detections: normalized })
+    recentDecoderResultsRef.current.set(name, { completedAt, capturedAt, detections: normalized })
     for (const [decoder, result] of recentDecoderResultsRef.current) {
       if (completedAt - result.completedAt > RESULT_MERGE_WINDOW_MS) {
         recentDecoderResultsRef.current.delete(decoder)
@@ -1035,7 +1105,13 @@ export default function App({
         )
     if (merged.length > 0) lastDecodedAtRef.current = completedAt
     recordQrActivity(generation, merged)
-    recordDetections(merged, completedAt, videoSize)
+    const decodedAtByIdentity = Object.fromEntries(merged.map(({ data }) => [
+      data,
+      Math.max(...[...recentDecoderResultsRef.current.values()]
+        .filter((result) => result.detections.some((detection) => detection.data === data))
+        .map((result) => result.capturedAt)),
+    ]))
+    recordDetections(merged, completedAt, videoSize, decodedAtByIdentity)
   }, [recordDetections, recordQrActivity])
 
   const activateWorkerDecoder = useCallback(function activateWorkerDecoder(
@@ -1093,7 +1169,14 @@ export default function App({
           + `+${decoderReadyRef.current.jsqr ? 'jsqr' : 'no-jsqr'}`
           + `/${trackerModeRef.current} · ${qualityRef.current.tier} · `
           + `${decodeLatencyRef.current.toFixed(0)}ms decode/${trackLatencyRef.current.toFixed(0)}ms track · `
-          + `${rates.cameraFps.toFixed(0)} camera / ${rates.decodeFps.toFixed(0)} decode / ${rates.paintFps.toFixed(0)} paint fps`
+          + `${rates.cameraFps.toFixed(0)} camera / ${rates.decodeFps.toFixed(0)} decode / ${rates.paintFps.toFixed(0)} paint / ${trackingCaptureCountRef.current} track-capture fps`
+          + ` · optical ${opticalRequestsRef.current}/${opticalCompletionsRef.current}`
+          + ` accepted ${opticalAcceptedRef.current}/rejected ${opticalRejectedRef.current}`
+          + ` · capture ${trackingCaptureCostRef.current.toFixed(1)}ms`
+          + ` · tracker ${opticalReadyRef.current ? 'ready' : 'fallback'}`
+          + `${opticalTrackerRef.current?.busy ? '/busy' : '/idle'}`
+          + `${opticalRejectionsRef.current.length
+            ? ` (${opticalRejectionsRef.current.join(',')})` : ''}`
           + ` · ${formatDecoderInputStats(
             video?.videoWidth ?? 0,
             video?.videoHeight ?? 0,
@@ -1108,6 +1191,11 @@ export default function App({
               || trackerFailureRef.current}` : ''}`
       }
       cadenceRef.current = { startedAt: time, cameraFrames: 0, decodes: 0, paints: 0 }
+      trackingCaptureCountRef.current = 0
+      opticalRequestsRef.current = 0
+      opticalCompletionsRef.current = 0
+      opticalAcceptedRef.current = 0
+      opticalRejectedRef.current = 0
       lastDiagnosticsRef.current = time
     }
     let workerDecodeLaunched = false
@@ -1136,7 +1224,7 @@ export default function App({
           if (generation !== cameraGenerationRef.current) return
           recordDecoderResult(
             'native', detections, performance.now(),
-            { width: video.videoWidth, height: video.videoHeight }, generation,
+            { width: video.videoWidth, height: video.videoHeight }, generation, time,
           )
         }).catch((error) => {
           if (nativePendingGenerationRef.current === generation) {
@@ -1204,6 +1292,7 @@ export default function App({
               performance.now(),
               { width: dimensions.width, height: dimensions.height },
               generation,
+              time,
             )
           }).catch((error) => {
             if (generation !== cameraGenerationRef.current) return
@@ -1246,8 +1335,9 @@ export default function App({
         workerDecodeLaunched = runWorkerDecode('jsqr', jsqr)
       }
     }
-    const decoderBusy = zxingDecoderRef.current?.busy || jsQrDecoderRef.current?.busy
-    if (usableVideo && !workerDecodeLaunched && !decoderBusy) updateVisualTracking(video, time)
+    if (usableVideo && !workerDecodeLaunched) {
+      updateVisualTracking(video, time, pendingOpticalAnchorsRef.current.size > 0)
+    }
     drawOverlay(time)
     scheduleScan(generation, (nextTime) => scanFrame(nextTime, generation))
   }, [

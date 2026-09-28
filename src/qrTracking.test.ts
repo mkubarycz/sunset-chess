@@ -4,7 +4,7 @@ import {
   observeDetection,
   observeVisualDetection,
   sampleTracking,
-  TRACKING_LOST_MS,
+  TRACKING_BRIDGE_MAX_ANCHOR_AGE_MS,
 } from './qrTracking'
 import type { QrDetection } from './scanner'
 
@@ -35,10 +35,30 @@ describe('QR visual tracking', () => {
 
   it('drops stale markers and snaps cleanly when reacquired', () => {
     const tracked = observeDetection(emptyTrackingState(), detection(10), 100)
-    expect(sampleTracking(tracked, 100 + TRACKING_LOST_MS + 1).phase).toBe('lost')
-    const reacquired = observeDetection(tracked, detection(200), 100 + TRACKING_LOST_MS + 1)
+    expect(sampleTracking(tracked, 100 + TRACKING_BRIDGE_MAX_ANCHOR_AGE_MS + 1).phase).toBe('lost')
+    const reacquired = observeDetection(
+      tracked,
+      detection(200),
+      100 + TRACKING_BRIDGE_MAX_ANCHOR_AGE_MS + 1,
+    )
     expect(reacquired.rendered).toEqual(detection(200))
     expect(reacquired.velocity).toEqual({ x: 0, y: 0 })
+  })
+
+  it('bridges past 900ms on fresh visual evidence but expires authority and the hard TTL', () => {
+    let state = observeDetection(emptyTrackingState(), detection(10), 100)
+    for (let now = 200; now <= 1_100; now += 100) {
+      state = observeVisualDetection(state, detection(10 + now / 100), now, .9, true)
+    }
+    expect(sampleTracking(state, 1_110)).toMatchObject({
+      phase: 'tracking',
+      actionable: false,
+      ageMs: 1_010,
+    })
+    expect(sampleTracking(
+      observeVisualDetection(state, detection(30), 1_690, .9, true),
+      1_701,
+    ).phase).toBe('lost')
   })
 
   it('exposes visual source, confidence, age, and conservative action eligibility', () => {

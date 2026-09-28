@@ -23,15 +23,15 @@ describe('OpticalFlowTracker worker lifecycle', () => {
     const worker = new FakeWorker()
     const tracker = new OpticalFlowTracker(worker as unknown as Worker, vi.fn())
     await initialize(tracker, worker)
-    tracker.anchor([{
+    const anchors = [{
       data: 'a',
       location: {
         topLeftCorner: { x: 0, y: 0 }, topRightCorner: { x: 1, y: 0 },
         bottomRightCorner: { x: 1, y: 1 }, bottomLeftCorner: { x: 0, y: 1 },
       },
-    }])
+    }]
     const pixels = new ArrayBuffer(16)
-    const result = tracker.process(pixels, 2, 2, 10, 3)
+    const result = tracker.process(pixels, 2, 2, 10, 3, anchors)
     expect(tracker.process(new ArrayBuffer(16), 2, 2, 11, 3)).toBeNull()
     expect(worker.postMessage).toHaveBeenLastCalledWith(
       expect.objectContaining({ type: 'frame', anchors: [expect.objectContaining({ data: 'a' })] }),
@@ -39,6 +39,7 @@ describe('OpticalFlowTracker worker lifecycle', () => {
     )
     worker.respond({
       type: 'result', id: 2, generation: 3, observations: [], elapsedMs: 4,
+      diagnostics: { accepted: 0, rejected: 0, rejectionReasons: [] },
     })
     await expect(result).resolves.toMatchObject({ generation: 3, elapsedMs: 4 })
   })

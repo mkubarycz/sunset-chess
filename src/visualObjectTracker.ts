@@ -1,11 +1,16 @@
 import type { Point, QrDetection } from './scanner'
+import {
+  TRACKING_ACTION_ANCHOR_MAX_AGE_MS,
+  TRACKING_BRIDGE_MAX_ANCHOR_AGE_MS,
+  TRACKING_MAX_FRAME_GAP_MS,
+} from './trackingPolicy'
 
 export const VISUAL_FRAME_MAX_DIMENSION = 640
 export const VISUAL_UI_CONFIDENCE = .48
 export const VISUAL_ACTION_CONFIDENCE = .78
-export const VISUAL_ACTION_ANCHOR_AGE_MS = 650
-export const VISUAL_TRACK_MAX_ANCHOR_AGE_MS = 1_100
-export const VISUAL_TRACK_MAX_FRAME_GAP_MS = 220
+export const VISUAL_ACTION_ANCHOR_AGE_MS = TRACKING_ACTION_ANCHOR_MAX_AGE_MS
+export const VISUAL_TRACK_MAX_ANCHOR_AGE_MS = TRACKING_BRIDGE_MAX_ANCHOR_AGE_MS
+export const VISUAL_TRACK_MAX_FRAME_GAP_MS = TRACKING_MAX_FRAME_GAP_MS
 
 const TEMPLATE_SIZE = 16
 const SEARCH_STEPS = [-1, -.75, -.5, -.25, 0, .25, .5, .75, 1]
@@ -230,7 +235,12 @@ export class VisualObjectTracker {
     this.tracks.clear()
   }
 
-  anchor(detections: readonly QrDetection[], frame: VisualFrame | null, now: number): void {
+  anchor(
+    detections: readonly QrDetection[],
+    frame: VisualFrame | null,
+    now: number,
+    decodedAtByIdentity: Readonly<Record<string, number>> = {},
+  ): void {
     if (!frame) return
     const unique = new Map(detections.map((detection) => [detection.data, detection]))
     const decodedBoxes = new Map(
@@ -255,7 +265,7 @@ export class VisualObjectTracker {
         template,
         source: 'decoded',
         confidence: 1,
-        anchoredAt: now,
+        anchoredAt: decodedAtByIdentity[identity] ?? now,
         updatedAt: now,
         misses: 0,
       })

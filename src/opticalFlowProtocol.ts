@@ -1,8 +1,16 @@
 import type { QrDetection } from './scanner'
 import type { VisualTrackObservation } from './visualObjectTracker'
+import type { OPTICAL_FLOW_POLICY } from './opticalFlowPolicy'
+
+export type OpticalFlowPolicy = typeof OPTICAL_FLOW_POLICY
+export interface OpticalFlowDiagnostics {
+  accepted: number
+  rejected: number
+  rejectionReasons: string[]
+}
 
 export type OpticalFlowRequest =
-  | { type: 'init'; id: number; generation: number }
+  | { type: 'init'; id: number; generation: number; policy: OpticalFlowPolicy }
   | {
       type: 'frame'
       id: number
@@ -12,6 +20,7 @@ export type OpticalFlowRequest =
       capturedAt: number
       pixels: ArrayBuffer
       anchors: QrDetection[]
+      anchorTimes: Record<string, number>
     }
   | { type: 'clear'; generation: number }
 
@@ -23,6 +32,7 @@ export type OpticalFlowResponse =
       generation: number
       observations: VisualTrackObservation[]
       elapsedMs: number
+      diagnostics: OpticalFlowDiagnostics
     }
   | {
       type: 'error'

@@ -56,28 +56,32 @@ coordinates.
 The preferred tracker is OpenCV.js pyramidal Lucas–Kanade optical flow in a
 dedicated module worker. The maintained `@opencvjs/worker` package is built
 specifically for web workers and Vite bundles its version-matched Emscripten
-module into the worker asset; no CDN or runtime network dependency is used. A
-distributed 6×6 feature grid covers each expanded decoded-quad region. Points are
+module into the worker asset; no CDN or runtime network dependency is used. Up
+to 48 Shi–Tomasi corners are selected with OpenCV `goodFeaturesToTrack` from an
+expanded decoded-quad region that includes the quiet zone and outer edges. Points are
 tracked forward and backward through a three-level 21×21 LK pyramid, then fitted
 with a robust similarity transform and a 2.5 px reprojection-inlier pass.
 The track requires at least 8 surviving points, mean LK error ≤24 px,
 forward/backward drift ≤1.5 px, ≥65% affine inliers, scale 0.75–1.30, rotation
 ≤0.7 radians, and UI confidence ≥0.52. Converging/ambiguous identities are both
 dropped. ActionZone evidence requires confidence ≥0.82 and a decode anchor no
-older than 650 ms; frame gaps over 220 ms and anchors over 1.1 seconds expire.
+older than 650 ms; frame gaps over 220 ms expire. Fresh high-confidence visual
+evidence may preserve display continuity through a hard 1.6-second decode-anchor
+TTL, while evidence itself expires after 450 ms without another accepted flow.
 
 If OpenCV fails initialization, lacks required APIs, times out, or fails at
 runtime, diagnostics explicitly switch to the existing bounded normalized-template
 tracker. That fallback uses a 640-pixel maximum frame dimension, 16×16 templates,
 a 6–30 px search radius, 0.9/1.0/1.1 scale candidates, UI confidence ≥0.48,
-ActionZone confidence ≥0.78, and the same short fail-closed age policy. Neither
+ActionZone confidence ≥0.78, the same 650 ms authority ceiling, and the same
+1.6-second hard bridge ceiling. Neither
 tracker creates payload identities: only a decoder can seed or re-anchor one.
 
 These conservative gates let strong visual evidence bridge momentary blur without
 allowing lower-confidence geometry to complete check-in or result actions. They
 also avoid a global “Reacquiring… actions paused” banner: labels and zones can
 remain mounted while their local progress pauses. Diagnostics report each active
-track as decoded or visual with confidence and decode-anchor age.
+track as decoded or visual with confidence, decode-anchor age, and visual-evidence age.
 
 Quality is capability- and latency-driven, never UA-driven. Decode and tracking
 resolution are independent. The initial tier uses
@@ -95,11 +99,18 @@ capable Apple Silicon Macs naturally high quality without excluding equally
 capable non-Mac systems. Camera acquisition still requests the existing high
 ideals and safely accepts lower negotiated modes.
 
-Worker decoding has scheduling priority: a frame that launches a ZXing/jsQR
-capture, and every frame while either worker request is pending, skips optical
-flow capture. Adaptive pressure therefore sheds tracking work before acquisition
-detail. Diagnostics report source resolution plus the actual most-recent
-native/ZXing/jsQR input dimensions and measured attempt interval.
+Decode and tracking are independent single-flight pipelines. A tick that performs
+a full-resolution ZXing/jsQR capture gives that capture priority and skips a
+second main-thread readback, but subsequent ticks continue lower-resolution
+tracking while the decoder worker is busy. Tracking never queues pixel frames.
+Capture cost is measured; work above the 10 ms budget progressively spaces
+tracking captures, capped at a 120 ms interval. Every successful decode leaves a
+bounded identity/coordinate anchor that is scaled into the exact next tracking
+frame before either OpenCV or the fallback processes it, so the first decode
+seeds tracking and tier-size changes cannot mix coordinate spaces. Diagnostics
+report tracking-capture FPS and cost, optical requests/completions,
+accepted/rejected counts and recent rejection reasons, tracker ready/busy state,
+plus source resolution and decoder input dimensions/cadence.
 
 ### Long-range regression fixed
 

@@ -11,6 +11,7 @@ import type { NativeBarcodeDetector } from './nativeBarcodeDecoder'
 import { truncateRawPayload } from './qrPayload'
 import type { DecodeRequest, DecodeResponse } from './workerProtocol'
 import type { QrDetection } from './scanner'
+import type { OpticalFlowRequest, OpticalFlowResponse } from './opticalFlowProtocol'
 
 class FakeWorker extends EventTarget {
   postMessage = vi.fn((request: DecodeRequest) => {
@@ -27,6 +28,21 @@ class FakeWorker extends EventTarget {
   })
   terminate = vi.fn()
   respond(response: DecodeResponse) {
+    this.dispatchEvent(new MessageEvent('message', { data: response }))
+  }
+}
+
+class FakeOpticalWorker extends EventTarget {
+  postMessage = vi.fn((request: OpticalFlowRequest) => {
+    if (request.type !== 'init') return
+    queueMicrotask(() => this.respond({
+      type: 'ready',
+      id: request.id,
+      generation: request.generation,
+    }))
+  })
+  terminate = vi.fn()
+  respond(response: OpticalFlowResponse) {
     this.dispatchEvent(new MessageEvent('message', { data: response }))
   }
 }
@@ -456,7 +472,7 @@ describe('scanner and player producer', () => {
     expect(await screen.findByText('native-long-range')).toBeInTheDocument()
   })
 
-  it('keeps lower-resolution tracking independent and yields while decode is pending', async () => {
+  it('keeps lower-resolution tracking running while decode is pending without a queue', async () => {
     const camera = setupCamera()
     const worker = new FakeWorker()
     render(<App
@@ -476,7 +492,8 @@ describe('scanner and player producer', () => {
     expect(camera.context.drawImage).toHaveBeenCalledTimes(1)
 
     act(() => camera.callbacks.shift()?.(performance.now() + 500))
-    expect(camera.context.drawImage).toHaveBeenCalledTimes(1)
+    expect(camera.context.drawImage).toHaveBeenCalledTimes(2)
+    expect(camera.context.drawImage).toHaveBeenLastCalledWith(video, 0, 0, 640, 360)
 
     act(() => worker.respond({
       type: 'result',
@@ -487,6 +504,79 @@ describe('scanner and player producer', () => {
     }))
     act(() => camera.callbacks.shift()?.(performance.now() + 510))
     expect(camera.context.drawImage).toHaveBeenLastCalledWith(video, 0, 0, 640, 360)
+  })
+
+  it('seeds the first decode into the next exact tracking frame and never queues optical frames', async () => {
+    const camera = setupCamera()
+    const decoder = new FakeWorker()
+    const optical = new FakeOpticalWorker()
+    render(<App
+      workerFactory={() => decoder as unknown as Worker}
+      openCvWorkerFactory={() => optical as unknown as Worker}
+      nativeDetectorFactory={() => null}
+    />)
+    const video = screen.getByLabelText('Mirrored live camera preview')
+    Object.defineProperties(video, {
+      videoWidth: { configurable: true, value: 1920 },
+      videoHeight: { configurable: true, value: 1080 },
+      readyState: { configurable: true, value: HTMLMediaElement.HAVE_CURRENT_DATA },
+    })
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Scanning for a QR code'))
+    await act(async () => undefined)
+
+    const decodeCapturedAt = performance.now() + 400
+    act(() => camera.callbacks.shift()?.(decodeCapturedAt))
+    const decode = decoder.postMessage.mock.calls[0][0] as DecodeRequest
+    await act(async () => decoder.respond({
+      type: 'result',
+      id: decode.id,
+      generation: decode.generation,
+      detections: [{
+        data: 'first-anchor',
+        location: {
+          topLeftCorner: { x: 960, y: 540 }, topRightCorner: { x: 1_080, y: 540 },
+          bottomRightCorner: { x: 1_080, y: 660 }, bottomLeftCorner: { x: 960, y: 660 },
+        },
+      }],
+      elapsedMs: 5,
+    }))
+
+    act(() => camera.callbacks.shift()?.(performance.now() + 500))
+    const firstFrame = optical.postMessage.mock.calls
+      .map(([request]) => request as OpticalFlowRequest)
+      .find((request) => request.type === 'frame')
+    if (!firstFrame || firstFrame.type !== 'frame') throw new Error('expected optical frame')
+    act(() => camera.callbacks.shift()?.(performance.now() + 600))
+    expect(optical.postMessage.mock.calls.filter(([request]) => request.type === 'frame'))
+      .toHaveLength(1)
+    act(() => optical.respond({
+      type: 'result',
+      id: firstFrame.id,
+      generation: firstFrame.generation,
+      observations: [],
+      elapsedMs: 4,
+      diagnostics: { accepted: 0, rejected: 0, rejectionReasons: [] },
+    }))
+    act(() => camera.callbacks.shift()?.(performance.now() + 700))
+    const frame = optical.postMessage.mock.calls
+      .map(([request]) => request as OpticalFlowRequest)
+      .find((request) => request.type === 'frame' && request.anchors.length > 0)
+    expect(frame).toMatchObject({
+      type: 'frame',
+      width: 640,
+      height: 360,
+      anchors: [{
+        data: 'first-anchor',
+        location: {
+          topLeftCorner: { x: 320, y: 180 },
+          topRightCorner: { x: 360, y: 180 },
+        },
+      }],
+      anchorTimes: { 'first-anchor': decodeCapturedAt },
+    })
+
+    expect(optical.postMessage.mock.calls.filter(([request]) => request.type === 'frame'))
+      .toHaveLength(2)
   })
 
   it('reports negotiated camera settings, optional tuning, and opt-in zoom', async () => {
@@ -583,7 +673,7 @@ describe('scanner and player producer', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Scanning for a QR code')
   })
 
-  it('keeps result UI through a decode miss, pauses actions, and expires after 900ms', async () => {
+  it('keeps result UI through a decode miss, pauses actions, and expires at the bridge TTL', async () => {
     const camera = setupCamera()
     let now = 1_000
     vi.spyOn(performance, 'now').mockImplementation(() => now)
@@ -650,11 +740,14 @@ describe('scanner and player producer', () => {
     now += 100
     await act(async () => camera.callbacks.shift()?.(now))
     expect(screen.queryByText('Reacquiring… actions paused')).not.toBeInTheDocument()
-    expect(screen.getByRole('group', { name: 'White, left lane, choose winner' })).toBe(winnerZone)
-    expect(within(winnerZone).getByRole('progressbar')).toHaveAttribute('aria-valuenow', '0')
+    const reacquiredWinner = screen.getByRole('group', {
+      name: 'White, left lane, choose winner',
+    })
+    expect(reacquiredWinner).toHaveClass('status-active')
+    expect(within(reacquiredWinner).getByRole('progressbar')).toHaveAttribute('aria-valuenow', '0')
 
     detections = []
-    now += 1_000
+    now += 1_700
     await act(async () => camera.callbacks.shift()?.(now))
     expect(screen.queryByRole('group', { name: 'Report result for Table 1' })).not.toBeInTheDocument()
     expect(screen.queryByRole('group', { name: 'Game context for Table 1' })).not.toBeInTheDocument()
