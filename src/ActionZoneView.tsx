@@ -33,6 +33,15 @@ export function ActionZoneView({
     >
       <strong>{zone.label}</strong>
       <span aria-hidden={compactResult || undefined}>{zone.instructions}</span>
+      {zone.occupant && (
+        <span className="visually-hidden" aria-live="polite">
+          {zone.status === 'paused'
+            ? `${zone.label} hold paused at ${Math.round(zone.progress * 100)} percent`
+            : zone.status === 'holding'
+              ? `${zone.label} holding at ${Math.round(zone.progress * 100)} percent`
+              : ''}
+        </span>
+      )}
       <div className="action-zone-hold-track">
         <div
           className="action-zone-hold-progress"

@@ -28,6 +28,10 @@ body {
 .preview video, .preview canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 .preview video { object-fit: cover; transform: scaleX(-1); }
 .preview canvas { pointer-events: none; }
+.tracking-legend { position: absolute; z-index: 5; right: 12px; bottom: 10px; display: flex; gap: 10px; padding: 5px 8px; border-radius: 8px; color: rgba(255,255,255,.9); background: rgba(13,9,17,.7); font-size: .64rem; font-weight: 750; pointer-events: none; }
+.tracking-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.tracking-legend i { width: 18px; height: 0; border-top: 3px solid #64e6df; }
+.tracking-legend .decoded-anchor-key { border-top: 2px dashed rgba(255,181,71,.9); }
 .preview-placeholder { position: absolute; inset: 0; display: grid; place-items: center; background: radial-gradient(circle, #33283e, #0e0a13 68%); }
 .preview-placeholder span { color: rgba(255, 226, 154, .35); font-size: clamp(5rem, 16vw, 10rem); }
 .scan-corners { position: absolute; inset: 12%; border: 2px solid rgba(255, 226, 154, .38); border-radius: 18px; box-shadow: inset 0 0 32px rgba(255, 199, 125, .08); pointer-events: none; }

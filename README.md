@@ -10,15 +10,17 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
 - Five-minute camera inactivity shutdown, reset by every decoded QR code (including arbitrary payloads), with a restart action
 - Complementary native `BarcodeDetector` and ZXing-C++ WebAssembly multi-QR
   scanning, with worker-based `jsQR` as an additional staggered attempt
-- Mirrored, responsive polygon and bounded payload label that follow `object-fit: cover`
+- Mirrored, responsive dual polygons and bounded payload label that follow
+  `object-fit: cover`: dashed amber is the last decoded QR anchor and solid cyan
+  is the current accepted tracked object
 - Identity-bound visual QR object tracking between decodes, with explicit
   decoded/visual/coasting/lost state, confidence, anchor age, and stale expiry
 - On-screen negotiated camera settings, optional-control state, camera/decode/paint
   cadence, fresh/present state, and compact per-track source/confidence/age diagnostics
 - Persisted player QR producer with 2-inch card and 0.9-inch sticker print modes
 - Reusable ActionZones for top-corner check-in and lane-aware per-player
-  Win/Draw/Lose choices, with exact two-second holds and bounded DOM-only
-  progress updates
+  Win/Draw/Lose choices, with motion-tolerant accumulated two-second holds and
+  bounded DOM-only progress updates
 - Friendly player labels while retaining support for arbitrary QR strings
 - Persistent players and chess games through a local MCP endpoint
 - Responsive, horizontally scrollable ongoing-game thumbnail rail with a compact
@@ -59,13 +61,15 @@ specifically for web workers and Vite bundles its version-matched Emscripten
 module into the worker asset; no CDN or runtime network dependency is used. Up
 to 48 Shi–Tomasi corners are selected with OpenCV `goodFeaturesToTrack` from an
 expanded decoded-quad region that includes the quiet zone and outer edges. Points are
-tracked forward and backward through a three-level 21×21 LK pyramid, then fitted
+tracked forward and backward with a 31×31 LK window through pyramid level 4, then fitted
 with a robust similarity transform and a 2.5 px reprojection-inlier pass.
 The track requires at least 8 surviving points, mean LK error ≤24 px,
 forward/backward drift ≤1.5 px, ≥65% affine inliers, scale 0.75–1.30, rotation
 ≤0.7 radians, and UI confidence ≥0.52. Converging/ambiguous identities are both
-dropped. ActionZone evidence requires confidence ≥0.82 and a decode anchor no
-older than 650 ms; frame gaps over 220 ms expire. Fresh high-confidence visual
+dropped. Final-result ActionZone authority requires confidence ≥0.82 and a decode
+anchor no older than 650 ms; frame gaps over 220 ms expire. Check-in may additionally
+accumulate on accepted visual evidence at confidence ≥0.78 while its decode identity
+anchor remains within the hard 1.6-second bridge. Fresh high-confidence visual
 evidence may preserve display continuity through a hard 1.6-second decode-anchor
 TTL, while evidence itself expires after 450 ms without another accepted flow.
 
@@ -77,8 +81,11 @@ ActionZone confidence ≥0.78, the same 650 ms authority ceiling, and the same
 1.6-second hard bridge ceiling. Neither
 tracker creates payload identities: only a decoder can seed or re-anchor one.
 
-These conservative gates let strong visual evidence bridge momentary blur without
-allowing lower-confidence geometry to complete check-in or result actions. They
+The current-object box disappears after 450 ms without accepted visual evidence;
+the separate decoded anchor may remain as a location reference until its 1.6-second
+TTL, and never counts as current presence by itself. These conservative gates let
+strong visual evidence bridge momentary blur without allowing lower-confidence
+geometry to complete check-in or result actions. They
 also avoid a global “Reacquiring… actions paused” banner: labels and zones can
 remain mounted while their local progress pauses. Diagnostics report each active
 track as decoded or visual with confidence, decode-anchor age, and visual-evidence age.
@@ -139,23 +146,25 @@ Restarting the camera probes the preferred video-frame callback path again.
 
 ActionZones share one typed model and renderer across all camera interactions:
 stable ID, semantic action, mirrored screen lane, responsive rectangle, copy,
-occupant, status (including paused/reacquiring), hold duration/progress,
+occupant, status (including paused), hold duration/progress,
 accessibility, and reset/completion
 identity. Check-in uses mirrored fixed, inset squares in the preview. Their sides are 42% of the preview's shortest
 dimension, clamped to 130–190 CSS pixels, with a 4% inset clamped to 12–20
 pixels. They render only while at least one valid player QR is present; an
 empty stage instead says “Scan your chess piece to log in”. Only a valid
-player QR whose mapped center is inside its lane's square can occupy it. Fresh decoded or action-eligible visual evidence starts an uninterrupted two-second hold.
+player QR whose mapped center is inside its lane's square can occupy it. Once occupied,
+the center may move within an exit boundary expanded by 20% of the square (at least
+18 CSS pixels); new occupants must still enter the original square. Fresh decoded or
+accepted high-confidence visual evidence accumulates toward the two-second hold.
 A brief decode miss with weaker evidence keeps
 the zone, name, and game context mounted through the
-existing 900 ms presence horizon, but pauses and resets its hold without a
-global reacquisition banner. Fresh evidence starts a new full two-second hold
-without remounting the zones. If multiple distinct codes overlap the squares,
+bounded visual-presence horizon and pauses the hold for up to 650 ms without a
+global reacquisition banner. Requalification resumes preserved progress; only a
+longer gap, changed identity, camera generation, re-entry reset, or completion clears
+it. If multiple distinct codes overlap the squares,
 the current occupant is stable; otherwise the center-nearest identity wins
-deterministically. Only one player can check in at a time. Coasting/loss,
-target exit or identity changes,
-camera generation changes, and result
-mode reset holds immediately. The single-code `jsQR` fallback supports this
+deterministically. Only one player can check in at a time. Coasting or a larger target exit pauses first; identity and camera-generation changes
+reset immediately. The single-code `jsQR` fallback supports this
 one-player path only.
 
 When a visible player belongs to an ongoing game, a larger instance of the
@@ -170,19 +179,22 @@ Draw, and Lose ActionZones. The stack is inset 12–20 CSS pixels from its outer
 preview edge and scales down to a tested 32-pixel minimum for very short stages;
 the centered game card remains clear. Win + Lose or Lose + Win records a
 decisive result by seat, while Draw + Draw records `1/2-1/2`. Every other pair
-is an explicit conflict. Valid pairs share exactly one two-second timer with
-both detections fresh. Coasting preserves result mode but pauses actions and
-resets the shared timer. The displayed preview is
+is an explicit conflict. Valid pairs share exactly one accumulated two-second timer with both detections
+strictly authoritative. Missing authority pauses progress for at most 450 ms and
+re-acquisition resumes it, but submission is possible only on a currently authoritative
+frame. The displayed preview is
 mirrored, so source coordinates are transformed through the same mirrored
 `object-fit: cover` mapping used by tracking before lane and zone matching.
 Identity-to-lane assignment is latched from mapped preview x-order with center
 hysteresis: a small crossing cannot swap the players mid-hold, while a true
 rebind resets the shared timer. Both engaged zones render the same timer
-progress. Invalid pairs render an explicit conflict, and switching either choice
-starts a fresh hold. More than two actively tracked valid player codes produce
+progress. A selected result zone has an 8% (minimum 6 CSS pixels) exit hysteresis;
+new choices still require the original rectangle. Invalid pairs render an explicit
+conflict and reset, and switching either choice starts a fresh hold. More than two actively tracked valid player codes produce
 an explicit no-action warning rather than an arbitrary selection.
-Leaving a zone, loss of fresh evidence, identity/game/lane changes, or restarting the
-camera resets both result holds immediately. The winner maps to canonical PGN
+Leaving beyond hysteresis or loss of fresh evidence pauses within the 450 ms retention;
+identity/game/lane changes, conflicting choices, or restarting the camera reset
+immediately. The winner maps to canonical PGN
 `1-0` or `0-1`, and Draw + Draw maps to `1/2-1/2`; submission remains
 single-flight through the immutable endpoint.
 
@@ -245,7 +257,8 @@ single-card check-in and stable selection when two cards overlap the target;
 the centered game card and opposite-lane waiting copy; each player's square,
 outer-edge Win/Draw/Lose choices; every invalid pair; Draw + Draw; both decisive
 mappings; exact two-second simultaneous result
-hold; immediate reset when either result code leaves, changes lane, or tracking coasts;
+hold with short authority gaps and natural hand wiggle; reset after retention,
+choice conflicts, lane changes, and camera restart;
 post-result move-away/re-entry; and one request/animation per completion. Also verify
 the diagnostics against the actual camera's negotiated resolution/frame rate and
 control readback. Unit tests use mocked media

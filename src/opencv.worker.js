@@ -144,11 +144,11 @@ function flowTrack(track, current, now) {
   const backward = new cv.Mat()
   const backwardStatus = new cv.Mat()
   const backwardError = new cv.Mat()
-  const win = new cv.Size(21, 21)
-  const criteria = new cv.TermCriteria(cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 20, .03)
+  const win = new cv.Size(31, 31)
+  const criteria = new cv.TermCriteria(cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 30, .02)
   try {
-    cv.calcOpticalFlowPyrLK(previous, current, track.points, forward, forwardStatus, forwardError, win, 3, criteria)
-    cv.calcOpticalFlowPyrLK(current, previous, forward, backward, backwardStatus, backwardError, win, 3, criteria)
+    cv.calcOpticalFlowPyrLK(previous, current, track.points, forward, forwardStatus, forwardError, win, 4, criteria)
+    cv.calcOpticalFlowPyrLK(current, previous, forward, backward, backwardStatus, backwardError, win, 4, criteria)
     const from = []
     const to = []
     let totalError = 0

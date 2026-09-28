@@ -718,20 +718,27 @@ describe('scanner and player producer', () => {
       readyState: { configurable: true, value: HTMLMediaElement.HAVE_CURRENT_DATA },
     })
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Scanning for a QR code'))
-    for (let index = 0; index < 2; index += 1) {
+    for (let index = 0; index < 4; index += 1) {
       now += 100
       await act(async () => camera.callbacks.shift()?.(now))
     }
     const resultGroup = screen.getByRole('group', { name: 'Report result for Table 1' })
     const winnerZone = screen.getByRole('group', { name: 'White, left lane, choose winner' })
+    const progressBeforeGap = Number(
+      within(winnerZone).getByRole('progressbar').getAttribute('aria-valuenow'),
+    )
+    expect(progressBeforeGap).toBeGreaterThan(0)
 
     detections = []
-    now += 400
+    now += 200
     await act(async () => camera.callbacks.shift()?.(now))
     expect(screen.getByRole('group', { name: 'Report result for Table 1' })).toBe(resultGroup)
     expect(screen.getByRole('group', { name: 'White, left lane, choose winner' })).toBe(winnerZone)
     expect(screen.queryByText('Reacquiring… actions paused')).not.toBeInTheDocument()
     expect(winnerZone).toHaveClass('status-paused')
+    expect(within(winnerZone).getByText(/hold paused at .* percent/i)).toBeInTheDocument()
+    expect(within(winnerZone).getByRole('progressbar'))
+      .toHaveAttribute('aria-valuenow', String(progressBeforeGap))
     expect(finalizeGame).not.toHaveBeenCalled()
 
     detections = visible
@@ -743,8 +750,9 @@ describe('scanner and player producer', () => {
     const reacquiredWinner = screen.getByRole('group', {
       name: 'White, left lane, choose winner',
     })
-    expect(reacquiredWinner).toHaveClass('status-active')
-    expect(within(reacquiredWinner).getByRole('progressbar')).toHaveAttribute('aria-valuenow', '0')
+    expect(reacquiredWinner).toHaveClass('status-holding')
+    expect(Number(within(reacquiredWinner).getByRole('progressbar')
+      .getAttribute('aria-valuenow'))).toBeGreaterThanOrEqual(progressBeforeGap)
 
     detections = []
     now += 1_700

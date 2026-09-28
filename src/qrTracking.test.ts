@@ -3,6 +3,7 @@ import {
   emptyTrackingState,
   observeDetection,
   observeVisualDetection,
+  rejectVisualDetection,
   sampleTracking,
   TRACKING_BRIDGE_MAX_ANCHOR_AGE_MS,
 } from './qrTracking'
@@ -75,5 +76,41 @@ describe('QR visual tracking', () => {
     const sample = sampleTracking(uncertain, 190)
     expect(sample.detection?.data).toBe('player')
     expect(sample.actionable).toBe(false)
+  })
+
+  it('keeps the decoded anchor independent while accepted visual motion updates the object', () => {
+    const decoded = observeDetection(emptyTrackingState(), detection(10), 100)
+    const visual = observeVisualDetection(decoded, detection(90), 180, .9, true)
+    expect(visual.decodedAnchor).toEqual(detection(10))
+    expect(visual.target).toEqual(detection(90))
+    const sample = sampleTracking(visual, 190)
+    expect(sample.decodedAnchor).toEqual(detection(10))
+    expect(sample.detection!.location.topLeftCorner.x).toBeGreaterThan(10)
+    expect(sample.holdQualified).toBe(true)
+  })
+
+  it('hides a stale current object while retaining its bounded decoded anchor', () => {
+    const decoded = observeDetection(emptyTrackingState(), detection(10), 100)
+    const stale = sampleTracking(decoded, 551)
+    expect(stale).toMatchObject({
+      detection: null,
+      decodedAnchor: detection(10),
+      phase: 'lost',
+      actionable: false,
+      holdQualified: false,
+      expired: false,
+    })
+    const expired = sampleTracking(decoded, 1_701)
+    expect(expired.decodedAnchor).toBeNull()
+    expect(expired.expired).toBe(true)
+  })
+
+  it('removes a rejected current box immediately without discarding its decoded anchor', () => {
+    const decoded = observeDetection(emptyTrackingState(), detection(10), 100)
+    const visual = observeVisualDetection(decoded, detection(40), 150, .9, true)
+    const rejected = sampleTracking(rejectVisualDetection(visual), 160)
+    expect(rejected.detection).toBeNull()
+    expect(rejected.decodedAnchor).toEqual(detection(10))
+    expect(rejected.expired).toBe(false)
   })
 })

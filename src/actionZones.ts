@@ -4,6 +4,12 @@ import type { Point, QrDetection } from './scanner'
 export const ACTION_HOLD_MS = 2_000
 export const LANE_HYSTERESIS_RATIO = .08
 export const REENTRY_DEBOUNCE_MS = 350
+export const CHECK_IN_HOLD_RETENTION_MS = 650
+export const RESULT_HOLD_RETENTION_MS = 450
+export const CHECK_IN_ZONE_HYSTERESIS_RATIO = .2
+export const CHECK_IN_ZONE_HYSTERESIS_MIN_PX = 18
+export const RESULT_ZONE_HYSTERESIS_RATIO = .08
+export const RESULT_ZONE_HYSTERESIS_MIN_PX = 6
 
 export type ResultChoice = 'winner' | 'draw' | 'loser'
 export type ActionZoneAction = 'check-in' | ResultChoice
@@ -46,7 +52,10 @@ export interface ActionZone {
 
 export interface HoldState {
   key: string | null
-  startedAt: number | null
+  accumulatedMs: number
+  lastUpdatedAt: number | null
+  lastQualifiedAt: number | null
+  pausedAt: number | null
   completed: boolean
 }
 
@@ -54,11 +63,16 @@ export interface HoldUpdate {
   state: HoldState
   progress: number
   completedNow: boolean
+  holding: boolean
+  paused: boolean
+  resetReason: 'none' | 'expired' | 'changed' | 'explicit'
 }
 
 export interface CheckInState {
   hold: HoldState
   occupantKey: string | null
+  occupant: PlayerDetection | null
+  occupantLane: ActionZoneLane | null
 }
 
 export interface CheckInUpdate {
@@ -109,13 +123,18 @@ export interface ReentryLatchState {
 
 export const emptyHoldState = (): HoldState => ({
   key: null,
-  startedAt: null,
+  accumulatedMs: 0,
+  lastUpdatedAt: null,
+  lastQualifiedAt: null,
+  pausedAt: null,
   completed: false,
 })
 
 export const emptyCheckInState = (): CheckInState => ({
   hold: emptyHoldState(),
   occupantKey: null,
+  occupant: null,
+  occupantLane: null,
 })
 
 export const emptyLaneBindingState = (): LaneBindingState => ({
@@ -144,6 +163,17 @@ export function detectionCenter(detection: QrDetection): Point {
 export function pointInRect(point: Point, rect: Rect): boolean {
   return point.x >= rect.x && point.x <= rect.x + rect.width
     && point.y >= rect.y && point.y <= rect.y + rect.height
+}
+
+export function expandRect(rect: Rect, ratio: number, minimumPx: number): Rect {
+  const xInset = Math.max(minimumPx, rect.width * ratio)
+  const yInset = Math.max(minimumPx, rect.height * ratio)
+  return {
+    x: rect.x - xInset,
+    y: rect.y - yInset,
+    width: rect.width + xInset * 2,
+    height: rect.height + yInset * 2,
+  }
 }
 
 export function screenLane(point: Point, width: number): ActionZoneLane {
@@ -217,24 +247,85 @@ export function updateHold(
   assignmentKey: string | null,
   now: number,
   holdDurationMs = ACTION_HOLD_MS,
+  options: {
+    qualified?: boolean
+    retentionMs?: number
+    reset?: boolean
+  } = {},
 ): HoldUpdate {
-  if (!assignmentKey) {
-    return { state: emptyHoldState(), progress: 0, completedNow: false }
-  }
-  if (state.key !== assignmentKey || state.startedAt === null) {
-    return {
-      state: { key: assignmentKey, startedAt: now, completed: false },
-      progress: 0,
-      completedNow: false,
-    }
-  }
-  const progress = Math.min(1, Math.max(0, (now - state.startedAt) / holdDurationMs))
-  const completedNow = progress >= 1 && !state.completed
-  return {
-    state: { ...state, completed: state.completed || completedNow },
-    progress,
+  const {
+    qualified = assignmentKey !== null,
+    retentionMs = 0,
+    reset = false,
+  } = options
+  const response = (
+    next: HoldState,
+    completedNow = false,
+    resetReason: HoldUpdate['resetReason'] = 'none',
+  ): HoldUpdate => ({
+    state: next,
+    progress: Math.min(1, Math.max(0, next.accumulatedMs / holdDurationMs)),
     completedNow,
+    holding: qualified && next.key !== null,
+    paused: !qualified && next.key !== null,
+    resetReason,
+  })
+  if (reset) return response(emptyHoldState(), false, 'explicit')
+  if (assignmentKey && state.key && state.key !== assignmentKey) {
+    return response({
+      key: assignmentKey,
+      accumulatedMs: 0,
+      lastUpdatedAt: now,
+      lastQualifiedAt: qualified ? now : null,
+      pausedAt: qualified ? null : now,
+      completed: false,
+    }, false, 'changed')
   }
+  if (!state.key && assignmentKey) {
+    return response({
+      key: assignmentKey,
+      accumulatedMs: 0,
+      lastUpdatedAt: now,
+      lastQualifiedAt: qualified ? now : null,
+      pausedAt: qualified ? null : now,
+      completed: false,
+    })
+  }
+  if (!state.key) return response(state)
+  const lastQualifiedAt = state.lastQualifiedAt ?? state.lastUpdatedAt ?? now
+  if (!qualified) {
+    if (now - lastQualifiedAt > retentionMs) {
+      return response(emptyHoldState(), false, 'expired')
+    }
+    return response({
+      ...state,
+      lastUpdatedAt: now,
+      pausedAt: state.pausedAt ?? now,
+    })
+  }
+  if (!assignmentKey || assignmentKey !== state.key) {
+    if (now - lastQualifiedAt > retentionMs) {
+      return response(emptyHoldState(), false, 'expired')
+    }
+    return response({
+      ...state,
+      lastUpdatedAt: now,
+      pausedAt: state.pausedAt ?? now,
+    })
+  }
+  const elapsed = state.pausedAt === null && state.lastUpdatedAt !== null
+    ? Math.max(0, now - state.lastUpdatedAt)
+    : 0
+  const accumulatedMs = Math.min(holdDurationMs, state.accumulatedMs + elapsed)
+  const completedNow = accumulatedMs >= holdDurationMs && !state.completed
+  return response({
+    ...state,
+    accumulatedMs,
+    lastUpdatedAt: now,
+    lastQualifiedAt: now,
+    pausedAt: null,
+    completed: state.completed || completedNow,
+  }, completedNow)
 }
 
 export function checkInZoneRect(
@@ -279,10 +370,6 @@ export function updateCheckInZones(
     freshPlayerIds,
   } = options
   if (!enabled) return { state: emptyCheckInState(), zones: [], completed: [] }
-
-  if (players.length === 0) {
-    return { state: emptyCheckInState(), zones: [], completed: [] }
-  }
   const lanes = ['left', 'right'] as const
   const rects = Object.fromEntries(lanes.map((lane) => [
     lane,
@@ -295,7 +382,17 @@ export function updateCheckInZones(
   }>()
   for (const player of players) {
     const center = detectionCenter(player.detection)
-    const lane = lanes.find((candidate) => pointInRect(center, rects[candidate]))
+    const isCurrent = playerKey(player) === state.occupantKey
+    const lane = lanes.find((candidate) => pointInRect(
+      center,
+      isCurrent && state.occupantLane === candidate
+        ? expandRect(
+            rects[candidate],
+            CHECK_IN_ZONE_HYSTERESIS_RATIO,
+            CHECK_IN_ZONE_HYSTERESIS_MIN_PX,
+          )
+        : rects[candidate],
+    ))
     if (!lane) continue
     const rect = rects[lane]
     const zoneCenter = {
@@ -317,21 +414,32 @@ export function updateCheckInZones(
       || a.player.playerId - b.player.playerId
       || aKey.localeCompare(bKey)
   })[0]
-  const occupant = selected?.[1].player ?? null
-  const occupantLane = selected?.[1].lane ?? null
-  const occupantKey = selected?.[0] ?? null
-  const blocked = occupant ? blockedPlayerIds.has(occupant.playerId) : false
-  const fresh = occupant
-    ? (freshPlayerIds?.has(occupant.playerId) ?? true)
+  const activeOccupant = selected?.[1].player ?? null
+  const activeLane = selected?.[1].lane ?? null
+  const activeKey = selected?.[0] ?? null
+  const retainedOccupant = activeOccupant ?? state.occupant
+  const retainedLane = activeLane ?? state.occupantLane
+  const retainedKey = activeKey ?? state.occupantKey
+  const blocked = retainedOccupant ? blockedPlayerIds.has(retainedOccupant.playerId) : false
+  const fresh = activeOccupant
+    ? (freshPlayerIds?.has(activeOccupant.playerId) ?? true)
     : false
-  const assignmentKey = occupant && !blocked && fresh
-    ? `${resetKey}:${occupantKey}`
+  const assignmentKey = retainedOccupant && !blocked
+    ? `${resetKey}:${retainedKey}`
     : null
-  const hold = updateHold(state.hold, assignmentKey, now, holdDurationMs)
+  const hold = updateHold(state.hold, assignmentKey, now, holdDurationMs, {
+    qualified: Boolean(activeOccupant && fresh && !blocked),
+    retentionMs: CHECK_IN_HOLD_RETENTION_MS,
+    reset: blocked,
+  })
+  const keepRetained = hold.state.key !== null
+  const occupant = activeOccupant ?? (keepRetained ? retainedOccupant : null)
+  const occupantLane = activeLane ?? (keepRetained ? retainedLane : null)
+  const occupantKey = activeKey ?? (keepRetained ? retainedKey : null)
   return {
-    state: { hold: hold.state, occupantKey },
-    completed: hold.completedNow && occupant ? [occupant] : [],
-    zones: lanes.map((lane) => {
+    state: { hold: hold.state, occupantKey, occupant, occupantLane },
+    completed: hold.completedNow && activeOccupant ? [activeOccupant] : [],
+    zones: players.length === 0 && !occupant ? [] : lanes.map((lane) => {
       const laneOccupant = occupantLane === lane ? occupant : null
       return {
         id: `check-in-${lane}`,
@@ -342,13 +450,13 @@ export function updateCheckInZones(
         instructions: laneOccupant
           ? blocked
             ? 'Move QR away, then re-enter to check in'
-            : fresh ? 'Hold steady for 2 seconds' : 'Hold paused'
+            : hold.paused ? 'Hold paused — keep the same piece nearby' : 'Hold for 2 seconds'
           : 'Place player QR here',
         occupant: laneOccupant,
         status: laneOccupant
           ? blocked
             ? 'complete'
-            : !fresh ? 'paused' : hold.progress > 0 ? 'holding' : 'active'
+            : hold.paused ? 'paused' : hold.progress > 0 ? 'holding' : 'active'
           : 'idle',
         holdDurationMs,
         progress: laneOccupant ? hold.progress : 0,
@@ -526,6 +634,7 @@ export function evaluateResultChoices(
   context: GameContext,
   width: number,
   height: number,
+  previousAssignment: ResultAssignment | null = null,
 ): ResultChoiceEvaluation {
   const incomplete = (): ResultChoiceEvaluation => ({
     status: 'incomplete',
@@ -541,8 +650,16 @@ export function evaluateResultChoices(
     [context.opponentLane, context.opponent],
   ] as const) {
     const center = detectionCenter(player.detection)
-    const action = (['winner', 'draw', 'loser'] as const).find((choice) =>
-      pointInRect(center, resultZoneRect(lane, choice, width, height)))
+    const previousChoice = previousAssignment?.choices[player.playerId]
+    const action = (['winner', 'draw', 'loser'] as const).find((choice) => {
+      const rect = resultZoneRect(lane, choice, width, height)
+      return pointInRect(
+        center,
+        previousChoice === choice
+          ? expandRect(rect, RESULT_ZONE_HYSTERESIS_RATIO, RESULT_ZONE_HYSTERESIS_MIN_PX)
+          : rect,
+      )
+    })
     if (!action) return {
       status: 'incomplete',
       assignment: null,

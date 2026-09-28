@@ -41,6 +41,7 @@ import {
   emptyTrackingState,
   observeDetection,
   observeVisualDetection,
+  rejectVisualDetection,
   sampleTracking,
   type CadenceState,
   type TrackingPhase,
@@ -73,6 +74,7 @@ import {
   updateHold,
   updateLaneBinding,
   updateReentryLatch,
+  RESULT_HOLD_RETENTION_MS,
   type ActionZone,
   type CheckInState,
   type GameContext,
@@ -80,6 +82,7 @@ import {
   type LaneBindingState,
   type PlayerDetection,
   type ReentryLatchState,
+  type ResultAssignment,
 } from './actionZones'
 import { ActionZoneView } from './ActionZoneView'
 import { GameCard, type OngoingGame } from './GameCard'
@@ -372,6 +375,7 @@ export default function App({
   const resultRequestRef = useRef<AbortController | null>(null)
   const gameContextRef = useRef<GameContext | null>(null)
   const resultHoldRef = useRef<HoldState>(emptyHoldState())
+  const resultAssignmentRef = useRef<ResultAssignment | null>(null)
   const submittedResultRef = useRef<string | null>(null)
   const checkInStateRef = useRef<CheckInState>(emptyCheckInState())
   const actionZonesRef = useRef<ActionZone[]>([])
@@ -390,6 +394,7 @@ export default function App({
   const clearResultMode = useCallback(() => {
     gameContextRef.current = null
     resultHoldRef.current = emptyHoldState()
+    resultAssignmentRef.current = null
     submittedResultRef.current = null
     setGameContext(null)
   }, [])
@@ -472,6 +477,7 @@ export default function App({
       setCheckInNotice(error instanceof Error ? error.message : 'Could not record the result.')
       submittedResultRef.current = null
       resultHoldRef.current = emptyHoldState()
+      resultAssignmentRef.current = null
     }).finally(() => {
       if (resultRequestRef.current === controller) resultRequestRef.current = null
     })
@@ -676,20 +682,60 @@ export default function App({
       ageMs: number
       evidenceAgeMs: number
       actionable: boolean
+      holdQualified: boolean
     }> = []
+    const anchorOnlyDiagnostics: string[] = []
     for (const [key, state] of trackingRefs.current) {
       const sample = sampleTracking(state, now)
-      if (!sample.detection) {
+      if (sample.expired) {
         trackingRefs.current.delete(key)
         continue
       }
       trackingRefs.current.set(key, sample.state)
-      const mapped = mapDetectionToPreview(
+      const decodedAnchor = sample.decodedAnchor && mapDetectionToPreview(
+        sample.decodedAnchor,
+        { width: video.videoWidth, height: video.videoHeight },
+        { width, height },
+        scanSize,
+      )
+      const mapped = sample.detection && mapDetectionToPreview(
         sample.detection,
         { width: video.videoWidth, height: video.videoHeight },
         { width, height },
         scanSize,
       )
+      const drawPolygon = (
+        detection: QrDetection,
+        strokeStyle: string,
+        lineWidth: number,
+        dash: number[] = [],
+      ) => {
+        const corners = Object.values(detection.location)
+        context.beginPath()
+        context.moveTo(corners[0].x, corners[0].y)
+        corners.slice(1).forEach((point) => context.lineTo(point.x, point.y))
+        context.closePath()
+        context.lineWidth = lineWidth
+        context.setLineDash?.(dash)
+        context.strokeStyle = strokeStyle
+        context.shadowColor = 'rgba(17, 8, 28, .65)'
+        context.shadowBlur = 5
+        context.stroke()
+        context.setLineDash?.([])
+      }
+      if (decodedAnchor) {
+        const anchorCenter = Object.values(decodedAnchor.location)
+          .reduce((total, point) => ({ x: total.x + point.x / 4, y: total.y + point.y / 4 }), { x: 0, y: 0 })
+        const trackedCenter = mapped && Object.values(mapped.location)
+          .reduce((total, point) => ({ x: total.x + point.x / 4, y: total.y + point.y / 4 }), { x: 0, y: 0 })
+        const displaced = !trackedCenter
+          || Math.hypot(anchorCenter.x - trackedCenter.x, anchorCenter.y - trackedCenter.y) >= 4
+        if (displaced) drawPolygon(decodedAnchor, 'rgba(255, 181, 71, .72)', 2, [7, 5])
+      }
+      if (!mapped) {
+        anchorOnlyDiagnostics.push(`decoded anchor ${Math.round(sample.ageMs)}ms (object absent)`)
+        continue
+      }
       visible.push({
         detection: mapped,
         phase: sample.phase,
@@ -698,27 +744,24 @@ export default function App({
         ageMs: sample.ageMs,
         evidenceAgeMs: sample.evidenceAgeMs,
         actionable: sample.actionable,
+        holdQualified: sample.holdQualified,
       })
-      const corners = Object.values(mapped.location)
-      context.beginPath()
-      context.moveTo(corners[0].x, corners[0].y)
-      corners.slice(1).forEach((point) => context.lineTo(point.x, point.y))
-      context.closePath()
-      context.lineWidth = 4
-      context.strokeStyle = sample.phase === 'tracking' ? '#ffe29a' : 'rgba(255,226,154,.55)'
-      context.shadowColor = 'rgba(17, 8, 28, .8)'
-      context.shadowBlur = 8
-      context.stroke()
+      drawPolygon(
+        mapped,
+        sample.phase === 'tracking' ? '#64e6df' : 'rgba(100,230,223,.48)',
+        4,
+      )
     }
     trackingPhaseRef.current = visible.length === 0
       ? 'lost'
       : visible.every(({ phase }) => phase === 'tracking') ? 'tracking' : 'coasting'
     trackingDiagnosticsRef.current = visible.length === 0
-      ? '0 active'
+      ? anchorOnlyDiagnostics.length > 0 ? anchorOnlyDiagnostics.join(', ') : '0 active'
       : `${visible.length} active · ${visible.map(({
         source, confidence, ageMs, evidenceAgeMs,
       }) => `${source} ${Math.round(confidence * 100)}% anchor ${Math.round(ageMs)}ms`
         + `/evidence ${Math.round(evidenceAgeMs)}ms`).join(', ')}`
+        + `${anchorOnlyDiagnostics.length ? ` · ${anchorOnlyDiagnostics.join(', ')}` : ''}`
 
     if (visible.length === 1) {
       const corners = Object.values(visible[0].detection.location)
@@ -748,6 +791,10 @@ export default function App({
       if (!actionable) return []
       return resolvedPlayerDetection(detection)
     })
+    const holdQualifiedPlayerIds = new Set(visible.flatMap(({ detection, holdQualified }) => {
+      if (!holdQualified) return []
+      return resolvedPlayerDetection(detection).map(({ playerId }) => playerId)
+    }))
     const presentPlayerIds = new Set(presentPlayerDetections.map(({ playerId }) => playerId))
     const freshPlayerIds = new Set(freshPlayerDetections.map(({ playerId }) => playerId))
     presenceStateRef.current =
@@ -768,7 +815,10 @@ export default function App({
       width,
     )
     laneBindingRef.current = laneBinding.state
-    if (laneBinding.changed) resultHoldRef.current = emptyHoldState()
+    if (laneBinding.changed) {
+      resultHoldRef.current = emptyHoldState()
+      resultAssignmentRef.current = null
+    }
     const interactionPlayers = reentryLatchRef.current.blocked || tooManyPlayers
       ? []
       : relevantPresentPlayers
@@ -802,7 +852,7 @@ export default function App({
         enabled: !matchedGame && !tooManyPlayers,
         blockedPlayerIds,
         resetKey: String(cameraGenerationRef.current),
-        freshPlayerIds,
+        freshPlayerIds: holdQualifiedPlayerIds,
       },
     )
     checkInStateRef.current = checkInUpdate.state
@@ -824,32 +874,52 @@ export default function App({
     let nextZones = checkInUpdate.zones
     if (tooManyPlayers) {
       resultHoldRef.current = emptyHoldState()
+      resultAssignmentRef.current = null
       updateOverlayMessage('Too many player codes — show no more than two')
       if (gameContextRef.current && !resultRequestRef.current) clearResultMode()
     } else if (!matchedGame) {
       resultHoldRef.current = emptyHoldState()
+      resultAssignmentRef.current = null
       updateOverlayMessage('')
       if (gameContextRef.current && !resultRequestRef.current) clearResultMode()
     } else {
       if (gameContextRef.current?.key !== matchedGame.key) {
         resultHoldRef.current = emptyHoldState()
+        resultAssignmentRef.current = null
         setGameContext(matchedGame)
       }
       gameContextRef.current = matchedGame
-      const evaluation = evaluateResultChoices(matchedGame, width, height)
+      const evaluation = evaluateResultChoices(
+        matchedGame,
+        width,
+        height,
+        resultAssignmentRef.current,
+      )
       const bothFresh = matchedGame.opponent !== null
         && freshPlayerIds.has(matchedGame.anchor.playerId)
         && freshPlayerIds.has(matchedGame.opponent.playerId)
-      const assignment = bothFresh ? evaluation.assignment : null
-      const hold = updateHold(resultHoldRef.current, assignment?.key ?? null, now)
+      const assignment = evaluation.assignment
+      const hold = updateHold(
+        resultHoldRef.current,
+        assignment?.key ?? null,
+        now,
+        undefined,
+        {
+          qualified: Boolean(bothFresh && assignment),
+          retentionMs: RESULT_HOLD_RETENTION_MS,
+          reset: evaluation.status === 'conflict',
+        },
+      )
       resultHoldRef.current = hold.state
+      if (assignment) resultAssignmentRef.current = assignment
+      else if (hold.state.key === null) resultAssignmentRef.current = null
       updateOverlayMessage(evaluation.status === 'conflict' && bothFresh
           ? 'Result conflict — choose Win + Lose or Draw + Draw'
           : '')
       nextZones = matchedGame.resultReady
         ? createResultZones(matchedGame, width, height, hold, evaluation, !bothFresh)
         : createDisabledResultZones(matchedGame, width, height)
-      if (hold.completedNow && assignment && matchedGame.opponent) {
+      if (hold.completedNow && bothFresh && assignment && matchedGame.opponent) {
         submitResult(
           matchedGame.game.id,
           assignment.result,
@@ -954,7 +1024,7 @@ export default function App({
         const visualIdentities = new Set(observations.map(({ detection }) => detection.data))
         for (const [identity, state] of trackingRefs.current) {
           if (state.source === 'visual' && !visualIdentities.has(identity)) {
-            trackingRefs.current.delete(identity)
+            trackingRefs.current.set(identity, rejectVisualDetection(state))
           }
         }
         const videoSize = { width: video.videoWidth, height: video.videoHeight }
@@ -1603,6 +1673,12 @@ export default function App({
         <div className="preview" ref={previewRef}>
           <video ref={videoRef} muted playsInline aria-label="Mirrored live camera preview" />
           <canvas ref={overlayRef} aria-hidden="true" />
+          {cameraState === 'active' && (
+            <div className="tracking-legend" aria-label="Tracking overlay legend">
+              <span><i className="decoded-anchor-key" />Last decoded QR</span>
+              <span><i className="tracked-object-key" />Tracked object</span>
+            </div>
+          )}
           {parsed && (
             <div
               className={`payload-label ${parsed.kind}`}

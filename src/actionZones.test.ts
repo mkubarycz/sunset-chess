@@ -64,6 +64,53 @@ describe('generic ActionZone holds and lane assignment', () => {
     expect(ACTION_HOLD_MS).toBe(2_000)
   })
 
+  it('accumulates qualified time, pauses a brief gap, and only completes while qualified', () => {
+    let update = updateHold(emptyHoldState(), 'a', 0, 2_000, {
+      qualified: true, retentionMs: 650,
+    })
+    update = updateHold(update.state, 'a', 500, 2_000, {
+      qualified: true, retentionMs: 650,
+    })
+    expect(update.progress).toBe(.25)
+    update = updateHold(update.state, null, 600, 2_000, {
+      qualified: false, retentionMs: 650,
+    })
+    expect(update).toMatchObject({ progress: .25, paused: true, completedNow: false })
+    update = updateHold(update.state, 'a', 1_000, 2_000, {
+      qualified: true, retentionMs: 650,
+    })
+    expect(update.progress).toBe(.25)
+    update = updateHold(update.state, 'a', 2_500, 2_000, {
+      qualified: true, retentionMs: 650,
+    })
+    expect(update).toMatchObject({ progress: 1, holding: true, completedNow: true })
+  })
+
+  it('expires retained progress and immediately changes identity', () => {
+    let update = updateHold(emptyHoldState(), 'a', 0, 2_000, {
+      qualified: true, retentionMs: 650,
+    })
+    update = updateHold(update.state, 'a', 600, 2_000, {
+      qualified: true, retentionMs: 650,
+    })
+    update = updateHold(update.state, null, 1_251, 2_000, {
+      qualified: false, retentionMs: 650,
+    })
+    expect(update.state).toEqual(emptyHoldState())
+    expect(update.resetReason).toBe('expired')
+
+    const changed = updateHold(
+      updateHold(emptyHoldState(), 'a', 0).state,
+      'b',
+      100,
+      2_000,
+      { qualified: true, retentionMs: 650 },
+    )
+    expect(changed.state.key).toBe('b')
+    expect(changed.progress).toBe(0)
+    expect(changed.resetReason).toBe('changed')
+  })
+
   it('uses mapped mirrored screen centers to assign lanes', () => {
     expect(screenLane({ x: 199, y: 50 }, 400)).toBe('left')
     expect(screenLane({ x: 200, y: 50 }, 400)).toBe('right')
@@ -161,7 +208,7 @@ describe('check-in ActionZones', () => {
     expect(guarded.completed).toEqual([])
   })
 
-  it('keeps a coasting player zone mounted while resetting its irreversible hold', () => {
+  it('keeps a coasting player zone mounted while pausing its retained hold', () => {
     const detected = player(1000, 50, 50)
     const started = updateCheckInZones(
       emptyCheckInState(), [detected], 400, 300, 0,
@@ -174,10 +221,11 @@ describe('check-in ActionZones', () => {
     expect(paused.zones[0]).toMatchObject({
       id: 'check-in-left',
       status: 'paused',
-      instructions: 'Hold paused',
+      instructions: 'Hold paused — keep the same piece nearby',
       progress: 0,
     })
-    expect(paused.state.hold).toEqual(emptyHoldState())
+    expect(paused.state.hold.key).not.toBeNull()
+    expect(paused.state.hold.pausedAt).toBe(500)
     const reacquired = updateCheckInZones(
       paused.state, [detected], 400, 300, 600,
       { freshPlayerIds: new Set([1000]) },
@@ -185,6 +233,32 @@ describe('check-in ActionZones', () => {
     expect(reacquired.zones[0].id).toBe('check-in-left')
     expect(reacquired.zones[0].progress).toBe(0)
     expect(reacquired.completed).toEqual([])
+  })
+
+  it('retains a zone occupant through small boundary jitter then pauses and expires farther out', () => {
+    let update = updateCheckInZones(
+      emptyCheckInState(), [player(1000, 130, 60)], 400, 300, 0,
+      { freshPlayerIds: new Set([1000]) },
+    )
+    update = updateCheckInZones(
+      update.state, [player(1000, 158, 60)], 400, 300, 500,
+      { freshPlayerIds: new Set([1000]) },
+    )
+    expect(update.zones[0]).toMatchObject({
+      status: 'holding',
+      progress: .25,
+      occupant: { playerId: 1000 },
+    })
+    update = updateCheckInZones(
+      update.state, [player(1000, 180, 60)], 400, 300, 600,
+      { freshPlayerIds: new Set([1000]) },
+    )
+    expect(update.zones[0]).toMatchObject({ status: 'paused', progress: .25 })
+    update = updateCheckInZones(
+      update.state, [player(1000, 180, 60)], 400, 300, 1_151,
+      { freshPlayerIds: new Set([1000]) },
+    )
+    expect(update.zones[0]).toMatchObject({ status: 'idle', progress: 0 })
   })
 
   it('supports a single fallback detection but cannot create result mode', () => {
@@ -340,6 +414,53 @@ describe('game context and per-lane square results', () => {
       player(1001, 350, resultZoneRect('right', 'winner', 400, 300).y + 10),
     ], [game()], 400)!
     expect(evaluateResultChoices(reverse, 400, 300).assignment?.result).toBe('1-0')
+  })
+
+  it('retains a result choice at its small exit boundary without accepting ambiguity', () => {
+    const winner = resultZoneRect('left', 'winner', 400, 300)
+    const loser = resultZoneRect('right', 'loser', 400, 300)
+    const initial = matchGameContext([
+      player(1000, winner.x + winner.width - 2, winner.y + 10),
+      player(1001, loser.x + 2, loser.y + 10),
+    ], [game()], 400)!
+    const assignment = evaluateResultChoices(initial, 400, 300).assignment!
+    const jittered = matchGameContext([
+      player(1000, winner.x + winner.width + 5, winner.y + 10),
+      player(1001, loser.x - 5, loser.y + 10),
+    ], [game()], 400)!
+    expect(evaluateResultChoices(jittered, 400, 300, assignment).assignment?.key)
+      .toBe(assignment.key)
+
+    const conflict = matchGameContext([
+      player(1000, resultZoneRect('left', 'winner', 400, 300).x + 10, winner.y + 10),
+      player(1001, resultZoneRect('right', 'winner', 400, 300).x + 10, winner.y + 10),
+    ], [game()], 400)!
+    expect(evaluateResultChoices(conflict, 400, 300, assignment).status).toBe('conflict')
+  })
+
+  it('pauses result progress without authority, resumes, and resets a conflicting choice', () => {
+    let hold = updateHold(emptyHoldState(), 'win-lose', 0, 2_000, {
+      qualified: true, retentionMs: 450,
+    })
+    hold = updateHold(hold.state, 'win-lose', 900, 2_000, {
+      qualified: true, retentionMs: 450,
+    })
+    hold = updateHold(hold.state, 'win-lose', 1_000, 2_000, {
+      qualified: false, retentionMs: 450,
+    })
+    expect(hold).toMatchObject({ progress: .45, paused: true, completedNow: false })
+    hold = updateHold(hold.state, 'win-lose', 1_300, 2_000, {
+      qualified: true, retentionMs: 450,
+    })
+    expect(hold.progress).toBe(.45)
+    hold = updateHold(hold.state, 'win-lose', 2_400, 2_000, {
+      qualified: true, retentionMs: 450,
+    })
+    expect(hold.completedNow).toBe(true)
+    const conflict = updateHold(hold.state, null, 2_401, 2_000, {
+      qualified: false, retentionMs: 450, reset: true,
+    })
+    expect(conflict.state).toEqual(emptyHoldState())
   })
 
   it('builds disabled result choices for both lanes while an opponent is absent', () => {
