@@ -69,8 +69,8 @@ export function SunsetChessLogo({
 
       <g clipPath={`url(#${clipId})`}>
         <rect className="logo-sky" width="360" height="180" />
-        <circle className="logo-sun-halo" cx="180" cy="72" r="55" />
-        <circle className="logo-sun" cx="180" cy="72" r="45" />
+        <circle className="logo-sun-halo" cx="180" cy="84" r="110" />
+        <circle className="logo-sun" cx="180" cy="84" r="96" />
 
         <path
           className="logo-horizon logo-horizon-far"
