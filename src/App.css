@@ -98,19 +98,20 @@ body {
 .brand-name { margin: 0; font: 700 1.42rem/1.05 Georgia, serif; letter-spacing: .01em; }
 .sunset-chess-logo { display: block; width: min(100%, 520px); height: auto; }
 .sunset-chess-logo-compact { width: 148px; max-height: 78px; }
-.logo-sky { fill: var(--ink-850); }
+.logo-sky { fill: #b77b2f; }
 .logo-sun-halo { fill: rgba(232, 111, 54, .3); }
 .logo-sun { fill: var(--amber); }
 .logo-horizon-far { fill: #a64d3c; }
 .logo-horizon-near { fill: #47262d; }
 .logo-piece, .logo-foreground { fill: var(--ink-950); }
 .logo-pawn {
-  fill: #252b33;
+  fill: #050608;
   stroke: rgba(255, 246, 229, .68);
   stroke-width: 1.25;
   paint-order: stroke fill;
   vector-effect: non-scaling-stroke;
 }
+.logo-queen-dot-cutout { fill: var(--amber); }
 .logo-frame { fill: none; stroke: rgba(255, 246, 229, .2); stroke-width: 2; }
 
 .eyebrow {

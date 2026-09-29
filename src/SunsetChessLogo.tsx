@@ -124,6 +124,8 @@ export function SunsetChessLogo({
           widthScale={0.62}
           className="logo-piece logo-queen"
         />
+        <circle className="logo-queen-dot-cutout" cx="143" cy="17.5" r="15" aria-hidden="true" />
+        <circle className="logo-piece logo-queen-crown-dot" cx="143" cy="17.5" r="9.5" aria-hidden="true" />
         <ChessIcon
           definition={faChessBishop}
           x={224}
