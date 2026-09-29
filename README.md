@@ -4,14 +4,15 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
 
 ## Features
 
-- A full-height dashboard with a practical three-column desktop template:
-  player tools and a ranked Elo table in the independently scrolling left rail,
-  the largest available interaction stage in the center, and independently
-  scrolling Live/Completed game sections in the right rail
+- A full-height dashboard with three independent desktop columns: a substantially
+  larger primary column for the brand, ranked Elo table, player-card creator, and
+  compact scanner controls; plus separate, independently scrolling Ongoing Games
+  and Recent Games columns
 - Presence-driven camera presentation: capture and decoding continue while the
-  mirrored camera layer is visually hidden; a valid tracked player piece fades
-  the interaction layer in, and the existing bounded tracking expiry fades it
-  out rather than reacting to individual missed decode frames
+  fixed, full-viewport mirrored interaction overlay is visually hidden; a valid
+  tracked player piece fades it over the unchanged dashboard, and the existing
+  bounded tracking expiry fades it out rather than reacting to individual missed
+  decode frames. The camera is never a dashboard column or idle placeholder.
 - Diagnostic recording explicitly forces the camera layer visible for its
   10-second run. Permission, error, inactive, and restart controls remain
   available while the mirror is hidden.
@@ -20,10 +21,10 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
 - A high-contrast ink/ivory/amber palette, restrained 3–6px surface corners,
   visible keyboard focus, tabular standings numerals, and distinct
   success/error/draw colors
-- Responsive reflow: desktop uses left/stage/right columns, tablet preserves a
-  wide stage beside the tools and places game feeds below it, and mobile orders
-  brand → stage → live → completed → leaderboard → player-card creator without
-  horizontal overflow
+- Responsive reflow: desktop uses primary/ongoing/recent columns, tablet places
+  the full-width primary workspace above side-by-side game feeds, and mobile
+  orders brand → scanner status → leaderboard → player-card creator → ongoing →
+  recent without horizontal overflow
 - Smooth camera capture using `requestVideoFrameCallback` (with RAF fallback), an ideal
   1920×1080/60 FPS request, and a non-exclusive 3840×2160 ceiling
 - Automatic camera startup on mount, with manual retry when permission or hardware is unavailable

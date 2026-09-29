@@ -2163,10 +2163,12 @@ export default function App({
       : parsedRaw
     : parsedRaw
   const canStart = cameraState !== 'requesting' && cameraState !== 'insecure'
+  const diagnosticRecording = diagnosticUi.phase === 'recording'
+  const interactionVisible = cameraState === 'active' && (piecePresent || diagnosticRecording)
 
   useLayoutEffect(() => {
     const checkInTransition = checkInTransitions[0]
-    if (!checkInTransition) return
+    if (!checkInTransition || interactionVisible) return
     const list = gamesListRef.current
     const target = gameCardRefs.current.get(gameIdentityKey(checkInTransition.game))
     const source = actionZoneRefs.current.get(checkInTransition.sourceZoneId)
@@ -2229,282 +2231,278 @@ export default function App({
       })
     }
     setCheckInTransitions((current) => current.slice(1))
-  }, [checkInTransitions, displayedGames])
+  }, [checkInTransitions, displayedGames, interactionVisible])
 
   useEffect(() => () => {
     transitionCleanupRef.current.forEach((cleanup) => cleanup())
     transitionCleanupRef.current.clear()
   }, [])
 
-  const diagnosticRecording = diagnosticUi.phase === 'recording'
-  const interactionVisible = cameraState === 'active' && (piecePresent || diagnosticRecording)
-
   return (
     <main className="shell">
       <h1 className="visually-hidden">Sunset Chess</h1>
-      <div className="dashboard">
-        <aside className="left-rail" aria-label="Sunset Chess player tools">
+      <div
+        className="dashboard"
+        aria-hidden={interactionVisible || undefined}
+        inert={interactionVisible ? true : undefined}
+      >
+        <section className="main-column" aria-label="Sunset Chess dashboard">
           <header className="brand-header">
             <SunsetChessLogo compact />
             <div><p className="eyebrow">Club play</p><p className="brand-name">Sunset Chess</p></div>
           </header>
-          <Leaderboard refreshKey={leaderboardRefresh} variant="rail" />
-          <section className="producer" aria-labelledby="producer-heading">
-            <div className="producer-form">
-              <p className="eyebrow">Player QR</p>
-              <h2 id="producer-heading">Make a player card</h2>
-              <p>Create a local QR identity.</p>
-              <label htmlFor="player-name">Player name</label>
-              <input
-                id="player-name"
-                value={name}
-                maxLength={81}
-                onChange={(event) => setName(event.target.value)}
-                onKeyDown={(event) => { if (event.key === 'Enter') void generatePlayerQr() }}
-              />
-              {producerError && <p className="form-error" role="alert">{producerError}</p>}
-              <button type="button" onClick={() => void generatePlayerQr()}>Generate</button>
+
+          <div className="primary-workspace">
+            <section className="scanner-panel" aria-labelledby="scanner-heading">
+              <div className="controls">
+                <div className="status" role="status" aria-live="polite">
+                  <span className={`status-dot ${cameraState}`} />
+                  <div><h2 id="scanner-heading">{copy.title}</h2><p>{copy.detail}</p></div>
+                </div>
+                {canStart && (
+                  <button type="button" onClick={startCamera}>
+                    {cameraState === 'initial'
+                      ? 'Start camera'
+                      : cameraState === 'active' || cameraState === 'inactive'
+                        ? 'Restart camera'
+                        : 'Try again'}
+                  </button>
+                )}
+              </div>
+              <p className="visually-hidden" aria-live="polite">
+                {interactionVisible
+                  ? 'Piece detected — camera interaction shown'
+                  : cameraState === 'active' ? 'No piece detected — camera interaction hidden' : ''}
+              </p>
+              <p className="scanner-diagnostics" aria-label="Scanner diagnostics">
+                <span ref={diagnosticsRef}>Measuring camera / decode / paint cadence…</span>
+              </p>
+              <div className="tracking-diagnostic-controls">
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={cameraState !== 'active' || diagnosticUi.phase === 'recording'}
+                  onClick={startTrackingDiagnostic}
+                >
+                  {diagnosticUi.phase === 'recording'
+                    ? `Recording… ${Math.ceil(diagnosticUi.remainingMs / 1000)}s`
+                    : 'Record 10s tracking diagnostic'}
+                </button>
+                <p aria-live="polite" aria-label="Tracking diagnostic status">
+                  {diagnosticUi.phase === 'idle'
+                    ? 'Explicit click records camera imagery locally for 10 seconds; nothing uploads automatically.'
+                    : diagnosticUi.message}
+                </p>
+                {diagnosticUi.videoUrl && (
+                  <a download={`sunset-chess-tracking-${diagnosticUi.id}.webm`} href={diagnosticUi.videoUrl}>
+                    Download {diagnosticUi.id}.webm
+                  </a>
+                )}
+                {diagnosticUi.jsonUrl && (
+                  <a download={`sunset-chess-tracking-${diagnosticUi.id}.json`} href={diagnosticUi.jsonUrl}>
+                    Download {diagnosticUi.id}.json
+                  </a>
+                )}
+              </div>
+              {checkInNotice && (
+                <p
+                  className={`check-in-notice${checkInError ? ' error' : ''}`}
+                  role={checkInError ? 'alert' : 'status'}
+                  aria-live="polite"
+                >
+                  {checkInNotice}
+                </p>
+              )}
+            </section>
+
+            <Leaderboard refreshKey={leaderboardRefresh} variant="rail" />
+
+            <section className="producer" aria-labelledby="producer-heading">
+              <div className="producer-form">
+                <p className="eyebrow">Player QR</p>
+                <h2 id="producer-heading">Make a player card</h2>
+                <p>Create a local QR identity.</p>
+                <label htmlFor="player-name">Player name</label>
+                <input
+                  id="player-name"
+                  value={name}
+                  maxLength={81}
+                  onChange={(event) => setName(event.target.value)}
+                  onKeyDown={(event) => { if (event.key === 'Enter') void generatePlayerQr() }}
+                />
+                {producerError && <p className="form-error" role="alert">{producerError}</p>}
+                <button type="button" onClick={() => void generatePlayerQr()}>Generate</button>
+              </div>
+              <div className="qr-card-wrap">
+                {player && qrDataUrl ? (
+                  <>
+                    <article className="qr-card" aria-label="Generated player QR card">
+                      <img src={qrDataUrl} alt={`QR code for ${player.name}, player ${player.playerId}`} />
+                      <h3>{player.name}</h3>
+                      <p>Player #{player.playerId}</p>
+                    </article>
+                    <div className="producer-actions">
+                      <button type="button" className="secondary" onClick={() => {
+                        document.body.dataset.printMode = 'card'
+                        window.print()
+                      }}>Print card</button>
+                      <button type="button" className="secondary" onClick={() => {
+                        document.body.dataset.printMode = 'sticker'
+                        window.print()
+                      }}>Print sticker</button>
+                    </div>
+                  </>
+                ) : <p className="empty-card">Generated card appears here.</p>}
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <aside className="game-column ongoing-column" aria-labelledby="ongoing-games-heading">
+          <section className="ongoing-games live-games" aria-busy={gamesLoading}>
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Live tables</p>
+                <h2 id="ongoing-games-heading">Ongoing Games</h2>
+              </div>
+              {gamesError && (
+                <button type="button" className="secondary" onClick={() => void refreshGames()}>
+                  Retry
+                </button>
+              )}
             </div>
-            <div className="qr-card-wrap">
-              {player && qrDataUrl ? (
-                <>
-                  <article className="qr-card" aria-label="Generated player QR card">
-                    <img src={qrDataUrl} alt={`QR code for ${player.name}, player ${player.playerId}`} />
-                    <h3>{player.name}</h3>
-                    <p>Player #{player.playerId}</p>
-                  </article>
-                  <div className="producer-actions">
-                    <button type="button" className="secondary" onClick={() => {
-                      document.body.dataset.printMode = 'card'
-                      window.print()
-                    }}>Print card</button>
-                    <button type="button" className="secondary" onClick={() => {
-                      document.body.dataset.printMode = 'sticker'
-                      window.print()
-                    }}>Print sticker</button>
-                  </div>
-                </>
-              ) : <p className="empty-card">Generated card appears here.</p>}
-            </div>
+            {gamesLoading && games.length === 0 && <p className="games-message" role="status">Loading ongoing games…</p>}
+            {gamesError && (
+              <p className="games-message error" role="alert">
+                Could not refresh ongoing games. {games.length > 0 ? 'Showing the last update.' : ''}
+              </p>
+            )}
+            {!gamesLoading && !gamesError && games.length === 0 && (
+              <p className="games-message">No games are ongoing yet.</p>
+            )}
+            {games.length > 0 && (
+              <div className="games-list" ref={gamesListRef} role="region" aria-label="Ongoing games">
+                {displayedGames.map((game) => (
+                  <GameCard
+                    className={featuredGame && isSameGame(game, featuredGame) ? ' featured-game' : ''}
+                    key={gameIdentityKey(game)}
+                    game={game}
+                    cardRef={(element) => {
+                      const key = gameIdentityKey(game)
+                      if (element) gameCardRefs.current.set(key, element)
+                      else gameCardRefs.current.delete(key)
+                    }}
+                  />
+                ))}
+              </div>
+            )}
           </section>
         </aside>
 
-        <section className="scanner-card center-stage" aria-labelledby="scanner-heading">
-        <div className="preview" ref={previewRef}>
-          <div
-            className={`camera-interaction-layer${interactionVisible ? ' is-visible' : ' is-hidden'}`}
-            aria-hidden={!interactionVisible}
-            data-testid="camera-interaction-layer"
-          >
-          <video ref={videoRef} muted playsInline aria-label="Mirrored live camera preview" />
-          <canvas ref={overlayRef} aria-hidden="true" />
-          {interactionVisible && (
+        <aside className="game-column recent-column" aria-labelledby="recent-games-heading">
+          <section className="ongoing-games recent-games">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Completed tables</p>
+                <h2 id="recent-games-heading">Recent Games</h2>
+              </div>
+            </div>
+            {recentGames.length === 0 ? (
+              <p className="games-message">No finished games yet.</p>
+            ) : (
+              <div className="games-list" role="region" aria-label="Recent finished games">
+                {recentGames.map((game) => (
+                  <GameCard
+                    className={` finished-game${game.result === '1/2-1/2' ? ' drawn-game' : ''}`}
+                    key={gameIdentityKey(game)}
+                    game={game}
+                    ariaLabel={`Table ${game.tableNumber}: ${game.result}`}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+        </aside>
+      </div>
+
+      <section
+        className={`camera-interaction-layer fullscreen-camera-overlay${interactionVisible ? ' is-visible' : ' is-hidden'}`}
+        ref={previewRef}
+        aria-hidden={!interactionVisible}
+        aria-label={interactionVisible ? 'Full-screen camera interaction' : undefined}
+        data-testid="camera-interaction-layer"
+        data-coordinate-space="full-viewport"
+      >
+        <video ref={videoRef} muted playsInline aria-label="Mirrored live camera preview" />
+        <canvas ref={overlayRef} aria-hidden="true" />
+        {interactionVisible && (
+          <>
+            <div className="overlay-control-strip">
+              <span><i className={`status-dot ${cameraState}`} />{diagnosticRecording ? 'Recording diagnostic' : 'Piece detected'}</span>
+              <button type="button" className="secondary" onClick={startCamera}>Restart camera</button>
+            </div>
             <div className="tracking-legend" aria-label="Tracking overlay legend">
               <span><i className="decoded-anchor-key" />Last decoded QR</span>
               <span><i className="tracked-object-key" />Tracked object</span>
             </div>
-          )}
-          {interactionVisible && parsed && (
-            <div
-              className={`payload-label ${parsed.kind}`}
-              ref={payloadLabelRef}
-              data-qr-animation-source
-              aria-hidden="true"
-            >
-              {parsed.label}
-            </div>
-          )}
-          {interactionVisible && gameContext && (
-            <div
-              className="camera-game-context"
-              role="group"
-              aria-label={`Game context for Table ${gameContext.game.tableNumber}`}
-            >
-              <GameCard
-                game={gameContext.game}
-                className=" stage-game-card"
-                width="clamp(150px, 30vw, 280px)"
-                height="auto"
-              />
-              {gameContext.waitingCopy && (
-                <p className="game-waiting-header">
-                  {gameContext.waitingCopy}
-                </p>
-              )}
-            </div>
-          )}
-          {interactionVisible && actionZones.length > 0 && (
-            <div
-              className="action-zones"
-              role="group"
-              aria-label={gameContext
-                ? gameContext.resultReady
-                  ? `Report result for Table ${gameContext.game.tableNumber}`
-                  : `Result options for Table ${gameContext.game.tableNumber}`
-                : 'Player check-in action zones'}
-            >
-              {actionZones.map((zone) => (
-                <ActionZoneView
-                  zone={zone}
-                  key={zone.id}
-                  zoneRef={(element) => {
-                    if (element) actionZoneRefs.current.set(zone.id, element)
-                    else actionZoneRefs.current.delete(zone.id)
-                  }}
-                  progressRef={(element) => {
-                    if (element) actionProgressRefs.current.set(zone.id, element)
-                    else actionProgressRefs.current.delete(zone.id)
-                  }}
-                />
-              ))}
-            </div>
-          )}
-          {interactionVisible && overlayMessage && (
-            <p className="action-zone-message" role="status" aria-live="polite">
-              {overlayMessage}
-            </p>
-          )}
-          {interactionVisible && !gameContext?.resultReady && <div className="scan-corners" aria-hidden="true" />}
-          </div>
-          {!interactionVisible && (
-            <div className="idle-stage">
-              <SunsetChessLogo decorative />
-              <h2>{cameraState === 'active' ? 'Scan your chess piece to begin' : copy.title}</h2>
-              <p>{cameraState === 'active'
-                ? 'Hold a player piece in view. Scanning continues while the mirror is hidden.'
-                : copy.detail}</p>
-            </div>
-          )}
-        </div>
-        <div className="controls">
-          <div className="status" role="status" aria-live="polite">
-            <span className={`status-dot ${cameraState}`} />
-            <div><h2 id="scanner-heading">{copy.title}</h2><p>{copy.detail}</p></div>
-          </div>
-          {canStart && (
-            <button type="button" onClick={startCamera}>
-              {cameraState === 'initial'
-                ? 'Start camera'
-                : cameraState === 'active' || cameraState === 'inactive'
-                  ? 'Restart camera'
-                  : 'Try again'}
-            </button>
-          )}
-        </div>
-        <p className="visually-hidden" aria-live="polite">
-          {interactionVisible
-            ? 'Piece detected — camera interaction shown'
-            : cameraState === 'active' ? 'No piece detected — camera interaction hidden' : ''}
-        </p>
-        <p className="scanner-diagnostics" aria-label="Scanner diagnostics">
-          <span ref={diagnosticsRef}>Measuring camera / decode / paint cadence…</span>
-        </p>
-        <div className="tracking-diagnostic-controls">
-          <button
-            type="button"
-            className="secondary"
-            disabled={cameraState !== 'active' || diagnosticUi.phase === 'recording'}
-            onClick={startTrackingDiagnostic}
+          </>
+        )}
+        {interactionVisible && parsed && (
+          <div
+            className={`payload-label ${parsed.kind}`}
+            ref={payloadLabelRef}
+            data-qr-animation-source
+            aria-hidden="true"
           >
-            {diagnosticUi.phase === 'recording'
-              ? `Recording… ${Math.ceil(diagnosticUi.remainingMs / 1000)}s`
-              : 'Record 10s tracking diagnostic'}
-          </button>
-          <p aria-live="polite" aria-label="Tracking diagnostic status">
-            {diagnosticUi.phase === 'idle'
-              ? 'Explicit click records camera imagery locally for 10 seconds; nothing uploads automatically.'
-              : diagnosticUi.message}
-          </p>
-          {diagnosticUi.videoUrl && (
-            <a download={`sunset-chess-tracking-${diagnosticUi.id}.webm`} href={diagnosticUi.videoUrl}>
-              Download {diagnosticUi.id}.webm
-            </a>
-          )}
-          {diagnosticUi.jsonUrl && (
-            <a download={`sunset-chess-tracking-${diagnosticUi.id}.json`} href={diagnosticUi.jsonUrl}>
-              Download {diagnosticUi.id}.json
-            </a>
-          )}
-        </div>
-        {checkInNotice && (
-          <p
-            className={`check-in-notice${checkInError ? ' error' : ''}`}
-            role={checkInError ? 'alert' : 'status'}
-            aria-live="polite"
-          >
-            {checkInNotice}
-          </p>
-        )}
-        </section>
-
-        <aside className="right-rail" aria-label="Chess games">
-        <section
-          className="ongoing-games game-column live-games"
-          aria-labelledby="ongoing-games-heading"
-          aria-busy={gamesLoading}
-        >
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">Live tables</p>
-            <h2 id="ongoing-games-heading">Ongoing Games</h2>
+            {parsed.label}
           </div>
-          {gamesError && (
-            <button type="button" className="secondary" onClick={() => void refreshGames()}>
-              Retry
-            </button>
-          )}
-        </div>
-        {gamesLoading && games.length === 0 && <p className="games-message" role="status">Loading ongoing games…</p>}
-        {gamesError && (
-          <p className="games-message error" role="alert">
-            Could not refresh ongoing games. {games.length > 0 ? 'Showing the last update.' : ''}
-          </p>
         )}
-        {!gamesLoading && !gamesError && games.length === 0 && (
-          <p className="games-message">No games are ongoing yet.</p>
+        {interactionVisible && gameContext && (
+          <div
+            className="camera-game-context"
+            role="group"
+            aria-label={`Game context for Table ${gameContext.game.tableNumber}`}
+          >
+            <GameCard
+              game={gameContext.game}
+              className=" stage-game-card"
+              width="clamp(150px, 30vw, 280px)"
+              height="auto"
+            />
+            {gameContext.waitingCopy && <p className="game-waiting-header">{gameContext.waitingCopy}</p>}
+          </div>
         )}
-        {games.length > 0 && (
-          <div className="games-list" ref={gamesListRef} role="region" aria-label="Ongoing games">
-            {displayedGames.map((game) => (
-              <GameCard
-                className={featuredGame && isSameGame(game, featuredGame) ? ' featured-game' : ''}
-                key={gameIdentityKey(game)}
-                game={game}
-                cardRef={(element) => {
-                  const key = gameIdentityKey(game)
-                  if (element) gameCardRefs.current.set(key, element)
-                  else gameCardRefs.current.delete(key)
+        {interactionVisible && actionZones.length > 0 && (
+          <div
+            className="action-zones"
+            role="group"
+            aria-label={gameContext
+              ? gameContext.resultReady
+                ? `Report result for Table ${gameContext.game.tableNumber}`
+                : `Result options for Table ${gameContext.game.tableNumber}`
+              : 'Player check-in action zones'}
+          >
+            {actionZones.map((zone) => (
+              <ActionZoneView
+                zone={zone}
+                key={zone.id}
+                zoneRef={(element) => {
+                  if (element) actionZoneRefs.current.set(zone.id, element)
+                  else actionZoneRefs.current.delete(zone.id)
+                }}
+                progressRef={(element) => {
+                  if (element) actionProgressRefs.current.set(zone.id, element)
+                  else actionProgressRefs.current.delete(zone.id)
                 }}
               />
             ))}
           </div>
         )}
-        </section>
-
-        <section className="ongoing-games game-column recent-games" aria-labelledby="recent-games-heading">
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">Completed tables</p>
-            <h2 id="recent-games-heading">Recent Games</h2>
-          </div>
-        </div>
-        {recentGames.length === 0 ? (
-          <p className="games-message">No finished games yet.</p>
-        ) : (
-          <div className="games-list" role="region" aria-label="Recent finished games">
-            {recentGames.map((game) => (
-              <GameCard
-                className={` finished-game${game.result === '1/2-1/2' ? ' drawn-game' : ''}`}
-                key={gameIdentityKey(game)}
-                game={game}
-                ariaLabel={`Table ${game.tableNumber}: ${game.result}`}
-              />
-            ))}
-          </div>
+        {interactionVisible && overlayMessage && (
+          <p className="action-zone-message" role="status" aria-live="polite">{overlayMessage}</p>
         )}
-        </section>
-        </aside>
-      </div>
+        {interactionVisible && !gameContext?.resultReady && <div className="scan-corners" aria-hidden="true" />}
+      </section>
     </main>
   )
 }
