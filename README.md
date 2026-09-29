@@ -16,8 +16,9 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
 - Diagnostic recording explicitly forces the camera layer visible for its
   10-second run. Permission, error, inactive, and restart controls remain
   available while the mirror is hidden.
-- An original inline-vector Sunset Chess mark depicts a queen, bishop, and five
-  pawns watching an amber sunset, with accessible SVG naming and no network asset
+- A locally bundled inline-vector Sunset Chess scene places professional queen,
+  bishop, and pawn silhouettes against a restrained amber/coral sunset, with
+  accessible SVG naming and no runtime network asset
 - A high-contrast ink/ivory/amber palette, restrained 3–6px surface corners,
   visible keyboard focus, tabular standings numerals, and distinct
   success/error/draw colors
@@ -415,6 +416,19 @@ slower cadence. ZXing's reader WASM is about 0.95 MiB in the production build.
 
 The lockfile pins resolved artifacts; no computer-vision assets are fetched from
 a CDN or vendored separately from their packages.
+
+### Brand artwork and attribution
+
+The sunset, landscape, spacing, and overall scene composition are the Sunset
+Chess brand artwork. The queen, bishop, and pawn SVG definitions are from
+**Font Awesome Free 7.3.1** by Fonticons, Inc. Font Awesome Free SVG/JS icons are
+licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), and its
+code is MIT licensed. They are imported individually from
+`@fortawesome/free-solid-svg-icons` so Vite can include only the three required
+definitions. The icons are bundled locally and make no runtime requests.
+
+See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for the attribution and
+license links. Font Awesome and Fonticons do not endorse Sunset Chess.
 
 ### Physical QR limits
 

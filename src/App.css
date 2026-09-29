@@ -83,9 +83,11 @@ body {
 
 .brand-header {
   display: grid;
-  grid-template-columns: 108px 1fr;
+  grid-template-columns: 148px 1fr;
   align-items: center;
-  min-height: 92px;
+  min-height: 94px;
+  padding: 8px 14px 8px 8px;
+  gap: 14px;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
@@ -93,13 +95,17 @@ body {
 }
 
 .brand-header .eyebrow { margin-bottom: 3px; }
-.brand-name { margin: 0; font: 700 1.3rem/1.05 Georgia, serif; letter-spacing: .01em; }
+.brand-name { margin: 0; font: 700 1.42rem/1.05 Georgia, serif; letter-spacing: .01em; }
 .sunset-chess-logo { display: block; width: min(100%, 520px); height: auto; }
-.sunset-chess-logo-compact { width: 108px; height: 92px; object-fit: cover; }
+.sunset-chess-logo-compact { width: 148px; max-height: 78px; }
+.logo-sky { fill: var(--ink-850); }
+.logo-sun-halo { fill: rgba(232, 111, 54, .3); }
 .logo-sun { fill: var(--amber); }
-.logo-horizon { fill: #301d23; }
-.logo-piece { fill: #0a0c10; stroke: rgba(255, 246, 229, .35); stroke-width: 1; }
-.logo-bishop-cut { fill: none; stroke: var(--amber-bright); stroke-width: 3; }
+.logo-horizon-far { fill: #a64d3c; }
+.logo-horizon-near { fill: #47262d; }
+.logo-piece, .logo-foreground { fill: var(--ink-950); }
+.logo-pawn-far { opacity: .78; }
+.logo-frame { fill: none; stroke: rgba(255, 246, 229, .2); stroke-width: 2; }
 
 .eyebrow {
   margin: 0 0 6px;

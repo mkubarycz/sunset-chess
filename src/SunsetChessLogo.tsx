@@ -1,3 +1,42 @@
+import { useId } from 'react'
+import { faChessBishop } from '@fortawesome/free-solid-svg-icons/faChessBishop'
+import { faChessPawn } from '@fortawesome/free-solid-svg-icons/faChessPawn'
+import { faChessQueen } from '@fortawesome/free-solid-svg-icons/faChessQueen'
+
+// Chess-piece paths are Font Awesome Free 7.3.1 by Fonticons, Inc., CC BY 4.0.
+// The surrounding Sunset Chess landscape and composition are original to this project.
+type ChessIconDefinition = typeof faChessQueen
+
+function ChessIcon({
+  definition,
+  x,
+  y,
+  height,
+  className,
+}: {
+  definition: ChessIconDefinition
+  x: number
+  y: number
+  height: number
+  className: string
+}) {
+  const [sourceWidth, sourceHeight, , , pathData] = definition.icon
+  const scale = height / sourceHeight
+  const left = x - (sourceWidth * scale) / 2
+  const paths = Array.isArray(pathData) ? pathData : [pathData]
+
+  return (
+    <g
+      className={className}
+      data-fa-icon={definition.iconName}
+      transform={`translate(${left} ${y}) scale(${scale})`}
+      aria-hidden="true"
+    >
+      {paths.map((path, index) => <path d={path} key={index} />)}
+    </g>
+  )
+}
+
 export function SunsetChessLogo({
   compact = false,
   decorative = false,
@@ -5,38 +44,89 @@ export function SunsetChessLogo({
   compact?: boolean
   decorative?: boolean
 }) {
+  const instanceId = useId()
+  const titleId = `sunset-chess-logo-title-${instanceId}`
+  const clipId = `sunset-chess-logo-clip-${instanceId}`
+
   return (
     <svg
       className={`sunset-chess-logo${compact ? ' sunset-chess-logo-compact' : ''}`}
-      viewBox="0 0 320 180"
+      viewBox="0 0 360 180"
+      preserveAspectRatio="xMidYMid meet"
       role={decorative ? undefined : 'img'}
       aria-hidden={decorative || undefined}
-      aria-labelledby={decorative ? undefined : 'sunset-chess-logo-title'}
+      aria-labelledby={decorative ? undefined : titleId}
+      xmlns="http://www.w3.org/2000/svg"
     >
-      {!decorative && <title id="sunset-chess-logo-title">Sunset Chess</title>}
+      {!decorative && (
+        <title id={titleId}>Sunset Chess — queen, bishop, and pawns at sunset.</title>
+      )}
       <defs>
-        <linearGradient id="sunset-sky" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor="#2d2038" />
-          <stop offset="1" stopColor="#8e3f2f" />
-        </linearGradient>
+        <clipPath id={clipId}>
+          <rect width="360" height="180" rx="12" />
+        </clipPath>
       </defs>
-      <rect className="logo-sky" width="320" height="180" fill="url(#sunset-sky)" />
-      <circle className="logo-sun" cx="160" cy="84" r="45" />
-      <path className="logo-horizon" d="M0 119Q62 105 118 118T220 114T320 119V180H0Z" />
-      <g className="logo-piece logo-queen" transform="translate(96 79)">
-        <path d="M8 73h50l-5-13H13Zm7-18h36l4-36-13 17-9-25-10 25L5 19Z" />
-        <circle cx="5" cy="16" r="5" /><circle cx="33" cy="7" r="5" /><circle cx="57" cy="16" r="5" />
+
+      <g clipPath={`url(#${clipId})`}>
+        <rect className="logo-sky" width="360" height="180" />
+        <circle className="logo-sun-halo" cx="180" cy="72" r="55" />
+        <circle className="logo-sun" cx="180" cy="72" r="45" />
+
+        <path
+          className="logo-horizon logo-horizon-far"
+          d="M0 117C47 105 77 109 112 119c35 10 65-9 101-7 43 2 70 18 147 4v64H0Z"
+        />
+        <path
+          className="logo-horizon logo-horizon-near"
+          d="M0 139c53-18 99-8 139 3 45 12 76-14 121-10 34 3 65 15 100 7v41H0Z"
+        />
+
+        <ChessIcon
+          definition={faChessPawn}
+          x={42}
+          y={106}
+          height={45}
+          className="logo-piece logo-pawn logo-pawn-far"
+        />
+        <ChessIcon
+          definition={faChessPawn}
+          x={82}
+          y={106}
+          height={54}
+          className="logo-piece logo-pawn"
+        />
+        <ChessIcon
+          definition={faChessPawn}
+          x={286}
+          y={106}
+          height={54}
+          className="logo-piece logo-pawn"
+        />
+        <ChessIcon
+          definition={faChessPawn}
+          x={329}
+          y={106}
+          height={45}
+          className="logo-piece logo-pawn logo-pawn-far"
+        />
+
+        <ChessIcon
+          definition={faChessQueen}
+          x={143}
+          y={48}
+          height={120}
+          className="logo-piece logo-queen"
+        />
+        <ChessIcon
+          definition={faChessBishop}
+          x={224}
+          y={65}
+          height={103}
+          className="logo-piece logo-bishop"
+        />
+        <path className="logo-foreground" d="M0 163c76-7 121 4 180 2 57-2 108-9 180-2v17H0Z" />
       </g>
-      <g className="logo-piece logo-bishop" transform="translate(174 82)">
-        <path d="M10 70h43l-5-12H15Zm7-17h29l-5-18c7-7 3-22-9-29-12 7-16 22-9 29Z" />
-        <path className="logo-bishop-cut" d="m34 15-9 17" />
-      </g>
-      {[28, 55, 235, 264, 291].map((x, index) => (
-        <g className="logo-piece logo-pawn" transform={`translate(${x} ${118 + Math.abs(2 - index) * 3})`} key={x}>
-          <circle cx="9" cy="7" r="7" />
-          <path d="M4 15h10l4 20H0Zm-7 25h32v8H-3Z" />
-        </g>
-      ))}
+      <rect className="logo-frame" x="1" y="1" width="358" height="178" rx="11" />
     </svg>
   )
 }
