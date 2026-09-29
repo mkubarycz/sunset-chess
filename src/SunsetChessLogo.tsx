@@ -12,24 +12,26 @@ function ChessIcon({
   x,
   y,
   height,
+  widthScale = 1,
   className,
 }: {
   definition: ChessIconDefinition
   x: number
   y: number
   height: number
+  widthScale?: number
   className: string
 }) {
   const [sourceWidth, sourceHeight, , , pathData] = definition.icon
   const scale = height / sourceHeight
-  const left = x - (sourceWidth * scale) / 2
+  const left = x - (sourceWidth * scale * widthScale) / 2
   const paths = Array.isArray(pathData) ? pathData : [pathData]
 
   return (
     <g
       className={className}
       data-fa-icon={definition.iconName}
-      transform={`translate(${left} ${y}) scale(${scale})`}
+      transform={`translate(${left} ${y}) scale(${scale * widthScale} ${scale})`}
       aria-hidden="true"
     >
       {paths.map((path, index) => <path d={path} key={index} />)}
@@ -84,44 +86,46 @@ export function SunsetChessLogo({
         <ChessIcon
           definition={faChessPawn}
           x={42}
-          y={106}
-          height={45}
-          className="logo-piece logo-pawn logo-pawn-far"
+          y={99}
+          height={54}
+          className="logo-piece logo-pawn logo-pawn-rose"
         />
         <ChessIcon
           definition={faChessPawn}
           x={82}
-          y={106}
-          height={54}
-          className="logo-piece logo-pawn"
+          y={96}
+          height={64}
+          className="logo-piece logo-pawn logo-pawn-ivory"
         />
         <ChessIcon
           definition={faChessPawn}
           x={286}
-          y={106}
-          height={54}
-          className="logo-piece logo-pawn"
+          y={96}
+          height={64}
+          className="logo-piece logo-pawn logo-pawn-cyan"
         />
         <ChessIcon
           definition={faChessPawn}
           x={329}
-          y={106}
-          height={45}
-          className="logo-piece logo-pawn logo-pawn-far"
+          y={99}
+          height={54}
+          className="logo-piece logo-pawn logo-pawn-amber"
         />
 
         <ChessIcon
           definition={faChessQueen}
           x={143}
-          y={48}
-          height={120}
+          y={8}
+          height={152}
+          widthScale={0.72}
           className="logo-piece logo-queen"
         />
         <ChessIcon
           definition={faChessBishop}
           x={224}
-          y={65}
-          height={103}
+          y={23}
+          height={137}
+          widthScale={0.88}
           className="logo-piece logo-bishop"
         />
         <path className="logo-foreground" d="M0 163c76-7 121 4 180 2 57-2 108-9 180-2v17H0Z" />

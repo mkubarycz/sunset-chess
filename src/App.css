@@ -104,7 +104,16 @@ body {
 .logo-horizon-far { fill: #a64d3c; }
 .logo-horizon-near { fill: #47262d; }
 .logo-piece, .logo-foreground { fill: var(--ink-950); }
-.logo-pawn-far { opacity: .78; }
+.logo-pawn {
+  stroke: rgba(9, 11, 15, .72);
+  stroke-width: 1.5;
+  paint-order: stroke fill;
+  vector-effect: non-scaling-stroke;
+}
+.logo-pawn-rose { fill: var(--error); }
+.logo-pawn-ivory { fill: var(--ivory); }
+.logo-pawn-cyan { fill: var(--cyan); }
+.logo-pawn-amber { fill: var(--amber-bright); }
 .logo-frame { fill: none; stroke: rgba(255, 246, 229, .2); stroke-width: 2; }
 
 .eyebrow {
