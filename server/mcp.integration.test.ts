@@ -3,6 +3,7 @@ import { mkdirSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { AddressInfo } from 'node:net';
 import { request as httpRequest } from 'node:http';
+import { posix, win32 } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -11,6 +12,7 @@ import {
   allowedHostAuthority,
   allowedOriginValue,
   createSunsetServer,
+  isContainedPath,
 } from './httpServer.js';
 import { ChessRepository } from './repository.js';
 
@@ -95,6 +97,35 @@ describe('Sunset Chess HTTP and MCP', () => {
     ]) {
       expect(allowedOriginValue(origin)).toBe(false);
     }
+  });
+
+  it('checks static containment with POSIX and Windows path semantics', () => {
+    expect(isContainedPath('/srv/public', '/srv/public/assets/app.js', posix)).toBe(true);
+    expect(isContainedPath('/srv/public', '/srv/publicity/app.js', posix)).toBe(false);
+    expect(isContainedPath('/srv/public', '/srv/secret.txt', posix)).toBe(false);
+    expect(isContainedPath('/srv/public', '/absolute.txt', posix)).toBe(false);
+    expect(isContainedPath('/srv/public', '/srv/public', posix)).toBe(false);
+
+    expect(isContainedPath(
+      'C:\\srv\\public',
+      'C:\\srv\\public\\assets\\app.js',
+      win32,
+    )).toBe(true);
+    expect(isContainedPath(
+      'C:\\srv\\public',
+      'C:\\srv\\publicity\\app.js',
+      win32,
+    )).toBe(false);
+    expect(isContainedPath(
+      'C:\\srv\\public',
+      'C:\\srv\\secret.txt',
+      win32,
+    )).toBe(false);
+    expect(isContainedPath(
+      'C:\\srv\\public',
+      'D:\\srv\\public\\app.js',
+      win32,
+    )).toBe(false);
   });
 
   it('serves health, joined games API, static navigation, and JSON API errors', async () => {
@@ -198,6 +229,17 @@ describe('Sunset Chess HTTP and MCP', () => {
     expect(lookup.status).toBe(200);
     expect(await lookup.json()).toEqual({ player: { ...created.player, rating: 700 } });
     expect((await fetch(`${endpoint}/999`)).status).toBe(404);
+    const removed = await fetch(`${endpoint}/${created.player.id}`, { method: 'DELETE' });
+    expect(removed.status).toBe(200);
+    expect(await removed.json()).toEqual({ player: { ...created.player, rating: 700 } });
+    expect((await fetch(`${endpoint}/${created.player.id}`)).status).toBe(404);
+
+    const checkedIn = await app.repository.createPlayer('Busy');
+    app.repository.checkInPlayer(checkedIn);
+    const refused = await fetch(`${endpoint}/${checkedIn.id}`, { method: 'DELETE' });
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({ code: 'conflict' });
+    expect((await fetch(`${endpoint}/${checkedIn.id}`)).status).toBe(200);
     await app.close();
   });
 
@@ -295,15 +337,12 @@ describe('Sunset Chess HTTP and MCP', () => {
     await app.client.callTool({ name: 'game-delete', arguments: { id: game.id } });
     expect((await app.client.callTool({
       name: 'player-delete', arguments: { id: alice.id },
-    })).isError).toBe(true);
+    })).structuredContent).toEqual({ player: alice });
     expect((await app.client.callTool({
       name: 'player-delete', arguments: { id: 1001 },
-    })).isError).toBe(true);
+    })).structuredContent).toEqual({ player: { id: 1001, name: 'Bob', rating: 700 } });
     expect((await app.client.callTool({ name: 'player-list', arguments: {} })).structuredContent)
-      .toEqual({ players: [
-        { id: 1001, name: 'Bob', rating: 700 },
-        alice,
-      ].sort((a, b) => a.id - b.id) });
+      .toEqual({ players: [] });
     await app.close();
   });
 

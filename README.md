@@ -467,17 +467,20 @@ normal APIs.
 Database triggers prevent a player from occupying any side of more than one
 ongoing game.
 Creation atomically assigns the lowest free number and reuses gaps.
-When migrating v2 data that contains duplicate participation, each player keeps
-their seat in the lowest-ID game; later occurrences are cleared, and games left
-with both seats empty are removed. IDs and table numbers of retained games are
-unchanged, and the migration verifies the uniqueness invariant before commit.
+Before v3 changes any legacy table, migration checks active-player participation.
+Duplicate seats stop startup without changing or renaming the legacy table. The
+operator-facing error identifies a duplicate player and requires the operator to
+back up the database and resolve every duplicate before restarting. Valid,
+non-conflicting legacy databases continue to migrate transactionally.
 
 `PlayerRatingEvent` is the append-only rating source of truth. Each row records
 the player, optional game, previous/new rating, integer delta, ISO timestamp,
 and an explicit `baseline`, `game`, or `migration` reason; game events also
 record opponent and canonical result. A partial unique index permits one event
-per player/game. Ledger foreign keys use `ON DELETE RESTRICT`; after the baseline
-exists, player deletion is intentionally rejected so history remains immutable.
+per player/game. Ledger foreign keys use `ON DELETE RESTRICT`. A player may be deleted only while
+unreferenced by every game and represented by exactly one baseline rating event;
+cleanup deletes that baseline and the player in one transaction. Game references
+or any non-baseline history permanently block deletion.
 `Player.rating` remains a transactionally maintained projection
 for compatibility and efficient game-card joins. Reads verify it against the
 latest ledger row (or 700 when no row exists) and fail explicitly on divergence.
@@ -518,7 +521,18 @@ health are available at:
 `POST /api/players` accepts only `{ "name": "Ada" }`, allocates and persists a
 player, and returns HTTP 201 before compact QR generation. `GET
 /api/players/:id` safely resolves compact references and returns 404 when the
-player does not exist.
+player does not exist. `DELETE /api/players/:id` is the narrow rollback endpoint
+for an unreferenced, baseline-only player and returns 409 once games or rating
+history make deletion unsafe. If browser QR encoding fails after persistence, the
+producer attempts this cleanup and reports cleanup failure explicitly. Compact
+lookup retries transient network/server failures with capped exponential
+cooldown, retains the visible error while cooling down, and resets retry state
+when the camera restarts or the reference leaves and re-enters view.
+
+Static files are served only when a path-relative containment check places the
+resolved file strictly below the public directory. The pure check rejects
+absolute, parent, cross-drive, and sibling-prefix escapes under both POSIX and
+Windows path semantics.
 
 `GET /api/leaderboard?limit=100` returns ordinal ranks in stable order: rating
 descending, games played descending, case-insensitive name ascending, then ID.

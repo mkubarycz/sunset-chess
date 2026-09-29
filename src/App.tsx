@@ -146,6 +146,9 @@ type ScheduledFrame =
 
 export const CAMERA_INACTIVITY_MS = 5 * 60 * 1000
 export const VIDEO_FRAME_CALLBACK_WATCHDOG_MS = 500
+export const PLAYER_LOOKUP_RETRY_BASE_MS = 1_000
+export const PLAYER_LOOKUP_RETRY_MAX_MS = 10_000
+const PLAYER_LOOKUP_REENTRY_RESET_MS = 250
 
 const stateCopy: Record<CameraState, { title: string; detail: string }> = {
   initial: { title: 'Ready when you are', detail: 'Point your camera at a QR code. Frames stay on this device.' },
@@ -192,6 +195,18 @@ async function defaultCreatePlayer(name: string, signal: AbortSignal): Promise<P
   return { v: 1, kind: 'player', playerId: body.player.id, name: body.player.name }
 }
 
+async function defaultDeletePlayer(playerId: number, signal: AbortSignal): Promise<void> {
+  const response = await fetch(`/api/players/${playerId}`, {
+    method: 'DELETE',
+    signal,
+    headers: { accept: 'application/json' },
+  })
+  const body = await response.json() as { error?: string }
+  if (!response.ok) {
+    throw new Error(body.error || `Player cleanup failed (${response.status}).`)
+  }
+}
+
 async function defaultResolvePlayer(playerId: number, signal: AbortSignal): Promise<PlayerPayload> {
   const response = await fetch(`/api/players/${playerId}`, {
     signal,
@@ -199,9 +214,20 @@ async function defaultResolvePlayer(playerId: number, signal: AbortSignal): Prom
   })
   const body = await response.json() as { player?: { id: number; name: string }; error?: string }
   if (!response.ok || !body.player) {
-    throw new Error(body.error || `Player lookup failed (${response.status}).`)
+    const error = new Error(body.error || `Player lookup failed (${response.status}).`) as Error & {
+      retryable?: boolean
+    }
+    error.retryable = response.status === 429 || response.status >= 500
+    throw error
   }
   return { v: 1, kind: 'player', playerId: body.player.id, name: body.player.name }
+}
+
+function retryablePlayerLookupError(error: unknown): boolean {
+  if (typeof (error as { retryable?: unknown } | null)?.retryable === 'boolean') {
+    return (error as { retryable: boolean }).retryable
+  }
+  return !(error instanceof Error && /not found|\(4\d\d\)/i.test(error.message))
 }
 
 function classifyCameraError(error: unknown): CameraState {
@@ -218,6 +244,7 @@ interface AppProps {
   nativeDetectorFactory?: () => NativeBarcodeDetector | null | Promise<NativeBarcodeDetector | null>
   qrEncoder?: (value: string) => Promise<string>
   createPlayer?: (name: string, signal: AbortSignal) => Promise<PlayerPayload>
+  deletePlayer?: (playerId: number, signal: AbortSignal) => Promise<void>
   resolvePlayer?: (playerId: number, signal: AbortSignal) => Promise<PlayerPayload>
   fetchGames?: (signal: AbortSignal) => Promise<GameFeed | OngoingGame[]>
   checkInPlayer?: (player: PlayerPayload, signal: AbortSignal) => Promise<CheckInResult>
@@ -296,6 +323,7 @@ export default function App({
   nativeDetectorFactory = createNativeBarcodeDetector,
   qrEncoder = encodeQrDataUrl,
   createPlayer = defaultCreatePlayer,
+  deletePlayer = defaultDeletePlayer,
   resolvePlayer = defaultResolvePlayer,
   fetchGames = defaultFetchGames,
   checkInPlayer = defaultCheckInPlayer,
@@ -433,7 +461,15 @@ export default function App({
   const playerCreationRef = useRef<AbortController | null>(null)
   const playerCacheRef = useRef(new Map<number, PlayerPayload>())
   const playerLookupRef = useRef(new Map<number, AbortController>())
-  const playerLookupErrorRef = useRef(new Map<number, string>())
+  const playerLookupErrorRef = useRef(new Map<number, {
+    attempts: number
+    message: string
+    retryAt: number
+  }>())
+  const rememberedReferencePresenceRef = useRef<{
+    playerId: number | null
+    leftAt: number | null
+  }>({ playerId: null, leftAt: null })
   const gamesRequestRef = useRef<AbortController | null>(null)
   const gamesRef = useRef<OngoingGame[]>([])
   const checkInRequestRef = useRef(new Map<number, AbortController>())
@@ -551,12 +587,14 @@ export default function App({
   }, [clearResultMode, finalizeGame, refreshGames])
 
   const requestPlayerResolution = useCallback((playerId: number, generation: number) => {
+    const previousFailure = playerLookupErrorRef.current.get(playerId)
     if (
       playerCacheRef.current.has(playerId)
       || playerLookupRef.current.has(playerId)
-      || playerLookupErrorRef.current.has(playerId)
+      || (previousFailure && Date.now() < previousFailure.retryAt)
     ) return
     const controller = new AbortController()
+    const attempt = (previousFailure?.attempts ?? 0) + 1
     playerLookupRef.current.set(playerId, controller)
     void resolvePlayer(playerId, controller.signal).then((resolved) => {
       if (
@@ -566,11 +604,22 @@ export default function App({
       ) return
       playerCacheRef.current.set(playerId, resolved)
       playerLookupErrorRef.current.delete(playerId)
+      if (playerLookupErrorRef.current.size === 0) setCheckInError(false)
+      setCheckInNotice((current) =>
+        current.startsWith(`Player #${playerId} could not be resolved.`) ? '' : current)
       setResolverRevision((value) => value + 1)
     }).catch((error) => {
       if (controller.signal.aborted || generation !== cameraGenerationRef.current) return
       const message = error instanceof Error ? error.message : `Player #${playerId} could not be resolved.`
-      playerLookupErrorRef.current.set(playerId, message)
+      const retryable = retryablePlayerLookupError(error)
+      const cooldown = retryable
+        ? Math.min(PLAYER_LOOKUP_RETRY_BASE_MS * (2 ** (attempt - 1)), PLAYER_LOOKUP_RETRY_MAX_MS)
+        : Number.POSITIVE_INFINITY
+      playerLookupErrorRef.current.set(playerId, {
+        attempts: attempt,
+        message,
+        retryAt: Date.now() + cooldown,
+      })
       setCheckInError(true)
       setCheckInNotice(`Player #${playerId} could not be resolved. ${message}`)
       setResolverRevision((value) => value + 1)
@@ -692,6 +741,7 @@ export default function App({
     resultRequestRef.current = null
     playerLookupRef.current.forEach((controller) => controller.abort())
     playerLookupRef.current.clear()
+    playerLookupErrorRef.current.clear()
     clearResultMode()
     cancelScheduledFrame()
     zxingDecoderRef.current?.terminate()
@@ -2112,6 +2162,28 @@ export default function App({
   }, [stopCamera])
 
   useEffect(() => {
+    const parsed = remembered ? parseQrPayload(remembered.detection.data) : null
+    const currentReference = parsed?.kind === 'player-reference'
+      ? parsed.reference.playerId
+      : null
+    const presence = rememberedReferencePresenceRef.current
+    if (currentReference === null) {
+      if (presence.playerId !== null && presence.leftAt === null) presence.leftAt = Date.now()
+      return
+    }
+    if (presence.playerId === currentReference) {
+      if (presence.leftAt !== null
+        && Date.now() - presence.leftAt >= PLAYER_LOOKUP_REENTRY_RESET_MS) {
+        playerLookupErrorRef.current.delete(currentReference)
+      }
+      presence.leftAt = null
+      return
+    }
+    presence.playerId = currentReference
+    presence.leftAt = null
+  }, [remembered])
+
+  useEffect(() => {
     diagnosticMountedRef.current = true
     const urls = diagnosticUrlsRef.current
     return () => {
@@ -2132,12 +2204,17 @@ export default function App({
     setPlayer(null)
     setQrDataUrl('')
     setProducerError('')
+    let createdPlayer: PlayerPayload | null = null
+    let displayed = false
+    let generationError = ''
     try {
       const next = await createPlayer(normalizePlayerName(name), controller.signal)
+      createdPlayer = next
       if (controller.signal.aborted || request !== qrRequestRef.current) return
       const encoded = encodePlayerReference(next.playerId)
       const url = await qrEncoder(encoded)
       if (controller.signal.aborted || request !== qrRequestRef.current) return
+      displayed = true
       playerCacheRef.current.set(next.playerId, next)
       setPlayer(next)
       setQrDataUrl(url)
@@ -2145,8 +2222,20 @@ export default function App({
       if (controller.signal.aborted || request !== qrRequestRef.current) return
       setPlayer(null)
       setQrDataUrl('')
-      setProducerError(error instanceof Error ? error.message : 'Could not generate QR code.')
+      generationError = error instanceof Error ? error.message : 'Could not generate QR code.'
+      setProducerError(generationError)
     } finally {
+      if (createdPlayer && !displayed) {
+        try {
+          await deletePlayer(createdPlayer.playerId, new AbortController().signal)
+        } catch (error) {
+          const cleanupError = error instanceof Error ? error.message : 'Unknown cleanup failure.'
+          const prefix = generationError ? `${generationError} ` : ''
+          setProducerError(
+            `${prefix}Player #${createdPlayer.playerId} cleanup failed: ${cleanupError}`,
+          )
+        }
+      }
       if (playerCreationRef.current === controller) playerCreationRef.current = null
     }
   }

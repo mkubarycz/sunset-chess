@@ -4,6 +4,7 @@ import { StrictMode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App, {
   CAMERA_INACTIVITY_MS,
+  PLAYER_LOOKUP_RETRY_BASE_MS,
   VIDEO_FRAME_CALLBACK_WATCHDOG_MS,
 } from './App'
 import { encodeQrDataUrl, PLAYER_QR_RENDER_OPTIONS } from './qrArtwork'
@@ -1226,6 +1227,69 @@ describe('scanner and player producer', () => {
     expect(screen.queryByText('hold QR here')).not.toBeInTheDocument()
   })
 
+  it('retries retryable compact lookup failures with bounded cooldown and recovers', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+    const camera = setupCamera()
+    let now = 1_000
+    vi.spyOn(performance, 'now').mockImplementation(() => now)
+    const resolvePlayer = vi.fn()
+      .mockRejectedValueOnce(new Error('Network unavailable.'))
+      .mockRejectedValueOnce(new Error('Server unavailable.'))
+      .mockResolvedValue({
+        v: 1 as const, kind: 'player' as const, playerId: 1234, name: 'Ada',
+      })
+    render(<App
+      nativeDetectorFactory={() => ({ detect: vi.fn().mockResolvedValue([{
+        rawValue: 'SC1:YA',
+        cornerPoints: [
+          { x: 340, y: 30 }, { x: 360, y: 30 },
+          { x: 360, y: 50 }, { x: 340, y: 50 },
+        ],
+      }]) })}
+      resolvePlayer={resolvePlayer}
+      fetchGames={vi.fn().mockResolvedValue([])}
+      gamesPollIntervalMs={60_000}
+    />)
+    const video = screen.getByLabelText('Mirrored live camera preview')
+    Object.defineProperties(video, {
+      videoWidth: { configurable: true, value: 400 },
+      videoHeight: { configurable: true, value: 300 },
+      clientWidth: { configurable: true, value: 400 },
+      clientHeight: { configurable: true, value: 300 },
+      readyState: { configurable: true, value: HTMLMediaElement.HAVE_CURRENT_DATA },
+    })
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Scanning'))
+    for (let index = 0; index < 3; index += 1) {
+      now += 100
+      await act(async () => camera.callbacks.shift()?.(now))
+    }
+    await waitFor(() => expect(resolvePlayer).toHaveBeenCalledTimes(1))
+    expect(await screen.findByText(
+      'Player #1234 could not be resolved. Network unavailable.',
+    )).toBeInTheDocument()
+
+    vi.setSystemTime(new Date(Date.now() + PLAYER_LOOKUP_RETRY_BASE_MS - 1))
+    now += 200
+    await act(async () => camera.callbacks.shift()?.(now))
+    expect(resolvePlayer).toHaveBeenCalledTimes(1)
+    vi.setSystemTime(new Date(Date.now() + 1))
+    now += 200
+    await act(async () => camera.callbacks.shift()?.(now))
+    await waitFor(() => expect(resolvePlayer).toHaveBeenCalledTimes(2))
+
+    vi.setSystemTime(new Date(Date.now() + (PLAYER_LOOKUP_RETRY_BASE_MS * 2) - 1))
+    now += 200
+    await act(async () => camera.callbacks.shift()?.(now))
+    expect(resolvePlayer).toHaveBeenCalledTimes(2)
+    vi.setSystemTime(new Date(Date.now() + 1))
+    now += 200
+    await act(async () => camera.callbacks.shift()?.(now))
+    await waitFor(() => expect(resolvePlayer).toHaveBeenCalledTimes(3))
+    expect(await screen.findByText('Ada · #1234')).toBeInTheDocument()
+    expect(screen.queryByText(/could not be resolved/)).not.toBeInTheDocument()
+  })
+
   it('checks a held player QR in once and then shows its centered game context', async () => {
     const camera = setupCamera()
     const worker = new FakeWorker()
@@ -1595,6 +1659,41 @@ describe('scanner and player producer', () => {
     expect(qrEncoder).not.toHaveBeenCalled()
   })
 
+  it('removes a newly persisted player when QR encoding fails', async () => {
+    setupCamera()
+    const deletePlayer = vi.fn().mockResolvedValue(undefined)
+    render(<App
+      createPlayer={vi.fn().mockResolvedValue({
+        v: 1, kind: 'player', playerId: 1234, name: 'Ada',
+      })}
+      deletePlayer={deletePlayer}
+      qrEncoder={vi.fn().mockRejectedValue(new Error('QR encoder failed.'))}
+      fetchGames={vi.fn().mockResolvedValue([])}
+    />)
+    await userEvent.type(screen.getByLabelText('Player name'), 'Ada')
+    await userEvent.click(screen.getByRole('button', { name: 'Generate' }))
+    expect(await screen.findByText('QR encoder failed.')).toHaveAttribute('role', 'alert')
+    expect(deletePlayer).toHaveBeenCalledWith(1234, expect.any(AbortSignal))
+    expect(screen.queryByLabelText('Generated player QR card')).not.toBeInTheDocument()
+  })
+
+  it('surfaces failed player cleanup after QR encoding fails', async () => {
+    setupCamera()
+    render(<App
+      createPlayer={vi.fn().mockResolvedValue({
+        v: 1, kind: 'player', playerId: 1234, name: 'Ada',
+      })}
+      deletePlayer={vi.fn().mockRejectedValue(new Error('Database locked.'))}
+      qrEncoder={vi.fn().mockRejectedValue(new Error('QR encoder failed.'))}
+      fetchGames={vi.fn().mockResolvedValue([])}
+    />)
+    await userEvent.type(screen.getByLabelText('Player name'), 'Ada')
+    await userEvent.click(screen.getByRole('button', { name: 'Generate' }))
+    expect(await screen.findByText(
+      'QR encoder failed. Player #1234 cleanup failed: Database locked.',
+    )).toHaveAttribute('role', 'alert')
+  })
+
   it('keeps only the newest overlapping QR generation result', async () => {
     setupCamera()
     const resolvers: Array<(url: string) => void> = []
@@ -1603,10 +1702,12 @@ describe('scanner and player producer', () => {
     const createPlayer = vi.fn(async (name: string) => ({
       v: 1 as const, kind: 'player' as const, playerId: nextId++, name,
     }))
+    const deletePlayer = vi.fn().mockResolvedValue(undefined)
     render(<App
       workerFactory={() => new FakeWorker() as unknown as Worker}
       qrEncoder={qrEncoder}
       createPlayer={createPlayer}
+      deletePlayer={deletePlayer}
     />)
     const input = screen.getByLabelText('Player name')
     await userEvent.type(input, 'First')
@@ -1620,6 +1721,8 @@ describe('scanner and player producer', () => {
     await act(async () => resolvers[0]('data:image/png;base64,first'))
     expect(screen.getByRole('heading', { name: 'Second' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'First' })).not.toBeInTheDocument()
+    expect(deletePlayer).toHaveBeenCalledWith(1234, expect.any(AbortSignal))
+    expect(deletePlayer).not.toHaveBeenCalledWith(1235, expect.anything())
   })
 
   it('uses requestVideoFrameCallback when available and handles an ended track', async () => {

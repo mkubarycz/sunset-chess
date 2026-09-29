@@ -1,6 +1,6 @@
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { extname, join, normalize, resolve } from 'node:path';
+import { extname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { DatabaseSync } from 'node:sqlite';
 import { checkDatabase } from './database.js';
@@ -17,6 +17,20 @@ const mimeTypes: Record<string, string> = {
 };
 
 const loopbackHosts = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+type PathSemantics = Pick<typeof posix, 'isAbsolute' | 'relative' | 'sep'>;
+
+export function isContainedPath(
+  root: string,
+  candidate: string,
+  paths: PathSemantics = { isAbsolute, relative, sep },
+): boolean {
+  const fromRoot = paths.relative(root, candidate);
+  return fromRoot !== ''
+    && !paths.isAbsolute(fromRoot)
+    && fromRoot !== '..'
+    && !fromRoot.startsWith(`..${paths.sep}`);
+}
 
 export function allowedHostAuthority(authority: string | undefined): boolean {
   if (!authority || /[/?#@\s]/.test(authority)) return false;
@@ -203,14 +217,18 @@ export function createSunsetServer(
       }
       const playerMatch = url.pathname.match(/^\/api\/players\/(\d+)$/);
       if (playerMatch) {
-        if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed.' });
+        if (req.method !== 'GET' && req.method !== 'DELETE') {
+          return sendJson(res, 405, { error: 'Method not allowed.' });
+        }
         try {
           return sendJson(res, 200, {
-            player: repository.getPlayer(Number(playerMatch[1])),
+            player: req.method === 'DELETE'
+              ? repository.deletePlayer(Number(playerMatch[1]))
+              : repository.getPlayer(Number(playerMatch[1])),
           });
         } catch (error) {
           if (error instanceof DomainError) {
-            return sendJson(res, error.code === 'not_found' ? 404 : 400, {
+            return sendJson(res, error.code === 'not_found' ? 404 : error.code === 'conflict' ? 409 : 400, {
               error: error.message,
               code: error.code,
             });
@@ -295,9 +313,9 @@ export function createSunsetServer(
       if (req.method !== 'GET' && req.method !== 'HEAD') {
         return sendJson(res, 405, { error: 'Method not allowed.' });
       }
-      const requested = url.pathname === '/' ? '/index.html' : normalize(url.pathname);
+      const requested = url.pathname === '/' ? '/index.html' : url.pathname;
       const file = resolve(publicDirectory, `.${requested}`);
-      const withinPublic = file.startsWith(`${resolve(publicDirectory)}/`);
+      const withinPublic = isContainedPath(resolve(publicDirectory), file);
       if (withinPublic && existsSync(file) && statSync(file).isFile()) {
         res.writeHead(200, { 'content-type': mimeTypes[extname(file)] ?? 'application/octet-stream' });
         if (req.method === 'HEAD') return res.end();

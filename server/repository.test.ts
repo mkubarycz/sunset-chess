@@ -113,7 +113,7 @@ describe('ChessRepository', () => {
     db.close();
   });
 
-  it('migrates v1 games in stable id order and preserves constraints idempotently', () => {
+  it('migrates a non-conflicting v1 game and preserves constraints idempotently', () => {
     mkdirSync(testDirectory, { recursive: true });
     const path = resolve(testDirectory, `migration-${crypto.randomUUID()}.sqlite`);
     files.push(path);
@@ -134,7 +134,7 @@ describe('ChessRepository', () => {
       ) STRICT;
       INSERT INTO Player VALUES (1000, 'Alice'), (1001, 'Bob');
       INSERT INTO ChessGame(id, blackPlayerId, whitePlayerId) VALUES
-        (8, 1000, 1001), (3, 1001, 1000);
+        (8, 1000, 1001);
     `);
     legacy.close();
 
@@ -142,7 +142,7 @@ describe('ChessRepository', () => {
     expect(migrated.prepare(
       'SELECT id, tableNumber, createdAt, blackPlayerId, whitePlayerId FROM ChessGame ORDER BY id',
     ).all()).toEqual([
-      { id: 3, tableNumber: 1, createdAt: expect.any(String), blackPlayerId: 1001, whitePlayerId: 1000 },
+      { id: 8, tableNumber: 1, createdAt: expect.any(String), blackPlayerId: 1000, whitePlayerId: 1001 },
     ]);
     expect(() => migrated.exec(
       'INSERT INTO ChessGame(tableNumber, blackPlayerId, whitePlayerId) VALUES (2, 1000, 1001)',
@@ -179,12 +179,11 @@ describe('ChessRepository', () => {
       ) STRICT;
       INSERT INTO Player VALUES
         (1000, 'Alice'), (1001, 'Bob'), (1002, 'Carol'),
-        (1003, 'Dan'), (1004, 'Eve');
+        (1003, 'Dan'), (1004, 'Eve'), (1005, 'Frank');
       INSERT INTO ChessGame VALUES
         (4, 3, 1000, 1001),
-        (9, 7, 1002, 1000),
-        (12, 8, 1001, 1002),
-        (15, 10, 1004, 1003);
+        (9, 7, 1002, 1003),
+        (15, 10, 1004, 1005);
     `);
     legacy.close();
 
@@ -197,8 +196,8 @@ describe('ChessRepository', () => {
       id, tableNumber, blackPlayerId, whitePlayerId,
     }))).toEqual([
       { id: 4, tableNumber: 3, blackPlayerId: 1000, whitePlayerId: 1001 },
-      { id: 9, tableNumber: 7, blackPlayerId: 1002, whitePlayerId: null },
-      { id: 15, tableNumber: 10, blackPlayerId: 1004, whitePlayerId: 1003 },
+      { id: 9, tableNumber: 7, blackPlayerId: 1002, whitePlayerId: 1003 },
+      { id: 15, tableNumber: 10, blackPlayerId: 1004, whitePlayerId: 1005 },
     ]);
     expect(rows.every((row) => typeof row.createdAt === 'string')).toBe(true);
     expect(migrated.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' });
@@ -213,6 +212,52 @@ describe('ChessRepository', () => {
       GROUP BY playerId HAVING COUNT(*) > 1
     `).all()).toEqual([]);
     migrated.close();
+  });
+
+  it('fails v3 migration before changing duplicate legacy games and gives recovery steps', () => {
+    mkdirSync(testDirectory, { recursive: true });
+    const path = resolve(testDirectory, `duplicate-v2-${crypto.randomUUID()}.sqlite`);
+    files.push(path);
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      PRAGMA foreign_keys = ON;
+      CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL) STRICT;
+      INSERT INTO schema_migrations VALUES (1, 'legacy'), (2, 'legacy');
+      CREATE TABLE Player (
+        id INTEGER PRIMARY KEY CHECK (id BETWEEN 1000 AND 2000),
+        name TEXT NOT NULL CHECK (length(trim(name)) BETWEEN 1 AND 80)
+      ) STRICT;
+      CREATE TABLE ChessGame (
+        id INTEGER PRIMARY KEY,
+        tableNumber INTEGER NOT NULL UNIQUE CHECK (tableNumber >= 1),
+        blackPlayerId INTEGER NOT NULL REFERENCES Player(id) ON DELETE RESTRICT,
+        whitePlayerId INTEGER NOT NULL REFERENCES Player(id) ON DELETE RESTRICT,
+        CHECK (blackPlayerId <> whitePlayerId)
+      ) STRICT;
+      INSERT INTO Player VALUES (1000, 'Alice'), (1001, 'Bob'), (1002, 'Carol');
+      INSERT INTO ChessGame VALUES
+        (4, 3, 1000, 1001),
+        (9, 7, 1002, 1000);
+    `);
+    legacy.close();
+
+    expect(() => openDatabase(path)).toThrow(
+      /player 1000 occupies 2 active seats.*Back up the database.*resolve duplicate/s,
+    );
+    const verify = new DatabaseSync(path);
+    expect(verify.prepare('SELECT * FROM ChessGame ORDER BY id').all()).toEqual([
+      { id: 4, tableNumber: 3, blackPlayerId: 1000, whitePlayerId: 1001 },
+      { id: 9, tableNumber: 7, blackPlayerId: 1002, whitePlayerId: 1000 },
+    ]);
+    expect(verify.prepare('PRAGMA table_info(ChessGame)').all()
+      .map((column) => (column as { name: string }).name))
+      .toEqual(['id', 'tableNumber', 'blackPlayerId', 'whitePlayerId']);
+    expect(verify.prepare('SELECT version FROM schema_migrations ORDER BY version').all())
+      .toEqual([{ version: 1 }, { version: 2 }]);
+    expect(verify.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ChessGame_v2'
+    `).get()).toBeUndefined();
+    verify.close();
   });
 
   it('rejects a marked-v3 database that violates the duplicate invariant without an active transaction', () => {
@@ -238,7 +283,7 @@ describe('ChessRepository', () => {
     `);
     invalid.close();
     expect(() => openDatabase(path)).toThrow(
-      'Migration v3 duplicate invariant failed for player 1000.',
+      /player 1000 occupies 2 active seats.*Back up the database.*resolve duplicate/s,
     );
     const verify = new DatabaseSync(path);
     expect(verify.isTransaction).toBe(false);
@@ -288,6 +333,35 @@ describe('ChessRepository', () => {
     expect(new ChessRepository(low.db, () => 0).createPlayer('First'))
       .toEqual({ id: 1000, name: 'First', rating: 700 });
     low.db.close();
+  });
+
+  it('deletes only unreferenced players with exactly one baseline event atomically', () => {
+    const { db, repository } = fixture();
+    const removable = repository.createPlayer('Removable');
+    expect(repository.deletePlayer(removable.id)).toEqual(removable);
+    expect(() => repository.getPlayer(removable.id)).toThrow(NotFoundError);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM PlayerRatingEvent WHERE playerId = ?')
+      .get(removable.id)).toEqual({ count: 0 });
+
+    const referenced = repository.createPlayer('Referenced');
+    const opponent = repository.createPlayer('Opponent');
+    repository.createGame(referenced.id, opponent.id);
+    expect(() => repository.deletePlayer(referenced.id)).toThrow(ConflictError);
+    expect(repository.getPlayer(referenced.id)).toEqual(referenced);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM PlayerRatingEvent WHERE playerId = ?')
+      .get(referenced.id)).toEqual({ count: 1 });
+
+    const historical = repository.createPlayer('Historical');
+    db.prepare(`
+      INSERT INTO PlayerRatingEvent(
+        playerId, previousRating, rating, delta, recordedAt, reason
+      ) VALUES (?, 700, 700, 0, ?, 'migration')
+    `).run(historical.id, '2026-01-01T00:00:00.000Z');
+    expect(() => repository.deletePlayer(historical.id)).toThrow(ConflictError);
+    expect(repository.getPlayer(historical.id)).toEqual(historical);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM PlayerRatingEvent WHERE playerId = ?')
+      .get(historical.id)).toEqual({ count: 2 });
+    db.close();
   });
 
   it('enforces player, game, foreign-key, and deletion constraints', () => {

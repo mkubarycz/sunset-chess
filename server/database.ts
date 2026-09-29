@@ -284,7 +284,11 @@ function assertUniqueGameParticipation(db: DatabaseSync): void {
     LIMIT 1
   `).get() as { playerId: number; appearances: number } | undefined;
   if (duplicate) {
-    throw new Error(`Migration v3 duplicate invariant failed for player ${duplicate.playerId}.`);
+    throw new Error(
+      `Migration v3 cannot continue: player ${duplicate.playerId} occupies `
+      + `${duplicate.appearances} active seats. Back up the database, resolve duplicate `
+      + 'active-player participation, and restart Sunset Chess.',
+    );
   }
 }
 
@@ -309,6 +313,13 @@ export function openDatabase(path = process.env.SUNSET_CHESS_DB_PATH || defaultD
     if (db.isTransaction) db.exec('ROLLBACK');
     throw error;
   }
+  const v3Applied = db.prepare(
+    'SELECT 1 FROM schema_migrations WHERE version = 3',
+  ).get();
+  const hasLegacyGames = db.prepare(`
+    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ChessGame'
+  `).get();
+  if (!v3Applied && hasLegacyGames) assertUniqueGameParticipation(db);
   for (const migration of migrations) {
     try {
       db.exec('BEGIN IMMEDIATE');
@@ -320,6 +331,7 @@ export function openDatabase(path = process.env.SUNSET_CHESS_DB_PATH || defaultD
         db.exec('COMMIT');
         continue;
       }
+      if (migration.version === 3) assertUniqueGameParticipation(db);
       db.exec(migration.sql);
       if (migration.version === 5) backfillRatingLedger(db, new Date().toISOString());
       if (migration.version === 3) assertUniqueGameParticipation(db);

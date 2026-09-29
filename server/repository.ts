@@ -206,10 +206,32 @@ export class ChessRepository {
   }
 
   deletePlayer(id: number): Player {
-    const player = this.getPlayer(id);
+    this.db.exec('BEGIN IMMEDIATE');
     try {
+      const player = this.getPlayer(id);
+      const gameReference = this.db.prepare(`
+        SELECT 1 FROM ChessGame
+        WHERE blackPlayerId = ? OR whitePlayerId = ?
+        LIMIT 1
+      `).get(id, id);
+      const history = this.db.prepare(`
+        SELECT COUNT(*) AS count,
+               SUM(CASE WHEN reason = 'baseline' THEN 1 ELSE 0 END) AS baselines
+        FROM PlayerRatingEvent WHERE playerId = ?
+      `).get(id) as { count: number; baselines: number };
+      if (gameReference || history.count !== 1 || history.baselines !== 1) {
+        throw new ConflictError(
+          `Player ${id} cannot be deleted because it has game references or non-baseline rating history.`,
+        );
+      }
+      this.db.prepare(`
+        DELETE FROM PlayerRatingEvent WHERE playerId = ? AND reason = 'baseline'
+      `).run(id);
       this.db.prepare('DELETE FROM Player WHERE id = ?').run(id);
+      this.db.exec('COMMIT');
+      return player;
     } catch (error) {
+      if (this.db.isTransaction) this.db.exec('ROLLBACK');
       if (sqliteMessage(error).includes('FOREIGN KEY')) {
         throw new ConflictError(
           `Player ${id} cannot be deleted while referenced by immutable game or rating history.`,
@@ -217,7 +239,6 @@ export class ChessRepository {
       }
       throw error;
     }
-    return player;
   }
 
   listGames(): ChessGame[] {
