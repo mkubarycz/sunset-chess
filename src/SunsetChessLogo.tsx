@@ -88,28 +88,32 @@ export function SunsetChessLogo({
           x={42}
           y={99}
           height={54}
-          className="logo-piece logo-pawn logo-pawn-rose"
+          widthScale={1.1}
+          className="logo-piece logo-pawn"
         />
         <ChessIcon
           definition={faChessPawn}
           x={82}
           y={96}
           height={64}
-          className="logo-piece logo-pawn logo-pawn-ivory"
+          widthScale={1.1}
+          className="logo-piece logo-pawn"
         />
         <ChessIcon
           definition={faChessPawn}
           x={286}
           y={96}
           height={64}
-          className="logo-piece logo-pawn logo-pawn-cyan"
+          widthScale={1.1}
+          className="logo-piece logo-pawn"
         />
         <ChessIcon
           definition={faChessPawn}
           x={329}
           y={99}
           height={54}
-          className="logo-piece logo-pawn logo-pawn-amber"
+          widthScale={1.1}
+          className="logo-piece logo-pawn"
         />
 
         <ChessIcon
@@ -117,7 +121,7 @@ export function SunsetChessLogo({
           x={143}
           y={8}
           height={152}
-          widthScale={0.72}
+          widthScale={0.62}
           className="logo-piece logo-queen"
         />
         <ChessIcon
@@ -125,7 +129,7 @@ export function SunsetChessLogo({
           x={224}
           y={23}
           height={137}
-          widthScale={0.88}
+          widthScale={0.76}
           className="logo-piece logo-bishop"
         />
         <path className="logo-foreground" d="M0 163c76-7 121 4 180 2 57-2 108-9 180-2v17H0Z" />

@@ -14,7 +14,7 @@ describe('SunsetChessLogo', () => {
     expect(container.querySelector('[data-fa-icon="chess-bishop"] > path')).toHaveAttribute('d')
     expect(container.querySelectorAll('[data-fa-icon="chess-pawn"]')).toHaveLength(4)
     expect(container.querySelectorAll('[data-fa-icon] path')).toHaveLength(6)
-    expect(container.querySelectorAll('.logo-pawn-rose, .logo-pawn-ivory, .logo-pawn-cyan, .logo-pawn-amber')).toHaveLength(4)
+    expect(container.querySelectorAll('.logo-pawn')).toHaveLength(4)
   })
 
   it('supports decorative and compact uses', () => {

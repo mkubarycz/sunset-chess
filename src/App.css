@@ -105,15 +105,12 @@ body {
 .logo-horizon-near { fill: #47262d; }
 .logo-piece, .logo-foreground { fill: var(--ink-950); }
 .logo-pawn {
-  stroke: rgba(9, 11, 15, .72);
-  stroke-width: 1.5;
+  fill: #252b33;
+  stroke: rgba(255, 246, 229, .68);
+  stroke-width: 1.25;
   paint-order: stroke fill;
   vector-effect: non-scaling-stroke;
 }
-.logo-pawn-rose { fill: var(--error); }
-.logo-pawn-ivory { fill: var(--ivory); }
-.logo-pawn-cyan { fill: var(--cyan); }
-.logo-pawn-amber { fill: var(--amber-bright); }
 .logo-frame { fill: none; stroke: rgba(255, 246, 229, .2); stroke-width: 2; }
 
 .eyebrow {
