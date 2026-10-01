@@ -317,7 +317,8 @@ export function GameCard({
       {cancelled && game.cancelledAt && (
         <p className="cancelled-at">Cancelled {new Date(game.cancelledAt).toLocaleString()}</p>
       )}
-      <dialog ref={dialogRef} className="game-management-dialog"
+      <dialog ref={dialogRef}
+        className={`game-management-dialog${dialog && dialog !== 'cancel' ? ' seat-management-dialog' : ''}`}
         aria-labelledby={`game-dialog-title-${game.id}`}
         onCancel={(event) => { event.preventDefault(); closeDialog() }}
         onClick={(event) => { if (event.target === dialogRef.current) closeDialog() }}>

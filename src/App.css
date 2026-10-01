@@ -413,6 +413,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .cancelled-result { opacity: .58; text-decoration: line-through; }
 .cancelled-at { margin: 7px 9px; color: #aeb8bf; font-size: .68rem; }
 .game-management-dialog { width: min(460px, calc(100vw - 28px)); max-height: calc(100dvh - 28px); overflow: auto; padding: 22px; border: 1px solid var(--line); border-radius: 12px; background: var(--ink-900); color: var(--paper); }
+.seat-management-dialog { width: min(680px, calc(100vw - 28px)); min-height: min(560px, calc(100dvh - 28px)); }
 .game-management-dialog::backdrop { background: rgba(0,0,0,.74); }
 .game-management-dialog h2 { margin-top: 0; font-family: Georgia, serif; }
 .replacement-combobox { position: relative; margin: 7px 0 12px; }
@@ -427,12 +428,9 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 }
 .replacement-combobox input:focus { outline: 3px solid var(--amber-bright); outline-offset: 2px; }
 .replacement-listbox {
-  position: absolute;
-  z-index: 40;
-  top: calc(100% + 4px);
-  left: 0;
-  right: 0;
-  max-height: min(260px, 38dvh);
+  position: relative;
+  max-height: min(340px, 42dvh);
+  margin-top: 4px;
   overflow-y: auto;
   overscroll-behavior: contain;
   border: 1px solid #8795a3;
