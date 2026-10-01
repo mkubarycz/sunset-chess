@@ -274,7 +274,7 @@ export function PlayerCardDialog({
           {!confirmDelete
             ? <div className="player-card-actions">
                 <button type="button" className="danger" onClick={() => setConfirmDelete(true)}>
-                  <span aria-hidden="true">🗑</span> Delete player
+                  Delete player
                 </button>
               </div>
             : <>

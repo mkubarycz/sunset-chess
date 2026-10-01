@@ -75,7 +75,7 @@ describe('PlayersPanel', () => {
     expect(screen.getByRole('img', { name: 'Alice Elo history from 700 to 716' })).toBeVisible()
     expect(screen.getByRole('table', { name: 'Elo history for Alice' })).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Save name' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Delete player' })).toHaveTextContent('🗑')
+    expect(screen.getByRole('button', { name: 'Delete player' })).toHaveTextContent(/^Delete player$/)
     expect(screen.getByRole('button', { name: 'Close player card' })).toHaveTextContent('×')
     expect(dialog).toHaveClass('modal-dialog')
     fireEvent.keyDown(dialog, { key: 'Escape' })
