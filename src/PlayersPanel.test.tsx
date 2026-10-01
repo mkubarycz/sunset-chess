@@ -66,8 +66,8 @@ describe('PlayersPanel', () => {
       name: 'Table 2: Bob plays black, Alice plays white',
     })).toBeVisible()
     expect(within(recentGames).getByText('Table 2')).toBeVisible()
-    expect(within(recentGames).getByText('716 Elo')).toBeVisible()
-    expect(within(recentGames).getByText('684 Elo')).toBeVisible()
+    expect(within(recentGames).getByText('716', { selector: '.player-rating' })).toBeVisible()
+    expect(within(recentGames).getByText('684', { selector: '.player-rating' })).toBeVisible()
     expect(within(recentGames).getByText('W +16')).toBeVisible()
     expect(within(recentGames).getByText('L -16')).toBeVisible()
     expect(within(recentGames).queryByRole('button')).not.toBeInTheDocument()

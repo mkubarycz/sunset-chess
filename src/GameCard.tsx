@@ -71,8 +71,10 @@ function PlayerSide({
       className={`player-side table-player-side ${side}-side${isWinner ? ' winner' : ''}${isDraw ? ' draw' : ''}`}
       aria-label={player ? `${label} player: ${player.name}, rating ${player.rating}` : `Waiting for ${label}`}
     >
-      <strong>{player?.name ?? `Waiting for ${label}`}</strong>
-      {player && <span className="player-rating">{player.rating} Elo</span>}
+      <span className="player-identity-line">
+        <strong>{player?.name ?? `Waiting for ${label}`}</strong>
+        {player && <span className="player-rating">{player.rating}</span>}
+      </span>
       {player && result && !cancelled && ratingDelta != null && (
         <span className={`rating-delta ${ratingDelta > 0 ? 'positive' : ratingDelta < 0 ? 'negative' : 'neutral'}`}>
           {outcome} {ratingDelta > 0 ? '+' : ''}{ratingDelta}

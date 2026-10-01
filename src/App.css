@@ -386,16 +386,16 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .game-card-menu-popover button { width: 100%; }
 .player-side { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 7px; align-items: center; min-height: 47px; padding: 7px 8px; overflow: hidden; }
 .table-player-side { grid-template-columns: minmax(0, 1fr); gap: 0; }
-.table-player-side .player-rating { grid-column: 1; }
 .table-player-side { position: relative; }
 .seat-edit-button { position: absolute; right: 5px; top: 50%; transform: translateY(-50%); }
-.table-player-side strong { padding-right: 38px; }
+.player-identity-line { display: flex; min-width: 0; align-items: baseline; gap: 7px; }
+.table-player-side .player-identity-line { padding-right: 38px; }
 .rating-delta { position: absolute; right: 9px; font: 800 .78rem/1 ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
 .rating-delta.positive { color: var(--success); }
 .rating-delta.negative { color: var(--error); }
 .rating-delta.neutral { color: #aeb8bf; }
 .player-side strong { overflow-wrap: anywhere; }
-.player-rating { grid-column: 2; font-size: .61rem; opacity: .78; }
+.player-rating { flex: 0 0 auto; font-size: .72em; font-weight: 750; opacity: .78; }
 .side-label { grid-row: 1 / span 2; align-self: center; font-size: .54rem; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }
 .black-side { color: #fff7ea; background: #050607; }
 .white-side { color: #171a1e; background: #fff7e9; }
