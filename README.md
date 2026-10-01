@@ -6,7 +6,10 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
 
 - A full-height dashboard with an accessible Leaderboard / Recent Games / Players
   tabbed primary workspace and one persistent, independently scrolling Ongoing
-  Games rail. The Players tab pairs the roster with Add New Player.
+  Games rail. The Players tab pairs Add New Player with a responsive roster:
+  player names open a focus-trapped editor with recent game cards, while each
+  row's keyboard-operable gear menu provides Edit, one-inch round-sticker
+  printing, and guarded deletion.
 - A versioned local settings menu beside the title. Diagnostics are off by
   default; corrupt preferences reset visibly. The menu supports Escape,
   outside-click dismissal, and narrow viewports.

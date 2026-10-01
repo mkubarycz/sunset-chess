@@ -13,7 +13,7 @@ export interface LeaderboardEntry {
   lastPlayedAt: string | null
 }
 
-interface RatingEvent {
+export interface RatingEvent {
   id: number
   gameId: number | null
   previousRating: number
@@ -23,7 +23,7 @@ interface RatingEvent {
   reason: 'baseline' | 'game' | 'migration'
 }
 
-interface PlayerProfile extends LeaderboardEntry {
+export interface PlayerProfile extends LeaderboardEntry {
   recentGames: Array<{
     id: number
     tableNumber: number

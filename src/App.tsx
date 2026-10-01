@@ -2584,6 +2584,7 @@ export default function App({
               <PlayersPanel refreshKey={leaderboardRefresh} onMutate={() => {
                 playerCacheRef.current.clear()
                 setLeaderboardRefresh((value) => value + 1)
+                void refreshGames(true)
               }} />
               {playerCreator}
             </div>,
