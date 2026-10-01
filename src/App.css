@@ -72,13 +72,15 @@ body {
 .game-column > .ongoing-games { height: 100%; }
 
 .brand-header {
+  position: relative;
+  z-index: 20;
   display: grid;
   grid-template-columns: 148px 1fr auto;
   align-items: center;
   min-height: 94px;
   padding: 8px 14px 8px 8px;
   gap: 14px;
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   background: var(--ink-900);
