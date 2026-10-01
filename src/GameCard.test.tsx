@@ -35,6 +35,12 @@ const roster = [
   player(3000, 'Zelda Knight', 812),
 ]
 
+const waitingGame: OngoingGame = {
+  ...game,
+  blackPlayerId: null,
+  blackPlayer: null,
+}
+
 async function openBlackSeat(user: ReturnType<typeof userEvent.setup>, players = roster) {
   vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(
     JSON.stringify({ players }),
@@ -96,6 +102,63 @@ describe('GameCard', () => {
     expect(screen.getByText('Draw')).toHaveClass('cancelled-result')
     expect(screen.queryByText('+0')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Manage Table 2' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Edit|Assign/ })).not.toBeInTheDocument()
+  })
+
+  it('offers an accessible assign action on an empty active seat without adding a visible side label', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(
+      JSON.stringify({ players: roster }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ))
+    render(<GameCard game={waitingGame} unavailablePlayerIds={[2001]} />)
+
+    expect(screen.getByText('Waiting for Black')).toBeVisible()
+    expect(screen.getAllByText('Waiting for Black')).toHaveLength(1)
+    await user.click(screen.getByRole('button', { name: 'Assign Black player on Table 2' }))
+
+    expect(screen.getByRole('dialog', { name: 'Assign Black player' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Assign player' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Remove player' })).not.toBeInTheDocument()
+    const input = screen.getByRole('combobox', { name: 'Replacement player' })
+    await user.click(input)
+    expect(screen.getByRole('option', { name: 'Zelda Knight (812 Elo)' })).toBeVisible()
+    expect(screen.queryByRole('option', { name: /Blanca/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: /^Player 2 \(/ })).not.toBeInTheDocument()
+  })
+
+  it('assigns the selected player to the empty side and refreshes through the mutation callback', async () => {
+    const user = userEvent.setup()
+    const onMutate = vi.fn()
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ players: roster }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ))
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({
+          game: {
+            ...waitingGame,
+            blackPlayerId: 3000,
+            blackPlayer: { id: 3000, name: 'Zelda Knight', rating: 812 },
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ))
+    render(<GameCard game={waitingGame} onMutate={onMutate} />)
+    await user.click(screen.getByRole('button', { name: 'Assign Black player on Table 2' }))
+    const input = screen.getByRole('combobox', { name: 'Replacement player' })
+    await user.type(input, 'zelda')
+    await screen.findByRole('option', { name: 'Zelda Knight (812 Elo)' })
+    await user.keyboard('{ArrowDown}{Enter}')
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    await user.click(screen.getByRole('button', { name: 'Assign player' }))
+    expect(fetchSpy).toHaveBeenLastCalledWith('/api/games/9/seats/black', expect.objectContaining({
+      method: 'PATCH',
+      body: JSON.stringify({ playerId: 3000 }),
+    }))
+    expect(onMutate).toHaveBeenCalledWith(expect.objectContaining({ blackPlayerId: 3000 }))
   })
 
   it('opens an accessible custom confirmation and restores focus on Escape', async () => {
@@ -142,6 +205,13 @@ describe('GameCard', () => {
     expect(screen.queryByRole('option', { name: /Noir/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('option', { name: /Blanca/ })).not.toBeInTheDocument()
     expect(listbox).toHaveClass('replacement-listbox')
+    expect(screen.getByRole('button', { name: 'Replace player' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Remove player' })).toBeEnabled()
+  })
+
+  it('does not offer seat controls for a finished game', () => {
+    render(<GameCard game={{ ...game, result: '1-0', finishedAt: '2026-01-01T01:00:00.000Z' }} />)
+    expect(screen.queryByRole('button', { name: /Edit|Assign/ })).not.toBeInTheDocument()
   })
 
   it('filters a large roster case-insensitively and reports no results', async () => {

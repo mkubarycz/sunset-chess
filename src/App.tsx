@@ -506,6 +506,11 @@ export default function App({
     () => featuredFirst(games, featuredGame),
     [featuredGame, games],
   )
+  const unavailablePlayerIds = useMemo(
+    () => games.flatMap((game) => [game.blackPlayerId, game.whitePlayerId])
+      .filter((playerId): playerId is number => playerId !== null),
+    [games],
+  )
 
   const updatePreferences = useCallback((patch: Partial<UiPreferences>) => {
     setPreferences((current) => {
@@ -2630,6 +2635,7 @@ export default function App({
                     key={gameIdentityKey(game)}
                     game={game}
                     onMutate={handleGameMutate}
+                    unavailablePlayerIds={unavailablePlayerIds}
                     cardRef={(element) => {
                       const key = gameIdentityKey(game)
                       if (element) gameCardRefs.current.set(key, element)

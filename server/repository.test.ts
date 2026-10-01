@@ -529,7 +529,18 @@ describe('ChessRepository', () => {
     repository.upsertPlayer(1003, 'Dave');
     const game = repository.createGame(1000, 1001);
     expect(repository.updateGameSeat(game.id, 'black', null).blackPlayerId).toBeNull();
-    expect(repository.updateGameSeat(game.id, 'black', 1002).blackPlayerId).toBe(1002);
+    const assigned = repository.updateGameSeat(game.id, 'black', 1002);
+    expect(assigned).toMatchObject({
+      id: game.id,
+      tableNumber: game.tableNumber,
+      createdAt: game.createdAt,
+      blackPlayerId: 1002,
+      whitePlayerId: 1001,
+    });
+    expect(repository.updateGameSeat(game.id, 'black', 1002)).toEqual(assigned);
+    expect(repository.getPlayer(1002).rating).toBe(700);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM PlayerRatingEvent WHERE gameId = ?').get(game.id))
+      .toEqual({ count: 0 });
     expect(() => repository.updateGameSeat(game.id, 'white', 1002)).toThrow(ValidationError);
     const occupied = repository.createGame(1000, 1003);
     expect(() => repository.updateGameSeat(game.id, 'black', 1000)).toThrow(ConflictError);

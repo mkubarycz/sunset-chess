@@ -563,8 +563,8 @@ creates a waiting game with a cryptographically random side. The read-only `GET 
 table) and `recentGames` (the 20 most recently finished). `PATCH
 /api/games/:id/result` with JSON `{ "result": "1-0" }` (or either other
 canonical token) finalizes a fully seated game. `PATCH
-/api/games/:id/seats/:side` accepts `{ "playerId": 1234 }` or `null` to replace
-or remove one active seat. `DELETE /api/games/:id` audit-cancels an active or
+/api/games/:id/seats/:side` accepts `{ "playerId": 1234 }` or `null` to assign,
+replace, or remove one active seat. `DELETE /api/games/:id` audit-cancels an active or
 eligible finished game and may accept JSON `{ "reason": "..." }`. Active
 cancellation creates no rating event; finished cancellation follows the guarded
 compensation policy above. The browser loads it immediately,
@@ -606,8 +606,8 @@ ARIA modal with focus entry/return, Escape/close/backdrop dismissal, a textual
 recent-game/history table, and an accessible SVG sparkline.
 
 Each table card has a keyboard-accessible gear menu and custom confirmation
-dialog. Active occupied seats have an accessible pencil action for removal or
-replacement. Server-provided finished-game deltas use signed, tabular,
+dialog. Active empty seats have an accessible add action for assignment, while
+occupied seats have a pencil action for removal or replacement. Server-provided finished-game deltas use signed, tabular,
 positive/negative/neutral styling. Cancelled cards retain the subdued original
 result and cancellation time, omit deltas and management controls, and remain
 available as audit records in Recent Games.

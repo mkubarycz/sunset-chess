@@ -75,9 +75,11 @@ function PlayerSide({
           {ratingDelta > 0 ? '+' : ''}{ratingDelta}
         </span>
       )}
-      {player && !result && onEdit && (
+      {!result && onEdit && (
         <button type="button" className="seat-edit-button" onClick={onEdit}
-          aria-label={`Edit ${label} player${tableNumber ? ` on Table ${tableNumber}` : ''}`}>✎</button>
+          aria-label={`${player ? 'Edit' : 'Assign'} ${label} player${tableNumber ? ` on Table ${tableNumber}` : ''}`}>
+          {player ? '✎' : '＋'}
+        </button>
       )}
     </div>
   )
@@ -92,6 +94,7 @@ export function GameCard({
   height,
   onMutate,
   management = true,
+  unavailablePlayerIds = [],
 }: {
   game: OngoingGame
   className?: string
@@ -101,6 +104,7 @@ export function GameCard({
   height?: CSSProperties['height']
   onMutate?: (game: OngoingGame) => void | Promise<void>
   management?: boolean
+  unavailablePlayerIds?: readonly number[]
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [dialog, setDialog] = useState<'cancel' | 'black' | 'white' | null>(null)
@@ -210,7 +214,10 @@ export function GameCard({
   }
   const opponent = dialog === 'black' ? game.whitePlayerId : game.blackPlayerId
   const current = dialog === 'black' ? game.blackPlayerId : game.whitePlayerId
-  const eligiblePlayers = players.filter((candidate) => candidate.id !== opponent && candidate.id !== current)
+  const assigning = current === null
+  const unavailablePlayers = new Set(unavailablePlayerIds)
+  const eligiblePlayers = players.filter((candidate) =>
+    candidate.id !== opponent && candidate.id !== current && !unavailablePlayers.has(candidate.id))
   const normalizedQuery = replacementQuery.trim().toLocaleLowerCase()
   const filteredPlayers = eligiblePlayers.filter((candidate) =>
     !normalizedQuery || candidate.name.toLocaleLowerCase().includes(normalizedQuery))
@@ -264,8 +271,8 @@ export function GameCard({
   useEffect(() => {
     const candidate = filteredPlayers[activeOption]
     if (!pickerOpen || activeOption < 0 || !candidate) return
-    document.getElementById(optionId(candidate))?.scrollIntoView?.({ block: 'nearest' })
-  }, [activeOption, pickerOpen, filteredPlayers])
+    document.getElementById(`${listboxId}-option-${candidate.id}`)?.scrollIntoView?.({ block: 'nearest' })
+  }, [activeOption, pickerOpen, filteredPlayers, listboxId])
 
   return (
     <article
@@ -301,12 +308,12 @@ export function GameCard({
       <PlayerSide side="black" player={game.blackPlayer} result={game.result}
         ratingDelta={game.blackRatingDelta} cancelled={cancelled}
         tableNumber={game.tableNumber}
-        onEdit={management && !cancelled && !game.result && game.blackPlayer ? () => editSide('black') : undefined} />
+        onEdit={management && !cancelled && !game.result ? () => editSide('black') : undefined} />
       <MiniBoard />
       <PlayerSide side="white" player={game.whitePlayer} result={game.result}
         ratingDelta={game.whiteRatingDelta} cancelled={cancelled}
         tableNumber={game.tableNumber}
-        onEdit={management && !cancelled && !game.result && game.whitePlayer ? () => editSide('white') : undefined} />
+        onEdit={management && !cancelled && !game.result ? () => editSide('white') : undefined} />
       {cancelled && game.cancelledAt && (
         <p className="cancelled-at">Cancelled {new Date(game.cancelledAt).toLocaleString()}</p>
       )}
@@ -327,7 +334,9 @@ export function GameCard({
             })}>{busy ? 'Cancelling…' : 'Cancel game'}</button>
           </div>
         </> : dialog ? <>
-          <h2 id={`game-dialog-title-${game.id}`}>Edit {dialog === 'black' ? 'Black' : 'White'} player</h2>
+          <h2 id={`game-dialog-title-${game.id}`}>
+            {assigning ? 'Assign' : 'Edit'} {dialog === 'black' ? 'Black' : 'White'} player
+          </h2>
           <label htmlFor={`seat-player-${game.id}`}>Replacement player</label>
           <div className="replacement-combobox">
             <input
@@ -382,16 +391,18 @@ export function GameCard({
           {error && <p role="alert" className="form-error">{error}</p>}
           <div className="dialog-actions">
             <button type="button" className="secondary" onClick={closeDialog}>Close</button>
-            <button type="button" className="secondary" disabled={busy}
-              onClick={() => void mutate(`/api/games/${game.id}/seats/${dialog}`, {
-                method: 'PATCH', headers: { accept: 'application/json', 'content-type': 'application/json' },
-                body: JSON.stringify({ playerId: null }),
-              })}>Remove player</button>
+            {!assigning && (
+              <button type="button" className="secondary" disabled={busy}
+                onClick={() => void mutate(`/api/games/${game.id}/seats/${dialog}`, {
+                  method: 'PATCH', headers: { accept: 'application/json', 'content-type': 'application/json' },
+                  body: JSON.stringify({ playerId: null }),
+                })}>Remove player</button>
+            )}
             <button type="button" disabled={busy || !replacement}
               onClick={() => void mutate(`/api/games/${game.id}/seats/${dialog}`, {
                 method: 'PATCH', headers: { accept: 'application/json', 'content-type': 'application/json' },
                 body: JSON.stringify({ playerId: Number(replacement) }),
-              })}>{busy ? 'Saving…' : 'Replace player'}</button>
+              })}>{busy ? 'Saving…' : assigning ? 'Assign player' : 'Replace player'}</button>
           </div>
         </> : null}
       </dialog>
