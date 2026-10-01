@@ -201,6 +201,75 @@ describe('scanner and player producer', () => {
     expect(camera.getUserMedia).toHaveBeenCalledOnce()
   })
 
+  it('manually stops all camera work and reacquires only after explicit Start Camera', async () => {
+    const first = mediaStream()
+    const second = mediaStream()
+    const getUserMedia = vi.fn()
+      .mockResolvedValueOnce(first.stream)
+      .mockResolvedValueOnce(second.stream)
+    Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia } })
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
+    vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1))
+    vi.stubGlobal('cancelAnimationFrame', vi.fn())
+    const workers = [new FakeWorker(), new FakeWorker()]
+    render(<App workerFactory={() => workers.shift() as unknown as Worker} />)
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Stop Camera' })).toBeInTheDocument())
+    await userEvent.click(screen.getByRole('button', { name: 'Stop Camera' }))
+
+    expect(first.track.stop).toHaveBeenCalledOnce()
+    expect(screen.getByRole('status')).toHaveTextContent('Camera off')
+    expect(screen.getByRole('button', { name: 'Start Camera' })).toBeInTheDocument()
+    await act(async () => Promise.resolve())
+    expect(getUserMedia).toHaveBeenCalledOnce()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Start Camera' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Stop Camera' })).toBeInTheDocument())
+    expect(getUserMedia).toHaveBeenCalledTimes(2)
+    expect(second.track.stop).not.toHaveBeenCalled()
+  })
+
+  it('disables the camera control while permission is being requested', async () => {
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: vi.fn(() => new Promise<MediaStream>(() => undefined)) },
+    })
+    render(<App />)
+    expect(await screen.findByRole('button', { name: 'Starting…' })).toBeDisabled()
+    expect(screen.getByRole('status')).toHaveTextContent('Waiting for camera permission')
+  })
+
+  it('disables camera access in an insecure context', async () => {
+    Object.defineProperty(window, 'isSecureContext', { configurable: true, value: false })
+    render(<App />)
+    expect(await screen.findByRole('button', { name: 'Camera unavailable' })).toBeDisabled()
+    expect(document.querySelector('.camera-action-notice')).toHaveTextContent('A secure connection is required')
+  })
+
+  it('offers Start Camera after an unexpected startup error', async () => {
+    setupCamera()
+    vi.mocked(HTMLMediaElement.prototype.play).mockRejectedValueOnce(new Error('play failed'))
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('.camera-action-notice')).toHaveTextContent('The QR scanner stopped'))
+    expect(screen.getByRole('button', { name: 'Start Camera' })).toBeEnabled()
+    expect(screen.getByRole('status')).toHaveTextContent('The QR scanner stopped')
+  })
+
+  it('hides all diagnostics when debug tools are disabled', async () => {
+    localStorage.setItem('sunset-chess:preferences', JSON.stringify({
+      version: 1,
+      showDebugTools: false,
+      selectedTab: 'leaderboard',
+      markerShape: 'square',
+    }))
+    setupCamera()
+    render(<App />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Stop Camera' })).toBeInTheDocument())
+    expect(screen.queryByLabelText('Camera debug tools')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Scanner diagnostics')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Record 10s tracking diagnostic' })).not.toBeInTheDocument()
+  })
+
   it('stops a stream that resolves after unmount without installing it', async () => {
     let resolvePermission: ((stream: MediaStream) => void) | undefined
     const getUserMedia = vi.fn(() => new Promise<MediaStream>((resolve) => {
@@ -219,7 +288,7 @@ describe('scanner and player producer', () => {
     expect(play).not.toHaveBeenCalled()
   })
 
-  it('pauses after five minutes without a detection and offers restart', async () => {
+  it('pauses after five minutes without a detection and offers Start Camera', async () => {
     vi.useFakeTimers()
     const camera = setupCamera()
     const worker = new FakeWorker()
@@ -236,8 +305,9 @@ describe('scanner and player producer', () => {
     expect(camera.track.stop).toHaveBeenCalledOnce()
     expect(worker.terminate).toHaveBeenCalledOnce()
     expect(cancelAnimationFrame).toHaveBeenCalled()
-    expect(screen.getByRole('status')).toHaveTextContent('Camera paused after 5 minutes without a QR code')
-    expect(screen.getByRole('button', { name: 'Restart camera' })).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('Camera off')
+    expect(screen.getByRole('alert')).toHaveTextContent('Camera paused after 5 minutes without a QR code')
+    expect(screen.getByRole('button', { name: 'Start Camera' })).toBeInTheDocument()
   })
 
   it('ignores a decode result that arrives after inactivity shutdown', async () => {
@@ -276,7 +346,7 @@ describe('scanner and player producer', () => {
       },
     }))
 
-    expect(screen.getByRole('status')).toHaveTextContent('Camera paused after 5 minutes without a QR code')
+    expect(screen.getByRole('status')).toHaveTextContent('Camera off')
     expect(screen.queryByText('Ada · #1234')).not.toBeInTheDocument()
     expect(checkInPlayer).not.toHaveBeenCalled()
   })
@@ -345,7 +415,7 @@ describe('scanner and player producer', () => {
     />)
     await act(async () => vi.advanceTimersByTimeAsync(0))
     await act(async () => vi.advanceTimersByTimeAsync(CAMERA_INACTIVITY_MS))
-    act(() => screen.getByRole('button', { name: 'Restart camera' }).click())
+    act(() => screen.getByRole('button', { name: 'Start Camera' }).click())
     await act(async () => undefined)
     expect(getUserMedia).toHaveBeenCalledTimes(2)
 
@@ -358,39 +428,32 @@ describe('scanner and player producer', () => {
   it('auto-reports permission and availability failures and permits manual retry', async () => {
     setupCamera()
     const retry = mediaStream()
-    const retryAfterEnded = mediaStream()
     const getUserMedia = vi.fn()
       .mockRejectedValueOnce(new DOMException('denied', 'NotAllowedError'))
       .mockResolvedValueOnce(retry.stream)
-      .mockResolvedValueOnce(retryAfterEnded.stream)
     Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia } })
     render(<App workerFactory={() => new FakeWorker() as unknown as Worker} />)
     expect(await screen.findByRole('status')).toHaveTextContent('Camera permission was denied')
     expect(screen.getByTestId('camera-interaction-layer')).toHaveClass('is-hidden')
-    expect(screen.getByRole('button', { name: 'Try again' }).closest('.scanner-panel')).toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(screen.queryByText('Scanning for a QR code', { selector: ':not(.visually-hidden)' })).not.toBeInTheDocument()
+    expect(document.querySelector('.scanner-panel')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Start Camera' }))
     expect(await screen.findByRole('status')).toHaveTextContent('Scanning for a QR code')
 
     act(() => retry.track.end())
     expect(screen.getByRole('status')).toHaveTextContent('No camera is available')
-    await userEvent.click(screen.getByRole('button', { name: 'Try again' }))
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Scanning for a QR code'))
-    expect(getUserMedia).toHaveBeenCalledTimes(3)
+    expect(screen.getByRole('button', { name: 'Camera unavailable' })).toBeDisabled()
+    expect(getUserMedia).toHaveBeenCalledTimes(2)
   })
 
-  it('auto-reports a missing camera API and permits manual retry', async () => {
+  it('auto-reports a missing camera API with a disabled unavailable control', async () => {
     Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: undefined })
     vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
     render(<App workerFactory={() => new FakeWorker() as unknown as Worker} />)
     expect(await screen.findByRole('status')).toHaveTextContent('No camera is available')
 
-    const retry = mediaStream()
-    const getUserMedia = vi.fn().mockResolvedValue(retry.stream)
-    Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia } })
-    await userEvent.click(screen.getByRole('button', { name: 'Try again' }))
-
-    expect(await screen.findByRole('status')).toHaveTextContent('Scanning for a QR code')
-    expect(getUserMedia).toHaveBeenCalledOnce()
+    expect(screen.getByRole('button', { name: 'Camera unavailable' })).toBeDisabled()
+    expect(document.querySelector('.camera-action-notice')).toHaveTextContent('Connect or enable a camera')
   })
 
   it('runs native full-source detection alongside ZXing while capturing tracking pixels', async () => {
@@ -1099,7 +1162,7 @@ describe('scanner and player producer', () => {
     expect(screen.queryByText('raw & safe')).not.toBeInTheDocument()
     expect(screen.queryByText(`Detected QR code: ${rawPayload}`)).not.toBeInTheDocument()
 
-    await userEvent.click(screen.getByRole('button', { name: 'Restart camera' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Stop Camera' }))
     act(() => workers[0].respond({
       type: 'result', id: request.id, generation: request.generation,
       detection: { data: 'stale', location },
@@ -1483,7 +1546,7 @@ describe('scanner and player producer', () => {
     expect(document.querySelector('.check-in-token')).not.toBeInTheDocument()
     expect(within(list).getByRole('article', { name: /Table 1:/ })).toHaveClass('check-in-arrival')
 
-    await userEvent.click(screen.getByRole('button', { name: 'Restart camera' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Stop Camera' }))
     expect(cancel).not.toHaveBeenCalled()
     expect(document.querySelector('.check-in-token')).not.toBeInTheDocument()
     restoreDescriptor(HTMLElement.prototype, 'animate', animateDescriptor)
@@ -1814,10 +1877,10 @@ describe('ongoing games', () => {
     expect(screen.getByText('No games are ongoing yet.')).toBeInTheDocument()
 
     act(() => window.dispatchEvent(new Event('focus')))
-    expect(await screen.findByRole('alert')).toHaveTextContent('Could not refresh ongoing games')
+    expect(await screen.findByText(/Could not refresh ongoing games/)).toHaveAttribute('role', 'alert')
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
     await waitFor(() => expect(fetchGames).toHaveBeenCalledTimes(3))
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Could not refresh ongoing games/)).not.toBeInTheDocument()
   })
 
   it('renders a compact two-row checker card with ratings and no IDs or dates', async () => {
@@ -1881,7 +1944,6 @@ describe('ongoing games', () => {
 
     const dashboard = document.querySelector<HTMLElement>('.dashboard')
     const main = document.querySelector<HTMLElement>('.main-column')
-    const scanner = document.querySelector<HTMLElement>('.scanner-panel')
     const liveGames = document.querySelector<HTMLElement>('.live-games')
     const ongoingColumn = document.querySelector<HTMLElement>('.ongoing-column')
     const overlay = screen.getByTestId('camera-interaction-layer')
@@ -1890,14 +1952,14 @@ describe('ongoing games', () => {
     expect(document.querySelector('.scanner-card, .center-stage, .right-rail')).not.toBeInTheDocument()
     const leaderboard = document.querySelector<HTMLElement>('.leaderboard')
     expect(main).toContainElement(document.querySelector('.brand-header'))
-    expect(main).toContainElement(scanner)
+    expect(document.querySelector('.scanner-panel')).not.toBeInTheDocument()
     expect(main).toContainElement(leaderboard)
     expect(ongoingColumn).toContainElement(liveGames)
     expect(within(liveGames!).getByRole('heading', { level: 2 })).toHaveTextContent('Ongoing Games')
     expect(screen.getAllByRole('tab').map((tab) => tab.textContent))
       .toEqual(['Leaderboard', 'Recent Games', 'Players'])
     expect(main?.nextElementSibling).toBe(ongoingColumn)
-    expect(scanner!.compareDocumentPosition(leaderboard!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(document.querySelector('.brand-header')!.compareDocumentPosition(leaderboard!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(within(liveGames!).getByRole('region', { name: 'Ongoing games' })).toBe(ongoingList)
     expect(ongoingList).toHaveClass('games-list')
   })

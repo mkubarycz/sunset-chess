@@ -175,8 +175,8 @@ const stateCopy: Record<CameraState, { title: string; detail: string }> = {
   requesting: { title: 'Waiting for camera permission', detail: 'Use your browser prompt to allow camera access.' },
   active: { title: 'Scanning for a QR code', detail: 'Hold the code steady inside the camera view.' },
   inactive: {
-    title: 'Camera paused after 5 minutes without a QR code',
-    detail: 'Restart the camera when you are ready to scan again.',
+    title: 'Camera off',
+    detail: 'Start the camera when you are ready to scan again.',
   },
   denied: { title: 'Camera permission was denied', detail: 'Allow camera access in your browser settings, then try again.' },
   unavailable: { title: 'No camera is available', detail: 'Connect or enable a camera, then try again.' },
@@ -374,6 +374,7 @@ export default function App({
   const [leaderboardRefresh, setLeaderboardRefresh] = useState(0)
   const [checkInNotice, setCheckInNotice] = useState('')
   const [checkInError, setCheckInError] = useState(false)
+  const [cameraNotice, setCameraNotice] = useState('')
   const [featuredGame, setFeaturedGame] = useState<GameIdentity | null>(null)
   const [checkInTransitions, setCheckInTransitions] = useState<CheckInTransition[]>([])
   const [actionZones, setActionZones] = useState<ActionZone[]>([])
@@ -1798,6 +1799,7 @@ export default function App({
       drawOverlay()
       setCheckInNotice('')
       setCheckInError(false)
+      setCameraNotice('Camera paused after 5 minutes without a QR code. Start it when you are ready to scan again.')
       setCameraState('inactive')
     }, CAMERA_INACTIVITY_MS)
   }, [clearInactivityTimer, drawOverlay, stopCamera])
@@ -2125,6 +2127,7 @@ export default function App({
   ])
 
   const startCamera = useCallback(async () => {
+    setCameraNotice('')
     stopCamera(true)
     const generation = cameraGenerationRef.current
     drawOverlay()
@@ -2350,10 +2353,30 @@ export default function App({
         }
       : parsedRaw
     : parsedRaw
-  const canStart = cameraState !== 'requesting' && cameraState !== 'insecure'
   const diagnosticRecording = diagnosticUi.phase === 'recording'
   const interactionVisible = cameraState === 'active'
     && (piecePresent || diagnosticRecording || calibrationOpen)
+  const cameraUnavailable = cameraState === 'insecure' || cameraState === 'unavailable'
+  const cameraButtonLabel = cameraState === 'active'
+    ? 'Stop Camera'
+    : cameraState === 'requesting'
+      ? 'Starting…'
+      : cameraUnavailable
+        ? 'Camera unavailable'
+        : 'Start Camera'
+  const cameraActionRequired = cameraNotice || (
+    ['denied', 'unavailable', 'insecure', 'error'].includes(cameraState)
+      ? `${copy.title}. ${copy.detail}`
+      : ''
+  )
+  const handleStopCamera = () => {
+    stopCamera(true)
+    drawOverlay()
+    setCameraNotice('')
+    setCheckInNotice('')
+    setCheckInError(false)
+    setCameraState('inactive')
+  }
 
   useLayoutEffect(() => {
     const checkInTransition = checkInTransitions[0]
@@ -2505,39 +2528,44 @@ export default function App({
           <header className="brand-header">
             <SunsetChessLogo compact />
             <div><p className="eyebrow">Club play</p><p className="brand-name">Sunset Chess</p></div>
-            <SettingsMenu
-              showDebugTools={preferences.showDebugTools}
-              onDebugChange={(showDebugTools) => updatePreferences({ showDebugTools })}
-              onCalibrate={() => setCalibrationOpen(true)}
-              error={settingsError}
-            />
+            <div className="header-actions">
+              <button
+                type="button"
+                className="camera-lifecycle-button secondary"
+                disabled={cameraState === 'requesting' || cameraUnavailable}
+                onClick={cameraState === 'active' ? handleStopCamera : startCamera}
+                aria-describedby="camera-state-description"
+                title={`${copy.title}. ${copy.detail}`}
+              >
+                <span className={`status-dot ${cameraState}`} aria-hidden="true" />
+                <span>{cameraButtonLabel}</span>
+              </button>
+              <SettingsMenu
+                showDebugTools={preferences.showDebugTools}
+                onDebugChange={(showDebugTools) => updatePreferences({ showDebugTools })}
+                onCalibrate={() => setCalibrationOpen(true)}
+                error={settingsError}
+              />
+            </div>
           </header>
 
-          <section className="scanner-panel" aria-labelledby="scanner-heading">
-              <div className="controls">
-                <div className="status" role="status" aria-live="polite">
-                  <span className={`status-dot ${cameraState}`} />
-                  <div><h2 id="scanner-heading">{copy.title}</h2><p>{copy.detail}</p></div>
-                </div>
-                {canStart && (
-                  <button type="button" onClick={startCamera}>
-                    {cameraState === 'initial'
-                      ? 'Start camera'
-                      : cameraState === 'active' || cameraState === 'inactive'
-                        ? 'Restart camera'
-                        : 'Try again'}
-                  </button>
-                )}
-              </div>
-              <p className="visually-hidden" aria-live="polite">
-                {interactionVisible
-                  ? 'Piece detected — camera interaction shown'
-                  : cameraState === 'active' ? 'No piece detected — camera interaction hidden' : ''}
-              </p>
-              {preferences.showDebugTools && <p className="scanner-diagnostics" aria-label="Scanner diagnostics">
+          <p id="camera-state-description" className="visually-hidden" role="status" aria-live="polite">
+            {copy.title}. {copy.detail}
+          </p>
+          <p className="visually-hidden" aria-live="polite">
+            {interactionVisible
+              ? 'Piece detected — camera interaction shown'
+              : cameraState === 'active' ? 'No piece detected — camera interaction hidden' : ''}
+          </p>
+          {cameraActionRequired && (
+            <p className="camera-action-notice" role="alert">{cameraActionRequired}</p>
+          )}
+          {preferences.showDebugTools && (
+            <aside className="camera-debug-strip" aria-label="Camera debug tools">
+              <p className="scanner-diagnostics" aria-label="Scanner diagnostics">
                 <span ref={diagnosticsRef}>Measuring camera / decode / paint cadence…</span>
-              </p>}
-              {preferences.showDebugTools && <div className="tracking-diagnostic-controls">
+              </p>
+              <div className="tracking-diagnostic-controls">
                 <button
                   type="button"
                   className="secondary"
@@ -2563,17 +2591,18 @@ export default function App({
                     Download {diagnosticUi.id}.json
                   </a>
                 )}
-              </div>}
-              {checkInNotice && (
-                <p
-                  className={`check-in-notice${checkInError ? ' error' : ''}`}
-                  role={checkInError ? 'alert' : 'status'}
-                  aria-live="polite"
-                >
-                  {checkInNotice}
-                </p>
-              )}
-          </section>
+              </div>
+            </aside>
+          )}
+          {checkInNotice && (
+            <p
+              className={`check-in-notice${checkInError ? ' error' : ''}`}
+              role={checkInError ? 'alert' : 'status'}
+              aria-live="polite"
+            >
+              {checkInNotice}
+            </p>
+          )}
           <DashboardTabs
             selected={preferences.selectedTab}
             onSelect={(selectedTab) => updatePreferences({ selectedTab })}
@@ -2648,7 +2677,7 @@ export default function App({
           <>
             <div className="overlay-control-strip">
               <span><i className={`status-dot ${cameraState}`} />{diagnosticRecording ? 'Recording diagnostic' : 'Piece detected'}</span>
-              <button type="button" className="secondary" onClick={startCamera}>Restart camera</button>
+              <button type="button" className="secondary" onClick={handleStopCamera}>Stop Camera</button>
             </div>
             {preferences.showDebugTools && <div className="tracking-legend" aria-label="Tracking overlay legend">
               <span><i className="decoded-anchor-key" />Last decoded QR</span>

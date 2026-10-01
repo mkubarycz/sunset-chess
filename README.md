@@ -10,8 +10,12 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
   player names open a focus-trapped editor with recent game cards, while each
   row's keyboard-operable gear menu provides Edit, one-inch round-sticker
   printing, and guarded deletion.
-- A versioned local settings menu beside the title. Diagnostics are off by
-  default; corrupt preferences reset visibly. The menu supports Escape,
+- Compact Start/Stop Camera and Settings controls share the responsive header,
+  leaving the primary tab workspace at full height. Camera state and recovery
+  detail remain available to assistive technology, with compact notices shown
+  only when action is required.
+- A versioned local settings menu beside the camera control. Diagnostics are off
+  by default; corrupt preferences reset visibly. The menu supports Escape,
   outside-click dismissal, and narrow viewports.
 - A three-step live camera calibration flow for usable framing, representative
   marker evidence, and ActionZone alignment. Versioned inset/offset/scale values
@@ -21,9 +25,10 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
   tracked player piece fades it over the unchanged dashboard, and the existing
   bounded tracking expiry fades it out rather than reacting to individual missed
   decode frames. The camera is never a dashboard column or idle placeholder.
-- When enabled in Settings, diagnostic recording explicitly forces the camera layer visible for its
-  10-second run. Permission, error, inactive, and restart controls remain
-  available while the mirror is hidden.
+- When enabled in Settings, a compact debug-only strip exposes diagnostics and
+  recording, which explicitly forces the camera layer visible for its 10-second
+  run. Permission and recovery states remain available from the header while
+  the mirror is hidden.
 - A locally bundled inline-vector Sunset Chess scene places professional queen,
   bishop, and pawn silhouettes against a restrained amber/coral sunset, with
   accessible SVG naming and no runtime network asset
@@ -35,7 +40,7 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
 - Smooth camera capture using `requestVideoFrameCallback` (with RAF fallback), an ideal
   1920×1080/60 FPS request, and a non-exclusive 3840×2160 ceiling
 - Automatic camera startup on mount, with manual retry when permission or hardware is unavailable
-- Five-minute camera inactivity shutdown, reset by every decoded QR code (including arbitrary payloads), with a restart action
+- Five-minute camera inactivity shutdown, reset by every decoded QR code (including arbitrary payloads), with a Start Camera action
 - Complementary native `BarcodeDetector` and ZXing-C++ WebAssembly multi-QR
   scanning, with worker-based `jsQR` as an additional staggered attempt
 - Mirrored, responsive dual polygons and bounded payload label that follow

@@ -46,7 +46,6 @@ body {
 }
 
 .main-column,
-.scanner-panel,
 .leaderboard,
 .producer,
 .ongoing-games {
@@ -85,8 +84,16 @@ body {
   border-radius: var(--radius-md);
   background: var(--ink-900);
 }
-.settings-root { position: relative; justify-self: end; }
+.header-actions { display: flex; align-items: center; justify-self: end; gap: 7px; }
+.settings-root { position: relative; }
 .settings-trigger { padding: 7px 10px; }
+.camera-lifecycle-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 10px;
+}
+.camera-lifecycle-button .status-dot { margin: 0; }
 .settings-menu {
   position: absolute;
   z-index: 50;
@@ -272,9 +279,6 @@ body {
 .payload-label { position: absolute; z-index: 2; left: 0; top: 0; width: min(240px, calc(100% - 16px)); max-height: 58px; overflow: hidden; padding: 8px 10px; border: 1px solid var(--amber-bright); border-radius: var(--radius-sm); color: #17100b; background: rgba(255,246,229,.97); box-shadow: 0 5px 18px rgba(0,0,0,.45); font-size: .86rem; font-weight: 750; line-height: 1.35; overflow-wrap: anywhere; pointer-events: none; will-change: transform; }
 .payload-label.raw { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .76rem; }
 
-.scanner-panel { flex: 0 0 auto; overflow: hidden; }
-.scanner-panel .controls { align-items: stretch; flex-direction: column; }
-.scanner-panel .controls > button { width: 100%; }
 .controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 13px; }
 .status { display: flex; min-width: 0; align-items: flex-start; gap: 11px; }
 .status h2 { margin: 0; font-size: .96rem; }
@@ -283,11 +287,22 @@ body {
 .status-dot.active { background: var(--success); box-shadow: 0 0 0 4px rgba(114,221,160,.12); }
 .status-dot.requesting { background: var(--amber); }
 .status-dot.denied, .status-dot.error { background: var(--error); }
-.check-in-notice { min-height: 1.4em; margin: 0; padding: 0 16px 10px; color: #bdf3d1; font-weight: 750; }
-.check-in-notice:empty { display: none; }
+.camera-action-notice,
+.check-in-notice {
+  margin: 0;
+  border: 1px solid rgba(255, 143, 143, .65);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  color: #ffd4d4;
+  background: rgba(74, 25, 33, .92);
+  font-size: .74rem;
+  font-weight: 750;
+}
+.check-in-notice { border-color: rgba(114, 221, 160, .55); color: #bdf3d1; background: rgba(20, 73, 49, .72); }
 .check-in-notice.error, .form-error, .games-message.error { color: var(--error); }
-.scanner-diagnostics { max-height: 4.2em; margin: 0; padding: 0 13px 7px; overflow: auto; color: #98a4ad; font: .59rem/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; }
-.tracking-diagnostic-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding: 0 13px 10px; color: var(--muted); font-size: .63rem; }
+.camera-debug-strip { display: grid; gap: 7px; border: 1px dashed #4b5864; border-radius: var(--radius-sm); padding: 8px 10px; background: rgba(16, 20, 26, .9); }
+.scanner-diagnostics { max-height: 4.2em; margin: 0; overflow: auto; color: #98a4ad; font: .59rem/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.tracking-diagnostic-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; color: var(--muted); font-size: .63rem; }
 .tracking-diagnostic-controls p { flex: 1 1 220px; margin: 0; line-height: 1.35; }
 .tracking-diagnostic-controls a { color: var(--amber-bright); font-weight: 750; }
 .tracking-diagnostic-controls button { padding: 6px 9px; font-size: .66rem; }
@@ -449,6 +464,8 @@ button:disabled { cursor: not-allowed; opacity: .5; }
   .sunset-chess-logo-compact { width: 112px; }
   .brand-name { font-size: 1.08rem; }
   .settings-trigger { padding: 7px; font-size: .7rem; }
+  .header-actions { align-items: stretch; flex-direction: column; gap: 4px; }
+  .header-actions button { min-height: 31px; justify-content: center; padding: 5px 7px; font-size: .65rem; }
   .leaderboard { min-height: 420px; max-height: 70dvh; }
   .players-layout { display: flex; flex-direction: column; overflow: auto; }
   .players-panel, .producer { flex: 0 0 auto; overflow: visible; }
@@ -472,7 +489,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 @media print {
   @page { margin: .5in; }
   body { background: #fff !important; }
-  .dashboard > :not(.main-column), .brand-header, .scanner-panel, .leaderboard, .producer-form, .producer-actions, .empty-card, .profile-backdrop, .camera-interaction-layer, .players-panel, .dashboard-tabs { display: none !important; }
+  .dashboard > :not(.main-column), .brand-header, .leaderboard, .producer-form, .producer-actions, .empty-card, .profile-backdrop, .camera-interaction-layer, .players-panel, .dashboard-tabs, .camera-debug-strip, .camera-action-notice, .check-in-notice { display: none !important; }
   .shell, .dashboard, .main-column, .tabbed-workspace, .dashboard-tab-panel, .players-layout, .producer, .qr-card-wrap { display: block !important; width: 100%; height: auto; margin: 0; padding: 0; border: 0; box-shadow: none; background: #fff; overflow: visible; }
   .qr-card-wrap { display: block; }
   .qr-card { width: 2in; margin: 0 auto; padding: 0; break-inside: avoid; }
