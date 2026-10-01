@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useId, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import type { LeaderboardEntry } from './Leaderboard'
 
 export interface OngoingGame {
   id: number
@@ -103,10 +104,17 @@ export function GameCard({
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [dialog, setDialog] = useState<'cancel' | 'black' | 'white' | null>(null)
-  const [players, setPlayers] = useState<Array<{ id: number; name: string }>>([])
+  const [players, setPlayers] = useState<LeaderboardEntry[]>([])
   const [replacement, setReplacement] = useState('')
+  const [replacementQuery, setReplacementQuery] = useState('')
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [activeOption, setActiveOption] = useState(-1)
+  const [loadingPlayers, setLoadingPlayers] = useState(false)
+  const [playersError, setPlayersError] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const pickerId = useId()
+  const listboxId = `replacement-listbox-${pickerId}`
   const menuRef = useRef<HTMLDivElement>(null)
   const gearRef = useRef<HTMLButtonElement>(null)
   const dialogRef = useRef<HTMLDialogElement>(null)
@@ -147,13 +155,26 @@ export function GameCard({
     }
     document.addEventListener('keydown', escape)
     if (dialog !== 'cancel') {
-      void fetch('/api/players', { headers: { accept: 'application/json' } })
+      const controller = new AbortController()
+      void fetch('/api/players', { signal: controller.signal, headers: { accept: 'application/json' } })
         .then(async (response) => {
-          const body = await response.json() as { players?: Array<{ id: number; name: string }>; error?: string }
+          const body = await response.json() as { players?: LeaderboardEntry[]; error?: string }
           if (!response.ok || !body.players) throw new Error(body.error || 'Could not load players.')
           setPlayers(body.players)
+          setPlayersError('')
         })
-        .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+        .catch((cause: unknown) => {
+          if (!(cause instanceof DOMException && cause.name === 'AbortError')) {
+            setPlayersError(cause instanceof Error ? cause.message : String(cause))
+          }
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setLoadingPlayers(false)
+        })
+      return () => {
+        controller.abort()
+        document.removeEventListener('keydown', escape)
+      }
     }
     return () => document.removeEventListener('keydown', escape)
   }, [dialog])
@@ -161,7 +182,12 @@ export function GameCard({
   const openDialog = (next: 'cancel' | 'black' | 'white') => {
     setError('')
     setReplacement('')
+    setReplacementQuery('')
+    setPickerOpen(false)
+    setActiveOption(-1)
     setPlayers([])
+    setPlayersError('')
+    setLoadingPlayers(next !== 'cancel')
     setDialog(next)
   }
   const mutate = async (url: string, init: RequestInit) => {
@@ -182,6 +208,65 @@ export function GameCard({
     setMenuOpen(false)
     openDialog(side)
   }
+  const opponent = dialog === 'black' ? game.whitePlayerId : game.blackPlayerId
+  const current = dialog === 'black' ? game.blackPlayerId : game.whitePlayerId
+  const eligiblePlayers = players.filter((candidate) => candidate.id !== opponent && candidate.id !== current)
+  const normalizedQuery = replacementQuery.trim().toLocaleLowerCase()
+  const filteredPlayers = eligiblePlayers.filter((candidate) =>
+    !normalizedQuery || candidate.name.toLocaleLowerCase().includes(normalizedQuery))
+  const optionId = (candidate: LeaderboardEntry) => `${listboxId}-option-${candidate.id}`
+  const selectReplacement = (candidate: LeaderboardEntry) => {
+    setReplacement(String(candidate.id))
+    setReplacementQuery(`${candidate.name} (${candidate.currentRating} Elo)`)
+    setPickerOpen(false)
+    setActiveOption(-1)
+  }
+  const openPicker = () => {
+    setPickerOpen(true)
+    setActiveOption((index) => filteredPlayers.length === 0 ? -1 : Math.min(Math.max(index, 0), filteredPlayers.length - 1))
+  }
+  const handlePickerKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Escape' && pickerOpen) {
+      event.preventDefault()
+      event.stopPropagation()
+      setPickerOpen(false)
+      setActiveOption(-1)
+      return
+    }
+    if (event.key === 'Tab') {
+      setPickerOpen(false)
+      setActiveOption(-1)
+      return
+    }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter'].includes(event.key)) return
+    if (event.key === 'Enter') {
+      if (pickerOpen && activeOption >= 0 && filteredPlayers[activeOption]) {
+        event.preventDefault()
+        selectReplacement(filteredPlayers[activeOption])
+      }
+      return
+    }
+    event.preventDefault()
+    if (!pickerOpen) setPickerOpen(true)
+    if (filteredPlayers.length === 0) {
+      setActiveOption(-1)
+    } else if (event.key === 'Home') {
+      setActiveOption(0)
+    } else if (event.key === 'End') {
+      setActiveOption(filteredPlayers.length - 1)
+    } else if (event.key === 'ArrowDown') {
+      setActiveOption((index) => index < 0 ? 0 : Math.min(index + 1, filteredPlayers.length - 1))
+    } else {
+      setActiveOption((index) => index < 0 ? filteredPlayers.length - 1 : Math.max(index - 1, 0))
+    }
+  }
+
+  useEffect(() => {
+    const candidate = filteredPlayers[activeOption]
+    if (!pickerOpen || activeOption < 0 || !candidate) return
+    document.getElementById(optionId(candidate))?.scrollIntoView?.({ block: 'nearest' })
+  }, [activeOption, pickerOpen, filteredPlayers])
+
   return (
     <article
       className={`game-card${className}`}
@@ -244,19 +329,56 @@ export function GameCard({
         </> : dialog ? <>
           <h2 id={`game-dialog-title-${game.id}`}>Edit {dialog === 'black' ? 'Black' : 'White'} player</h2>
           <label htmlFor={`seat-player-${game.id}`}>Replacement player</label>
-          <select id={`seat-player-${game.id}`} value={replacement}
-            onChange={(event) => setReplacement(event.target.value)}>
-            <option value="">Choose a player</option>
-            {players.map((candidate) => {
-              const opponent = dialog === 'black' ? game.whitePlayerId : game.blackPlayerId
-              const current = dialog === 'black' ? game.blackPlayerId : game.whitePlayerId
-              return <option key={candidate.id} value={candidate.id}
-                disabled={candidate.id === opponent || candidate.id === current}>
-                {candidate.name}{candidate.id === opponent ? ' (opponent)' : candidate.id === current ? ' (current)' : ''}
-              </option>
-            })}
-          </select>
-          {players.length === 0 && !error && <p>Loading players…</p>}
+          <div className="replacement-combobox">
+            <input
+              id={`seat-player-${game.id}`}
+              type="text"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded={pickerOpen}
+              aria-controls={listboxId}
+              aria-activedescendant={pickerOpen && activeOption >= 0 && filteredPlayers[activeOption]
+                ? optionId(filteredPlayers[activeOption])
+                : undefined}
+              autoComplete="off"
+              placeholder="Search replacement player"
+              value={replacementQuery}
+              onFocus={openPicker}
+              onClick={openPicker}
+              onChange={(event) => {
+                setReplacementQuery(event.target.value)
+                setReplacement('')
+                setPickerOpen(true)
+                setActiveOption(0)
+              }}
+              onKeyDown={handlePickerKeyDown}
+            />
+            {pickerOpen && (
+              <div id={listboxId} role="listbox" aria-label="Replacement players"
+                className="replacement-listbox">
+                {loadingPlayers ? (
+                  <p role="status" className="replacement-picker-message">Loading players…</p>
+                ) : playersError ? (
+                  <p role="alert" className="replacement-picker-message">{playersError}</p>
+                ) : filteredPlayers.length === 0 ? (
+                  <p role="status" className="replacement-picker-message">No replacement players found.</p>
+                ) : filteredPlayers.map((candidate, index) => (
+                  <div
+                    id={optionId(candidate)}
+                    key={candidate.id}
+                    role="option"
+                    aria-selected={index === activeOption}
+                    className="replacement-option"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onMouseEnter={() => setActiveOption(index)}
+                    onClick={() => selectReplacement(candidate)}
+                  >
+                    {candidate.name} ({candidate.currentRating} Elo)
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
           {error && <p role="alert" className="form-error">{error}</p>}
           <div className="dialog-actions">
             <button type="button" className="secondary" onClick={closeDialog}>Close</button>

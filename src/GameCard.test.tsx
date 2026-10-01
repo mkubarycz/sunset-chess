@@ -1,7 +1,8 @@
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import userEvent from '@testing-library/user-event'
 import { GameCard, type OngoingGame } from './GameCard'
+import type { LeaderboardEntry } from './Leaderboard'
 
 const game: OngoingGame = {
   id: 9,
@@ -14,6 +15,43 @@ const game: OngoingGame = {
   blackPlayer: { id: 1111, name: 'Noir', rating: 700 },
   whitePlayer: { id: 1222, name: 'Blanca', rating: 700 },
 }
+
+const player = (id: number, name: string, currentRating = 700): LeaderboardEntry => ({
+  rank: id,
+  id,
+  name,
+  currentRating,
+  gamesPlayed: 0,
+  wins: 0,
+  losses: 0,
+  draws: 0,
+  lastPlayedAt: null,
+})
+
+const roster = [
+  player(1111, 'Noir', 745),
+  player(1222, 'Blanca', 730),
+  ...Array.from({ length: 45 }, (_, index) => player(2000 + index, `Player ${index + 1}`, 700 + index)),
+  player(3000, 'Zelda Knight', 812),
+]
+
+async function openBlackSeat(user: ReturnType<typeof userEvent.setup>, players = roster) {
+  vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(
+    JSON.stringify({ players }),
+    { status: 200, headers: { 'content-type': 'application/json' } },
+  ))
+  render(<GameCard game={game} />)
+  await user.click(screen.getByRole('button', { name: 'Edit Black player on Table 2' }))
+  await waitFor(() => expect(screen.queryByText('Loading players…')).not.toBeInTheDocument())
+  const input = screen.getByRole('combobox', { name: 'Replacement player' })
+  await user.click(input)
+  await waitFor(() => expect(screen.getAllByRole('option').length).toBeGreaterThan(0))
+  return input
+}
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
 describe('GameCard', () => {
   it('accepts standard responsive CSS width and height values', () => {
@@ -88,6 +126,123 @@ describe('GameCard', () => {
       id: 9,
       cancelledAt: '2026-01-02T00:00:00.000Z',
     }))
-    fetchSpy.mockRestore()
+  })
+
+  it('uses an accessible searchable listbox with authoritative Elo and excludes seated players', async () => {
+    const user = userEvent.setup()
+    const input = await openBlackSeat(user)
+
+    expect(screen.queryByRole('combobox', { name: 'Replacement player' })?.tagName).toBe('INPUT')
+    expect(document.querySelector('select')).not.toBeInTheDocument()
+    expect(input).toHaveAttribute('aria-autocomplete', 'list')
+    expect(input).toHaveAttribute('aria-expanded', 'true')
+    const listbox = screen.getByRole('listbox', { name: 'Replacement players' })
+    expect(input).toHaveAttribute('aria-controls', listbox.id)
+    expect(screen.getByRole('option', { name: 'Zelda Knight (812 Elo)' })).toBeVisible()
+    expect(screen.queryByRole('option', { name: /Noir/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: /Blanca/ })).not.toBeInTheDocument()
+    expect(listbox).toHaveClass('replacement-listbox')
+  })
+
+  it('filters a large roster case-insensitively and reports no results', async () => {
+    const user = userEvent.setup()
+    const input = await openBlackSeat(user)
+
+    await user.clear(input)
+    await user.type(input, 'zELDa')
+    expect(screen.getAllByRole('option')).toHaveLength(1)
+    expect(screen.getByRole('option')).toHaveTextContent('Zelda Knight (812 Elo)')
+    await user.clear(input)
+    await user.type(input, 'nobody')
+    expect(screen.queryByRole('option')).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('No replacement players found.')
+  })
+
+  it('supports keyboard navigation and submits the selected player ID', async () => {
+    const user = userEvent.setup()
+    const input = await openBlackSeat(user)
+    const fetchSpy = vi.mocked(globalThis.fetch)
+    fetchSpy.mockResolvedValueOnce(new Response(
+      JSON.stringify({ game: { ...game, blackPlayerId: 3000 } }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ))
+
+    await user.clear(input)
+    await user.type(input, 'zelda')
+    await user.keyboard('{End}{Enter}')
+    expect(input).toHaveValue('Zelda Knight (812 Elo)')
+    expect(input).toHaveAttribute('aria-expanded', 'false')
+    await user.click(screen.getByRole('button', { name: 'Replace player' }))
+    expect(fetchSpy).toHaveBeenLastCalledWith('/api/games/9/seats/black', expect.objectContaining({
+      method: 'PATCH',
+      body: JSON.stringify({ playerId: 3000 }),
+    }))
+  })
+
+  it('clears a stale selected ID when the displayed query is edited', async () => {
+    const user = userEvent.setup()
+    const input = await openBlackSeat(user)
+
+    await user.clear(input)
+    await user.type(input, 'zelda')
+    await user.keyboard('{ArrowDown}{Enter}')
+    expect(screen.getByRole('button', { name: 'Replace player' })).toBeEnabled()
+    await user.type(input, 'x')
+    expect(screen.getByRole('button', { name: 'Replace player' })).toBeDisabled()
+  })
+
+  it('closes the list before the outer dialog on Escape', async () => {
+    const user = userEvent.setup()
+    const input = await openBlackSeat(user)
+
+    expect(screen.getByRole('dialog')).toBeVisible()
+    await user.keyboard('{Escape}')
+    expect(screen.getByRole('dialog')).toBeVisible()
+    expect(input).toHaveAttribute('aria-expanded', 'false')
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('announces loading and player-load errors from the combobox listbox', async () => {
+    const user = userEvent.setup()
+    let rejectFetch!: (reason: Error) => void
+    vi.spyOn(globalThis, 'fetch').mockReturnValueOnce(new Promise((_, reject) => { rejectFetch = reject }))
+    render(<GameCard game={game} />)
+    await user.click(screen.getByRole('button', { name: 'Edit Black player on Table 2' }))
+
+    const input = screen.getByRole('combobox', { name: 'Replacement player' })
+    await user.click(input)
+    expect(input).toHaveAttribute('aria-controls')
+    expect(screen.getByRole('status')).toHaveTextContent('Loading players…')
+    rejectFetch(new Error('Roster unavailable.'))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Roster unavailable.')
+    expect(screen.getByRole('listbox')).toBeVisible()
+  })
+
+  it('resets the query and selection after closing and reopening a seat dialog', async () => {
+    const user = userEvent.setup()
+    const input = await openBlackSeat(user)
+    await user.clear(input)
+    await user.type(input, 'zelda')
+    await user.keyboard('{ArrowDown}{Enter}')
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(new Response(
+      JSON.stringify({ players: roster }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ))
+    await user.click(screen.getByRole('button', { name: 'Edit White player on Table 2' }))
+    const reopened = screen.getByRole('combobox', { name: 'Replacement player' })
+    expect(reopened).toHaveValue('')
+    expect(screen.getByRole('button', { name: 'Replace player' })).toBeDisabled()
+  })
+
+  it('scrolls the active option into view while navigating', async () => {
+    const scrollIntoView = vi.fn()
+    Element.prototype.scrollIntoView = scrollIntoView
+    const user = userEvent.setup()
+    const input = await openBlackSeat(user)
+    fireEvent.keyDown(input, { key: 'End' })
+    expect(scrollIntoView).toHaveBeenCalled()
   })
 })

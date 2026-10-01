@@ -414,7 +414,36 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .game-management-dialog { width: min(460px, calc(100vw - 28px)); max-height: calc(100dvh - 28px); overflow: auto; padding: 22px; border: 1px solid var(--line); border-radius: 12px; background: var(--ink-900); color: var(--paper); }
 .game-management-dialog::backdrop { background: rgba(0,0,0,.74); }
 .game-management-dialog h2 { margin-top: 0; font-family: Georgia, serif; }
-.game-management-dialog select { width: 100%; min-height: 44px; margin: 7px 0 12px; }
+.replacement-combobox { position: relative; margin: 7px 0 12px; }
+.replacement-combobox input {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid #8795a3;
+  border-radius: var(--radius-sm);
+  padding: 9px 10px;
+  color: var(--ivory);
+  background: var(--ink-950);
+}
+.replacement-combobox input:focus { outline: 3px solid var(--amber-bright); outline-offset: 2px; }
+.replacement-listbox {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: min(260px, 38dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid #8795a3;
+  border-radius: var(--radius-sm);
+  padding: 4px;
+  color: var(--ivory);
+  background: var(--ink-950);
+  box-shadow: 0 14px 32px rgba(0,0,0,.62);
+}
+.replacement-option { border-radius: 4px; padding: 10px; cursor: pointer; }
+.replacement-option[aria-selected="true"] { color: #17100b; background: var(--amber-bright); }
+.replacement-picker-message { margin: 0; padding: 10px; color: var(--muted); }
 .dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .game-card.check-in-arrival { border-color: var(--amber-bright); box-shadow: 0 0 0 3px rgba(255,210,122,.18), 0 10px 28px rgba(255,179,71,.16); }
 .check-in-token { position: fixed; z-index: 20; width: 92px; min-height: 46px; display: grid; place-items: center; padding: 7px; border: 2px solid var(--ivory); color: #17100b; background: var(--amber-bright); box-shadow: 0 8px 30px rgba(0,0,0,.45); font-size: .65rem; font-weight: 900; line-height: 1.15; text-align: center; pointer-events: none; }
