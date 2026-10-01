@@ -240,22 +240,37 @@ export function PlayersPanel({
 
   return (
     <section className="players-panel" aria-labelledby="players-heading" aria-busy={busy}>
-      <div><p className="eyebrow">Club roster</p><h2 id="players-heading">Players</h2></div>
+      <div className="players-panel-header">
+        <div><p className="eyebrow">Club roster</p><h2 id="players-heading">Players</h2></div>
+        <p className="players-count">{players.length} registered</p>
+      </div>
       {listError && <p className="games-message error" role="alert">{listError}</p>}
       <div className="players-table-wrap">
         <table className="players-table" aria-label="All players">
+          <colgroup>
+            <col className="player-id-col" />
+            <col className="player-name-col" />
+            <col className="player-rating-col" />
+            <col className="player-record-col" />
+            <col className="player-actions-col" />
+          </colgroup>
           <thead><tr>
             <th className="numeric-column">ID</th><th>Player</th><th className="numeric-column">Elo</th>
             <th className="numeric-column">W/L/D</th><th className="actions-column" aria-label="Actions" />
           </tr></thead>
           <tbody>{players.map((player) => (
             <tr key={player.id}>
-              <td className="numeric-column">#{player.id}</td>
-              <td><button type="button" className="player-name-button" onClick={(event) => openEditor(player, event.currentTarget)}>
+              <td className="numeric-column player-id-cell" data-label="ID">#{player.id}</td>
+              <td className="player-name-cell"><button type="button" className="player-name-button" onClick={(event) => openEditor(player, event.currentTarget)}>
                 {player.name}
               </button></td>
-              <td className="numeric-column">{player.currentRating}</td>
-              <td className="numeric-column">{player.wins}/{player.losses}/{player.draws}</td>
+              <td className="numeric-column player-rating-cell" data-label="Elo">{player.currentRating}</td>
+              <td className="numeric-column player-record-cell"
+                aria-label={`${player.wins} wins, ${player.losses} losses, ${player.draws} draws`}>
+                <span><strong>{player.wins}</strong><small>W</small></span>
+                <span><strong>{player.losses}</strong><small>L</small></span>
+                <span><strong>{player.draws}</strong><small>D</small></span>
+              </td>
               <td className="actions-column">
                 <button type="button" className="player-menu-trigger secondary" aria-label={`Actions for ${player.name}`}
                   aria-haspopup="menu" aria-expanded={menuPlayer?.id === player.id}

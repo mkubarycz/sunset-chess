@@ -455,14 +455,31 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .players-layout { display: grid; grid-template-columns: minmax(0, 1fr) clamp(260px, 32%, 340px); height: 100%; gap: 10px; }
 .players-panel, .recent-games-tab { height: 100%; overflow: auto; padding: 18px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--ink-900); }
 .players-panel h2, .recent-games-tab h2 { margin: 0; font-family: Georgia, serif; }
-.players-table-wrap { overflow-x: auto; }
-.players-table { width: 100%; min-width: 520px; margin-top: 12px; border-collapse: collapse; }
-.players-table th, .players-table td { padding: 9px 7px; border-bottom: 1px solid var(--line); text-align: left; }
+.players-panel-header { display: flex; align-items: end; justify-content: space-between; gap: 18px; }
+.players-count { margin: 0 0 3px; color: var(--muted); font-size: .72rem; font-weight: 750; }
+.players-table-wrap { margin-top: 14px; overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.players-table { width: 100%; min-width: 560px; border-collapse: collapse; table-layout: fixed; }
+.players-table .player-id-col { width: 104px; }
+.players-table .player-rating-col { width: 86px; }
+.players-table .player-record-col { width: 142px; }
+.players-table .player-actions-col { width: 52px; }
+.players-table th, .players-table td { height: 54px; padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
+.players-table th { height: 42px; color: var(--muted); background: var(--ink-850); font-size: .68rem; letter-spacing: .06em; text-transform: uppercase; }
+.players-table tbody tr:last-child td { border-bottom: 0; }
+.players-table tbody tr { transition: background-color 120ms ease; }
+.players-table tbody tr:hover { background: rgba(255, 210, 122, .045); }
 .players-table .numeric-column { text-align: right; font-variant-numeric: tabular-nums; }
-.players-table .actions-column { width: 44px; padding-right: 3px; text-align: right; }
-.player-name-button { max-width: 100%; border: 0; padding: 4px 2px; overflow: hidden; color: var(--amber-bright); background: transparent; text-align: left; text-decoration: underline; text-overflow: ellipsis; }
+.players-table .actions-column { padding-right: 10px; text-align: right; }
+.player-id-cell { color: var(--muted); font-size: .78rem; font-weight: 700; }
+.player-name-button { display: block; max-width: 100%; border: 0; padding: 4px 2px; overflow: hidden; color: var(--amber-bright); background: transparent; font-size: .92rem; text-align: left; text-decoration: underline; text-overflow: ellipsis; }
 .player-name-button:hover { border: 0; color: #ffe4ac; background: transparent; }
-.player-menu-trigger { width: 34px; height: 32px; padding: 0; font-size: 1rem; line-height: 1; }
+.player-rating-cell { font-weight: 800; }
+.player-record-cell { display: grid; grid-template-columns: repeat(3, minmax(28px, 1fr)); justify-content: end; gap: 3px; }
+.player-record-cell span { display: inline-flex; align-items: baseline; justify-content: flex-end; gap: 3px; }
+.player-record-cell strong { min-width: 1ch; color: var(--ivory); font-size: .84rem; }
+.player-record-cell small { color: var(--muted); font-size: .58rem; font-weight: 800; }
+.player-menu-trigger { width: 32px; height: 32px; border-color: transparent; padding: 0; color: var(--muted); background: transparent; font-size: .95rem; line-height: 1; }
+.player-menu-trigger:hover, .player-menu-trigger:focus-visible { border-color: #596570; color: var(--ivory); background: var(--ink-800); }
 .player-action-menu { position: fixed; z-index: 100; display: grid; min-width: 154px; padding: 5px; border: 1px solid var(--amber-bright); border-radius: var(--radius-sm); background: var(--ink-900); box-shadow: 0 12px 38px rgba(0,0,0,.72); }
 .player-action-menu button { border: 0; padding: 8px 10px; color: var(--ivory); background: transparent; text-align: left; }
 .player-action-menu button:hover, .player-action-menu button:focus-visible { background: var(--ink-800); }
@@ -501,6 +518,19 @@ button:disabled { cursor: not-allowed; opacity: .5; }
   .leaderboard { min-height: 420px; max-height: 70dvh; }
   .players-layout { display: flex; flex-direction: column; overflow: auto; }
   .players-panel, .producer { flex: 0 0 auto; overflow: visible; }
+  .players-table-wrap { overflow: visible; border: 0; }
+  .players-table { display: block; min-width: 0; }
+  .players-table colgroup, .players-table thead { display: none; }
+  .players-table tbody { display: grid; gap: 8px; }
+  .players-table tr { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name actions" "id actions" "rating record"; column-gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--ink-850); }
+  .players-table th, .players-table td { display: block; height: auto; border: 0; padding: 0; text-align: left; }
+  .players-table .player-name-cell { grid-area: name; min-width: 0; }
+  .players-table .player-id-cell { grid-area: id; margin-top: 2px; text-align: left; }
+  .players-table .player-rating-cell { grid-area: rating; align-self: end; margin-top: 12px; text-align: left; }
+  .players-table .player-rating-cell::before { content: "Elo"; margin-right: 6px; color: var(--muted); font-size: .58rem; letter-spacing: .06em; text-transform: uppercase; }
+  .players-table .player-record-cell { grid-area: record; align-self: end; width: 132px; margin-top: 12px; }
+  .players-table .actions-column { grid-area: actions; align-self: start; padding: 0; }
+  .player-name-button { font-size: 1rem; }
   .profile-dialog { max-height: calc(100dvh - 16px); padding: 22px 16px; }
   .profile-backdrop { padding: 8px; }
   .player-edit-form > div { align-items: stretch; flex-direction: column; }
