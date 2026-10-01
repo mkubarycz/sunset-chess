@@ -496,18 +496,20 @@ automatic hardware zoom.
 
 The Node 22 server serves the built Vite SPA and stateless Streamable HTTP MCP
 on one port. SQLite defaults to `.data/sunset-chess.sqlite`; override it with
-`SUNSET_CHESS_DB_PATH`. The v5 schema uses STRICT `Player`, `ChessGame`, and
+`SUNSET_CHESS_DB_PATH`. The v6 schema uses STRICT `Player`, `ChessGame`, and
 `PlayerRatingEvent` tables,
 foreign keys with `ON DELETE RESTRICT`, and transactional `schema_migrations`.
 Every migrated game is ongoing. `ChessGame.tableNumber` is positive and unique
 among ongoing games; completed games retain their historical table number.
-`createdAt` records creation, `finishedAt` records finalization, and either side
-may be empty only while ongoing.
+`createdAt` records creation, `finishedAt` records finalization, and either or
+both sides may be empty only while ongoing. `cancelledAt` and optional
+`cancellationReason` preserve cancellation as an auditable state rather than
+deleting a game.
 `ChessGame.result` is null while ongoing, or one of the standard PGN tokens
 `1-0`, `0-1`, and `1/2-1/2`. A non-null result is final and immutable through
 normal APIs.
 Database triggers prevent a player from occupying any side of more than one
-ongoing game.
+non-cancelled ongoing game.
 Creation atomically assigns the lowest free number and reuses gaps.
 Before v3 changes any legacy table, migration checks active-player participation.
 Duplicate seats stop startup without changing or renaming the legacy table. The
@@ -517,9 +519,17 @@ non-conflicting legacy databases continue to migrate transactionally.
 
 `PlayerRatingEvent` is the append-only rating source of truth. Each row records
 the player, optional game, previous/new rating, integer delta, ISO timestamp,
-and an explicit `baseline`, `game`, or `migration` reason; game events also
-record opponent and canonical result. A partial unique index permits one event
-per player/game. Ledger foreign keys use `ON DELETE RESTRICT`. A player may be deleted only while
+and an explicit `baseline`, `game`, `migration`, or `compensation` reason; game and
+compensation events also
+record opponent and canonical result. A partial unique index permits one event per player/game/reason. Ledger foreign keys use
+`ON DELETE RESTRICT`. Original events are never changed or removed. A finished
+game can be cancelled only when it is the most recent non-cancelled finished
+game for both players, ordered by `finishedAt` then game ID. Cancellation
+atomically appends the exact inverse event for each player and updates the
+rating projection. It is idempotent. A later game for either player blocks the
+whole transaction with an administrator-contact error; there is no override.
+Cancelled games never contribute to Elo starts, leaderboard records, W/L/D,
+pairing, or profile recent games. A player may be deleted only while
 unreferenced by every game and represented by exactly one baseline rating event;
 cleanup deletes that baseline and the player in one transaction. Game references
 or any non-baseline history permanently block deletion.
@@ -535,7 +545,8 @@ pre-ledger history is fabricated. Startup is transactional and idempotent.
 MCP is published at <http://localhost:4175/mcp>. Tools are `player-list`,
 `player-get`, `player-create`, `player-upsert`, `player-name-update`,
 `player-check-in`, `player-delete`,
-`game-list`, `game-get`, `game-create`, `game-result-set`, and `game-delete`.
+`game-list`, `game-get`, `game-create`, `game-result-set`, `game-cancel`,
+`game-seat-update`, and the backward-compatible audit-cancelling `game-delete`.
 Read tools also include `leaderboard-list` and `player-profile-get` for ranked
 records, recent games, and chronological rating history.
 Use `game-result-set` to finalize a fully seated game. It accepts only canonical
@@ -551,7 +562,12 @@ and atomically returns their existing game, fills the oldest waiting game, or
 creates a waiting game with a cryptographically random side. The read-only `GET /api/games` endpoint returns `games` (ongoing, ordered by
 table) and `recentGames` (the 20 most recently finished). `PATCH
 /api/games/:id/result` with JSON `{ "result": "1-0" }` (or either other
-canonical token) finalizes a fully seated game. The browser loads it immediately,
+canonical token) finalizes a fully seated game. `PATCH
+/api/games/:id/seats/:side` accepts `{ "playerId": 1234 }` or `null` to replace
+or remove one active seat. `DELETE /api/games/:id` audit-cancels an active or
+eligible finished game and may accept JSON `{ "reason": "..." }`. Active
+cancellation creates no rating event; finished cancellation follows the guarded
+compensation policy above. The browser loads it immediately,
 polls without overlapping requests, refreshes on focus/visibility, preserves
 the last successful view on errors, and offers retry. A locally checked-in game
 stays first across polls by its immutable ID/creation-time pair without changing
@@ -583,11 +599,18 @@ Windows path semantics.
 `GET /api/leaderboard?limit=100` returns ordinal ranks in stable order: rating
 descending, games played descending, case-insensitive name ascending, then ID.
 The bounded limit is 1–200. `GET /api/players/:id/profile?recentLimit=10`
-returns record/rank, newest-first completed games (maximum 50), and full
+returns record/rank, newest-first non-cancelled completed games (maximum 50), and full
 chronological Elo history. Malformed bounds return 400 and missing players 404.
 The Elo Leaderboard occupies its dashboard tab. Rows are native keyboard buttons. The profile is an
 ARIA modal with focus entry/return, Escape/close/backdrop dismissal, a textual
 recent-game/history table, and an accessible SVG sparkline.
+
+Each table card has a keyboard-accessible gear menu and custom confirmation
+dialog. Active occupied seats have an accessible pencil action for removal or
+replacement. Server-provided finished-game deltas use signed, tabular,
+positive/negative/neutral styling. Cancelled cards retain the subdued original
+result and cancellation time, omit deltas and management controls, and remain
+available as audit records in Recent Games.
 
 ## Elo rating policy
 

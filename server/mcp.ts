@@ -95,11 +95,22 @@ export function createMcpServer(repository: ChessRepository): McpServer {
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   }, async ({ blackPlayerId, whitePlayerId }) =>
     domainResult(() => ({ game: repository.createGame(blackPlayerId, whitePlayerId) })));
+  server.registerTool('game-cancel', {
+    description: 'Audit-cancel a game. Finished games are compensated only when latest for both players.',
+    inputSchema: { id: gameId, reason: z.string().trim().min(1).max(500).optional() },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  }, async ({ id, reason }) => domainResult(() => ({ game: repository.cancelGame(id, reason) })));
   server.registerTool('game-delete', {
-    description: 'Delete one chess game.',
+    description: 'Backward-compatible alias that audit-cancels one game without deleting history.',
     inputSchema: { id: gameId },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   }, async ({ id }) => domainResult(() => ({ game: repository.deleteGame(id) })));
+  server.registerTool('game-seat-update', {
+    description: 'Remove or replace one seat on a non-cancelled unfinished game.',
+    inputSchema: { id: gameId, side: z.enum(['black', 'white']), playerId: playerId.nullable() },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  }, async ({ id, side, playerId: replacementId }) =>
+    domainResult(() => ({ game: repository.updateGameSeat(id, side, replacementId) })));
   server.registerTool('game-result-set', {
     description: 'Finalize a fully seated game with a canonical PGN result and atomically update both player Elo ratings exactly once.',
     inputSchema: { id: gameId, result: gameResult },

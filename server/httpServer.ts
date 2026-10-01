@@ -298,6 +298,73 @@ export function createSunsetServer(
           throw error;
         }
       }
+      const seatMatch = url.pathname.match(/^\/api\/games\/(\d+)\/seats\/(black|white)$/);
+      if (seatMatch) {
+        if (req.method !== 'PATCH') return sendJson(res, 405, { error: 'Method not allowed.' });
+        if (req.headers['content-type']?.split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
+          return sendJson(res, 400, { error: 'Content-Type must be application/json.' });
+        }
+        let body: unknown;
+        try {
+          body = await parseJson(req, 1024);
+        } catch (error) {
+          return sendJson(res, 400, { error: error instanceof Error ? error.message : 'Invalid JSON body.' });
+        }
+        if (!body || typeof body !== 'object' || Array.isArray(body)
+          || Object.keys(body).length !== 1 || !('playerId' in body)
+          || ((body as { playerId: unknown }).playerId !== null
+            && !Number.isInteger((body as { playerId: unknown }).playerId))) {
+          return sendJson(res, 400, { error: 'Body must contain only playerId as an integer or null.' });
+        }
+        try {
+          return sendJson(res, 200, {
+            game: repository.updateGameSeat(
+              Number(seatMatch[1]),
+              seatMatch[2] as 'black' | 'white',
+              (body as { playerId: number | null }).playerId,
+            ),
+          });
+        } catch (error) {
+          if (error instanceof DomainError) {
+            return sendJson(res, error.code === 'not_found' ? 404 : error.code === 'conflict' ? 409 : 400, {
+              error: error.message, code: error.code,
+            });
+          }
+          throw error;
+        }
+      }
+      const gameMatch = url.pathname.match(/^\/api\/games\/(\d+)$/);
+      if (gameMatch) {
+        if (req.method !== 'DELETE') return sendJson(res, 405, { error: 'Method not allowed.' });
+        let reason: string | undefined;
+        if (req.headers['content-length'] !== undefined && req.headers['content-length'] !== '0') {
+          if (req.headers['content-type']?.split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
+            return sendJson(res, 400, { error: 'Content-Type must be application/json.' });
+          }
+          let body: unknown;
+          try {
+            body = await parseJson(req, 2048);
+          } catch (error) {
+            return sendJson(res, 400, { error: error instanceof Error ? error.message : 'Invalid JSON body.' });
+          }
+          if (!body || typeof body !== 'object' || Array.isArray(body)
+            || Object.keys(body).some((key) => key !== 'reason')
+            || ('reason' in body && typeof (body as { reason: unknown }).reason !== 'string')) {
+            return sendJson(res, 400, { error: 'Body may contain only a string reason.' });
+          }
+          reason = (body as { reason?: string }).reason;
+        }
+        try {
+          return sendJson(res, 200, { game: repository.cancelGame(Number(gameMatch[1]), reason) });
+        } catch (error) {
+          if (error instanceof DomainError) {
+            return sendJson(res, error.code === 'not_found' ? 404 : error.code === 'conflict' ? 409 : 400, {
+              error: error.message, code: error.code,
+            });
+          }
+          throw error;
+        }
+      }
       if (url.pathname === '/api/check-ins') {
         if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed.' });
         if (req.headers['content-type']?.split(';', 1)[0].trim().toLowerCase() !== 'application/json') {

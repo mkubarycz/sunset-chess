@@ -19,11 +19,15 @@ export interface ChessGame {
   whitePlayerId: number | null;
   finishedAt: string | null;
   result: GameResult | null;
+  cancelledAt: string | null;
+  cancellationReason: string | null;
 }
 
 export interface JoinedChessGame extends ChessGame {
   blackPlayer: Player | null;
   whitePlayer: Player | null;
+  blackRatingDelta: number | null;
+  whiteRatingDelta: number | null;
 }
 
 export interface LeaderboardEntry {
@@ -45,7 +49,7 @@ export interface RatingEvent {
   rating: number;
   delta: number;
   recordedAt: string;
-  reason: 'baseline' | 'game' | 'migration';
+  reason: 'baseline' | 'game' | 'migration' | 'compensation';
   opponentId: number | null;
   result: GameResult | null;
 }
@@ -252,27 +256,39 @@ export class ChessRepository {
 
   listGames(): ChessGame[] {
     return this.db.prepare(
-      `SELECT id, tableNumber, createdAt, blackPlayerId, whitePlayerId, finishedAt, result
-       FROM ChessGame ORDER BY CASE WHEN result IS NULL THEN 0 ELSE 1 END, tableNumber`,
+      `SELECT id, tableNumber, createdAt, blackPlayerId, whitePlayerId, finishedAt, result,
+              cancelledAt, cancellationReason
+       FROM ChessGame ORDER BY CASE WHEN result IS NULL AND cancelledAt IS NULL THEN 0 ELSE 1 END, tableNumber`,
     ).all().map(gameRow);
   }
 
   listJoinedGames(result: 'ongoing' | 'finished' = 'ongoing', limit?: number): JoinedChessGame[] {
     this.assertRatingProjectionIntegrity();
-    const where = result === 'ongoing' ? 'g.result IS NULL' : 'g.result IS NOT NULL';
+    const where = result === 'ongoing'
+      ? 'g.result IS NULL AND g.cancelledAt IS NULL'
+      : '(g.result IS NOT NULL OR g.cancelledAt IS NOT NULL)';
     const order = result === 'ongoing'
       ? 'g.tableNumber'
-      : 'g.finishedAt DESC, g.id DESC';
+      : 'COALESCE(g.cancelledAt, g.finishedAt, g.createdAt) DESC, g.id DESC';
     const limitSql = limit === undefined ? '' : ' LIMIT ?';
     return this.db.prepare(`
       SELECT
         g.id, g.tableNumber, g.createdAt, g.finishedAt, g.result,
+        g.cancelledAt, g.cancellationReason,
         g.blackPlayerId, g.whitePlayerId,
         black.name AS blackPlayerName, black.rating AS blackPlayerRating,
-        white.name AS whitePlayerName, white.rating AS whitePlayerRating
+        white.name AS whitePlayerName, white.rating AS whitePlayerRating,
+        blackEvent.delta AS blackRatingDelta,
+        whiteEvent.delta AS whiteRatingDelta
       FROM ChessGame AS g
       LEFT JOIN Player AS black ON black.id = g.blackPlayerId
       LEFT JOIN Player AS white ON white.id = g.whitePlayerId
+      LEFT JOIN PlayerRatingEvent AS blackEvent
+        ON blackEvent.gameId = g.id AND blackEvent.playerId = g.blackPlayerId
+        AND blackEvent.reason = 'game'
+      LEFT JOIN PlayerRatingEvent AS whiteEvent
+        ON whiteEvent.gameId = g.id AND whiteEvent.playerId = g.whitePlayerId
+        AND whiteEvent.reason = 'game'
       WHERE ${where}
       ORDER BY ${order}${limitSql}
     `).all(...(limit === undefined ? [] : [limit])).map((row) => {
@@ -281,6 +297,8 @@ export class ChessRepository {
         blackPlayerRating: number | null;
         whitePlayerName: string | null;
         whitePlayerRating: number | null;
+        blackRatingDelta: number | null;
+        whiteRatingDelta: number | null;
       };
       return {
         id: value.id,
@@ -290,6 +308,10 @@ export class ChessRepository {
         whitePlayerId: value.whitePlayerId,
         finishedAt: value.finishedAt,
         result: value.result,
+        cancelledAt: value.cancelledAt,
+        cancellationReason: value.cancellationReason,
+        blackRatingDelta: value.blackRatingDelta,
+        whiteRatingDelta: value.whiteRatingDelta,
         blackPlayer: value.blackPlayerId === null
           ? null : {
             id: value.blackPlayerId,
@@ -308,7 +330,8 @@ export class ChessRepository {
 
   getGame(id: number): ChessGame {
     const row = this.db.prepare(
-      `SELECT id, tableNumber, createdAt, blackPlayerId, whitePlayerId, finishedAt, result
+      `SELECT id, tableNumber, createdAt, blackPlayerId, whitePlayerId, finishedAt, result,
+              cancelledAt, cancellationReason
        FROM ChessGame WHERE id = ?`,
     ).get(id);
     if (!row) throw new NotFoundError(`Game ${id} was not found.`);
@@ -326,10 +349,10 @@ export class ChessRepository {
         FROM (
           SELECT 1 AS candidate
           UNION ALL
-          SELECT tableNumber + 1 FROM ChessGame WHERE result IS NULL
+          SELECT tableNumber + 1 FROM ChessGame WHERE result IS NULL AND cancelledAt IS NULL
         )
         WHERE NOT EXISTS (
-          SELECT 1 FROM ChessGame WHERE tableNumber = candidate AND result IS NULL
+          SELECT 1 FROM ChessGame WHERE tableNumber = candidate AND result IS NULL AND cancelledAt IS NULL
         )
         ORDER BY candidate
         LIMIT 1
@@ -369,7 +392,7 @@ export class ChessRepository {
       const existing = this.db.prepare(`
         SELECT id, blackPlayerId, whitePlayerId
         FROM ChessGame
-        WHERE result IS NULL AND (blackPlayerId = ? OR whitePlayerId = ?)
+        WHERE result IS NULL AND cancelledAt IS NULL AND (blackPlayerId = ? OR whitePlayerId = ?)
         LIMIT 1
       `).get(player.id, player.id) as {
         id: number; blackPlayerId: number | null; whitePlayerId: number | null
@@ -384,7 +407,7 @@ export class ChessRepository {
       const waiting = this.db.prepare(`
         SELECT id, blackPlayerId, whitePlayerId
         FROM ChessGame
-        WHERE result IS NULL AND (blackPlayerId IS NULL) <> (whitePlayerId IS NULL)
+        WHERE result IS NULL AND cancelledAt IS NULL AND (blackPlayerId IS NULL) <> (whitePlayerId IS NULL)
         ORDER BY createdAt ASC, id ASC
         LIMIT 1
       `).get() as {
@@ -434,10 +457,10 @@ export class ChessRepository {
       FROM (
         SELECT 1 AS candidate
         UNION ALL
-        SELECT tableNumber + 1 FROM ChessGame WHERE result IS NULL
+        SELECT tableNumber + 1 FROM ChessGame WHERE result IS NULL AND cancelledAt IS NULL
       )
       WHERE NOT EXISTS (
-        SELECT 1 FROM ChessGame WHERE tableNumber = candidate AND result IS NULL
+        SELECT 1 FROM ChessGame WHERE tableNumber = candidate AND result IS NULL AND cancelledAt IS NULL
       )
       ORDER BY candidate
       LIMIT 1
@@ -452,12 +475,110 @@ export class ChessRepository {
   }
 
   deleteGame(id: number): ChessGame {
-    const game = this.getGame(id);
-    if (game.result !== null) {
-      throw new ConflictError(`Finalized game ${id} cannot be deleted without an audited correction workflow.`);
+    return this.cancelGame(id);
+  }
+
+  updateGameSeat(id: number, side: CheckInSide, playerId: number | null): ChessGame {
+    if (side !== 'black' && side !== 'white') throw new ValidationError('Side must be black or white.');
+    if (playerId !== null && (!Number.isInteger(playerId) || playerId < 1000 || playerId > 2000)) {
+      throw new ValidationError('playerId must be null or an integer between 1000 and 2000.');
     }
-    this.db.prepare('DELETE FROM ChessGame WHERE id = ?').run(id);
-    return game;
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const game = this.getGame(id);
+      if (game.result !== null || game.cancelledAt !== null) {
+        throw new ConflictError('Only a non-cancelled unfinished game can have a seat changed.');
+      }
+      const opponentId = side === 'black' ? game.whitePlayerId : game.blackPlayerId;
+      if (playerId !== null) {
+        this.getPlayer(playerId);
+        if (playerId === opponentId) throw new ValidationError('A player cannot occupy both seats.');
+      }
+      this.db.prepare(`UPDATE ChessGame SET ${side === 'black' ? 'blackPlayerId' : 'whitePlayerId'} = ? WHERE id = ?`)
+        .run(playerId, id);
+      const updated = this.getGame(id);
+      this.db.exec('COMMIT');
+      return updated;
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec('ROLLBACK');
+      if (sqliteMessage(error).includes('already belongs')) {
+        throw new ConflictError('Replacement player already belongs to another ongoing game.');
+      }
+      throw error;
+    }
+  }
+
+  cancelGame(id: number, rawReason?: string, now = () => new Date().toISOString()): ChessGame {
+    const reason = rawReason?.trim() || null;
+    if (reason && reason.length > 500) throw new ValidationError('Cancellation reason must be at most 500 characters.');
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const game = this.getGame(id);
+      if (game.cancelledAt !== null) {
+        this.db.exec('COMMIT');
+        return game;
+      }
+      const cancelledAt = now();
+      if (typeof cancelledAt !== 'string' || Number.isNaN(Date.parse(cancelledAt))) {
+        throw new Error('Clock source returned an invalid ISO timestamp.');
+      }
+      if (game.result !== null) {
+        const players = [
+          { id: game.whitePlayerId as number },
+          { id: game.blackPlayerId as number },
+        ];
+        const blocked = players.flatMap(({ id: playerId }) => {
+          const later = this.db.prepare(`
+            SELECT 1 FROM ChessGame
+            WHERE cancelledAt IS NULL AND result IS NOT NULL
+              AND (whitePlayerId = ? OR blackPlayerId = ?)
+              AND (finishedAt > ? OR (finishedAt = ? AND id > ?))
+            LIMIT 1
+          `).get(playerId, playerId, game.finishedAt, game.finishedAt, game.id);
+          return later ? [this.getPlayer(playerId).name] : [];
+        });
+        blocked.sort((left, right) => left.localeCompare(right));
+        if (blocked.length) {
+          const subject = blocked.length === 1 ? blocked[0] : `${blocked[0]} and ${blocked[1]}`;
+          throw new ConflictError(
+            `${subject} ${blocked.length === 1 ? 'has' : 'have'} played other games. `
+            + 'Cancelling this game would affect their Elo and other players’ Elo. Contact your administrator.',
+          );
+        }
+        const originalEvents = this.db.prepare(`
+          SELECT playerId, opponentId, result, delta
+          FROM PlayerRatingEvent WHERE gameId = ? AND reason = 'game'
+          ORDER BY playerId
+        `).all(id) as unknown as Array<{
+          playerId: number; opponentId: number; result: GameResult; delta: number
+        }>;
+        if (originalEvents.length !== 2) throw new Error(`Game ${id} does not have two original rating events.`);
+        const insert = this.db.prepare(`
+          INSERT INTO PlayerRatingEvent(
+            playerId, gameId, previousRating, rating, delta, recordedAt, reason, opponentId, result
+          ) VALUES (?, ?, ?, ?, ?, ?, 'compensation', ?, ?)
+        `);
+        for (const event of originalEvents) {
+          const player = this.getPlayer(event.playerId);
+          insert.run(
+            event.playerId, id, player.rating, player.rating - event.delta, -event.delta,
+            cancelledAt, event.opponentId, event.result,
+          );
+          this.db.prepare('UPDATE Player SET rating = ? WHERE id = ?')
+            .run(player.rating - event.delta, event.playerId);
+        }
+      }
+      this.db.prepare(`
+        UPDATE ChessGame SET cancelledAt = ?, cancellationReason = ? WHERE id = ? AND cancelledAt IS NULL
+      `).run(cancelledAt, reason, id);
+      this.assertRatingProjectionIntegrity();
+      const cancelled = this.getGame(id);
+      this.db.exec('COMMIT');
+      return cancelled;
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   finalizeGame(id: number, result: GameResult, now = () => new Date().toISOString()): ChessGame {
@@ -467,6 +588,7 @@ export class ChessRepository {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const game = this.getGame(id);
+      if (game.cancelledAt !== null) throw new ConflictError(`Game ${id} is cancelled.`);
       if (game.result !== null) throw new ConflictError(`Game ${id} already has a final result.`);
       if (game.blackPlayerId === null || game.whitePlayerId === null) {
         throw new ValidationError('Both seats must be occupied before setting a result.');
@@ -530,7 +652,8 @@ export class ChessRepository {
             MAX(g.finishedAt) AS lastPlayedAt
           FROM Player p
           LEFT JOIN ChessGame g
-            ON g.result IS NOT NULL AND (g.whitePlayerId = p.id OR g.blackPlayerId = p.id)
+            ON g.result IS NOT NULL AND g.cancelledAt IS NULL
+            AND (g.whitePlayerId = p.id OR g.blackPlayerId = p.id)
           GROUP BY p.id
         )
         SELECT ROW_NUMBER() OVER (
@@ -555,7 +678,7 @@ export class ChessRepository {
       const ratingHistory = this.db.prepare(`
         SELECT id, gameId, previousRating, rating, delta, recordedAt, reason, opponentId, result
         FROM PlayerRatingEvent WHERE playerId = ?
-        ORDER BY recordedAt ASC, id ASC
+        ORDER BY id ASC
       `).all(id) as unknown as RatingEvent[];
       const recentRows = this.db.prepare(`
         SELECT g.id, g.tableNumber, g.whitePlayerId, g.blackPlayerId, g.result, g.finishedAt,
@@ -564,7 +687,7 @@ export class ChessRepository {
         FROM ChessGame g
         JOIN PlayerRatingEvent event ON event.gameId = g.id AND event.playerId = ?
         JOIN Player opponent ON opponent.id = event.opponentId
-        WHERE g.result IS NOT NULL
+        WHERE g.result IS NOT NULL AND g.cancelledAt IS NULL AND event.reason = 'game'
         ORDER BY g.finishedAt DESC, g.id DESC
         LIMIT ?
       `).all(id, recentLimit) as unknown as Array<{

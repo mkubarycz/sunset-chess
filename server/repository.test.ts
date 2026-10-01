@@ -46,7 +46,7 @@ describe('ChessRepository', () => {
         1000, 1001, '1-0'
       );
       DROP TABLE PlayerRatingEvent;
-      DELETE FROM schema_migrations WHERE version = 5;
+      DELETE FROM schema_migrations WHERE version IN (5, 6);
     `);
     db.close();
 
@@ -117,9 +117,9 @@ describe('ChessRepository', () => {
     ]);
     expect(persisted.getGame(game.id)).toEqual(game);
     expect(reopened.prepare('SELECT count(*) AS count FROM schema_migrations').get())
-      .toEqual({ count: 5 });
+      .toEqual({ count: 6 });
     expect(db.prepare('SELECT count(*) AS count FROM schema_migrations').get())
-      .toEqual({ count: 5 });
+      .toEqual({ count: 6 });
     reopened.close();
     db.close();
   });
@@ -164,7 +164,7 @@ describe('ChessRepository', () => {
     migrated.close();
     const reopened = openDatabase(path);
     expect(reopened.prepare('SELECT count(*) AS count FROM ChessGame').get()).toEqual({ count: 1 });
-    expect(reopened.prepare('SELECT count(*) AS count FROM schema_migrations').get()).toEqual({ count: 5 });
+    expect(reopened.prepare('SELECT count(*) AS count FROM schema_migrations').get()).toEqual({ count: 6 });
     reopened.close();
   });
 
@@ -469,14 +469,14 @@ describe('ChessRepository', () => {
     expect(() => db.exec(`
       INSERT INTO ChessGame(tableNumber, createdAt, blackPlayerId, whitePlayerId)
       VALUES (2, '2026-01-01T00:00:01.000Z', NULL, NULL)
-    `)).toThrow(/CHECK/);
+    `)).not.toThrow();
     expect(() => db.exec(`
       INSERT INTO ChessGame(tableNumber, createdAt, blackPlayerId, whitePlayerId)
       VALUES (2, '2026-01-01T00:00:01.000Z', 1001, 1001)
     `)).toThrow(/CHECK/);
     expect(() => db.exec(`
       INSERT INTO ChessGame(tableNumber, createdAt, blackPlayerId, whitePlayerId)
-      VALUES (2, '2026-01-01T00:00:01.000Z', 1999, NULL)
+      VALUES (3, '2026-01-01T00:00:01.000Z', 1999, NULL)
     `)).toThrow(/FOREIGN KEY/);
     db.close();
   });
@@ -498,9 +498,9 @@ describe('ChessRepository', () => {
     expect(repository.getPlayer(1000).rating).toBe(684);
     expect(repository.getPlayer(1001).rating).toBe(716);
     expect(() => repository.finalizeGame(game.id, '0-1')).toThrow(ConflictError);
-    expect(() => repository.deleteGame(game.id)).toThrow(ConflictError);
-    expect(repository.getPlayer(1000).rating).toBe(684);
-    expect(repository.getPlayer(1001).rating).toBe(716);
+    expect(repository.deleteGame(game.id).cancelledAt).not.toBeNull();
+    expect(repository.getPlayer(1000).rating).toBe(700);
+    expect(repository.getPlayer(1001).rating).toBe(700);
 
     const next = repository.createGame(1000, 1001);
     expect(next.tableNumber).toBe(game.tableNumber);
@@ -518,6 +518,81 @@ describe('ChessRepository', () => {
     expect(() => repository.finalizeGame(waiting.game.id, 'W' as never)).toThrow(ValidationError);
     expect(repository.getPlayer(1000).rating).toBe(700);
     expect(repository.getPlayer(1001).rating).toBe(700);
+    db.close();
+  });
+
+  it('cancels an active game and supports transactional seat removal and replacement', () => {
+    const { db, repository } = fixture();
+    repository.upsertPlayer(1000, 'Alice');
+    repository.upsertPlayer(1001, 'Bob');
+    repository.upsertPlayer(1002, 'Carol');
+    repository.upsertPlayer(1003, 'Dave');
+    const game = repository.createGame(1000, 1001);
+    expect(repository.updateGameSeat(game.id, 'black', null).blackPlayerId).toBeNull();
+    expect(repository.updateGameSeat(game.id, 'black', 1002).blackPlayerId).toBe(1002);
+    expect(() => repository.updateGameSeat(game.id, 'white', 1002)).toThrow(ValidationError);
+    const occupied = repository.createGame(1000, 1003);
+    expect(() => repository.updateGameSeat(game.id, 'black', 1000)).toThrow(ConflictError);
+    expect(repository.cancelGame(occupied.id, 'mistake', () => '2026-06-01T00:00:00.000Z'))
+      .toMatchObject({ cancelledAt: '2026-06-01T00:00:00.000Z', cancellationReason: 'mistake' });
+    expect(repository.listJoinedGames('ongoing').map(({ id }) => id)).toEqual([game.id]);
+    expect(repository.cancelGame(occupied.id).id).toBe(occupied.id);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM PlayerRatingEvent WHERE gameId = ?').get(occupied.id))
+      .toEqual({ count: 0 });
+    db.close();
+  });
+
+  it('compensates immutable finished Elo exactly once and excludes cancellation from records', () => {
+    const { db, repository } = fixture();
+    repository.upsertPlayer(1000, 'Alice');
+    repository.upsertPlayer(1001, 'Bob');
+    const game = repository.createGame(1000, 1001);
+    repository.finalizeGame(game.id, '1-0', () => '2026-06-01T00:00:00.000Z');
+    const cancelled = repository.cancelGame(game.id, undefined, () => '2026-06-02T00:00:00.000Z');
+    expect(cancelled.cancelledAt).toBe('2026-06-02T00:00:00.000Z');
+    expect(repository.getPlayer(1000).rating).toBe(700);
+    expect(repository.getPlayer(1001).rating).toBe(700);
+    expect(repository.listLeaderboard()).toEqual([
+      expect.objectContaining({ id: 1000, gamesPlayed: 0, wins: 0, losses: 0, draws: 0 }),
+      expect.objectContaining({ id: 1001, gamesPlayed: 0, wins: 0, losses: 0, draws: 0 }),
+    ]);
+    expect(repository.getPlayerProfile(1000).recentGames).toEqual([]);
+    expect(repository.getPlayerProfile(1000).ratingHistory.map(({ reason, delta }) => ({ reason, delta })))
+      .toEqual([
+        { reason: 'baseline', delta: 0 },
+        { reason: 'game', delta: -16 },
+        { reason: 'compensation', delta: 16 },
+      ]);
+    expect(repository.cancelGame(game.id).cancelledAt).toBe(cancelled.cancelledAt);
+    expect(db.prepare(`
+      SELECT reason, COUNT(*) AS count FROM PlayerRatingEvent
+      WHERE gameId = ? GROUP BY reason ORDER BY reason
+    `).all(game.id)).toEqual([
+      { reason: 'compensation', count: 2 },
+      { reason: 'game', count: 2 },
+    ]);
+    db.close();
+  });
+
+  it('blocks cancellation for either or both players after later ledger-ordered games', () => {
+    const { db, repository } = fixture();
+    for (const [id, name] of [[1000, 'Alice'], [1001, 'Bob'], [1002, 'Carol'], [1003, 'Dave']] as const) {
+      repository.upsertPlayer(id, name);
+    }
+    const first = repository.createGame(1000, 1001);
+    repository.finalizeGame(first.id, '1-0', () => '2026-06-01T00:00:00.000Z');
+    const aliceLater = repository.createGame(1000, 1002);
+    repository.finalizeGame(aliceLater.id, '1/2-1/2', () => '2026-06-01T00:00:00.000Z');
+    expect(() => repository.cancelGame(first.id)).toThrow(
+      'Alice has played other games. Cancelling this game would affect their Elo and other players’ Elo. Contact your administrator.',
+    );
+    const bobLater = repository.createGame(1001, 1003);
+    repository.finalizeGame(bobLater.id, '0-1', () => '2026-06-02T00:00:00.000Z');
+    expect(() => repository.cancelGame(first.id)).toThrow(/Alice and Bob have played other games/);
+    expect(repository.getGame(first.id).cancelledAt).toBeNull();
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count FROM PlayerRatingEvent WHERE gameId = ? AND reason = 'compensation'
+    `).get(first.id)).toEqual({ count: 0 });
     db.close();
   });
 

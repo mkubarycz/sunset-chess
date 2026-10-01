@@ -374,11 +374,22 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .section-heading h2 { font-size: 1.15rem; }
 .games-message { margin: 18px 0 0; color: var(--muted); font-size: .78rem; }
 .games-list { min-width: 0; min-height: 0; display: flex; flex: 1 1 auto; flex-direction: column; gap: 9px; margin-top: 10px; padding-right: 3px; overflow-x: hidden; overflow-y: auto; scrollbar-gutter: stable; }
-.game-card { width: 100%; min-width: 0; flex: 0 0 auto; overflow: hidden; border: 1px solid #4a5560; border-radius: var(--radius-sm); background: #0d1015; transition: border-color 180ms ease, box-shadow 180ms ease; }
+.game-card { width: 100%; min-width: 0; flex: 0 0 auto; overflow: visible; border: 1px solid #4a5560; border-radius: var(--radius-sm); background: #0d1015; transition: border-color 180ms ease, box-shadow 180ms ease; }
 .game-card h3 { margin: 0; padding: 7px 9px; font-family: Georgia, serif; font-size: .9rem; font-weight: 600; }
+.game-card-header { position: relative; display: flex; align-items: center; justify-content: space-between; min-width: 0; }
+.game-card-gear, .seat-edit-button { min-width: 36px; min-height: 36px; padding: 4px; border: 0; background: transparent; color: var(--paper); }
+.game-card-menu { position: relative; margin-right: 3px; }
+.game-card-menu-popover { position: absolute; z-index: 20; top: calc(100% + 2px); right: 0; width: max-content; max-width: min(220px, calc(100vw - 24px)); padding: 5px; border: 1px solid var(--line); border-radius: 8px; background: var(--ink-900); box-shadow: 0 12px 30px rgba(0,0,0,.5); }
+.game-card-menu-popover button { width: 100%; }
 .player-side { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 7px; align-items: center; min-height: 47px; padding: 7px 8px; overflow: hidden; }
 .table-player-side { grid-template-columns: minmax(0, 1fr); gap: 0; }
 .table-player-side .player-rating { grid-column: 1; }
+.table-player-side { position: relative; }
+.seat-edit-button { position: absolute; right: 5px; top: 50%; transform: translateY(-50%); }
+.rating-delta { position: absolute; right: 9px; font: 800 .78rem/1 ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
+.rating-delta.positive { color: var(--success); }
+.rating-delta.negative { color: var(--error); }
+.rating-delta.neutral { color: #aeb8bf; }
 .player-side strong { overflow-wrap: anywhere; }
 .player-rating { grid-column: 2; font-size: .61rem; opacity: .78; }
 .side-label { grid-row: 1 / span 2; align-self: center; font-size: .54rem; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }
@@ -397,6 +408,14 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .player-side.draw { opacity: .9; }
 .game-result { display: flex; justify-content: space-between; gap: 8px; margin: -3px 9px 6px; color: #d7dfe4; font-size: .68rem; font-weight: 800; }
 .game-result span { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.cancelled-status { margin: -2px 9px 5px; color: #f0bd73; font-weight: 900; }
+.cancelled-result { opacity: .58; text-decoration: line-through; }
+.cancelled-at { margin: 7px 9px; color: #aeb8bf; font-size: .68rem; }
+.game-management-dialog { width: min(460px, calc(100vw - 28px)); max-height: calc(100dvh - 28px); overflow: auto; padding: 22px; border: 1px solid var(--line); border-radius: 12px; background: var(--ink-900); color: var(--paper); }
+.game-management-dialog::backdrop { background: rgba(0,0,0,.74); }
+.game-management-dialog h2 { margin-top: 0; font-family: Georgia, serif; }
+.game-management-dialog select { width: 100%; min-height: 44px; margin: 7px 0 12px; }
+.dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .game-card.check-in-arrival { border-color: var(--amber-bright); box-shadow: 0 0 0 3px rgba(255,210,122,.18), 0 10px 28px rgba(255,179,71,.16); }
 .check-in-token { position: fixed; z-index: 20; width: 92px; min-height: 46px; display: grid; place-items: center; padding: 7px; border: 2px solid var(--ivory); color: #17100b; background: var(--amber-bright); box-shadow: 0 8px 30px rgba(0,0,0,.45); font-size: .65rem; font-weight: 900; line-height: 1.15; text-align: center; pointer-events: none; }
 .tabbed-workspace { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; }

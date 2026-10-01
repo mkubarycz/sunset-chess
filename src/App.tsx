@@ -604,6 +604,13 @@ export default function App({
     }
   }, [fetchGames])
 
+  const handleGameMutate = useCallback(async () => {
+    clearResultMode()
+    resetCheckInTargets()
+    setFeaturedGame(null)
+    await refreshGames(true)
+  }, [clearResultMode, refreshGames, resetCheckInTargets])
+
   const submitResult = useCallback((
     gameId: number,
     result: '1-0' | '0-1' | '1/2-1/2',
@@ -2465,6 +2472,7 @@ export default function App({
                 key={gameIdentityKey(game)}
                 game={game}
                 ariaLabel={`Table ${game.tableNumber}: ${game.result}`}
+                onMutate={handleGameMutate}
               />
             ))}
           </div>}
@@ -2649,6 +2657,7 @@ export default function App({
                     className={featuredGame && isSameGame(game, featuredGame) ? ' featured-game' : ''}
                     key={gameIdentityKey(game)}
                     game={game}
+                    onMutate={handleGameMutate}
                     cardRef={(element) => {
                       const key = gameIdentityKey(game)
                       if (element) gameCardRefs.current.set(key, element)
@@ -2706,6 +2715,7 @@ export default function App({
               className=" stage-game-card"
               width="clamp(150px, 30vw, 280px)"
               height="auto"
+              management={false}
             />
             {gameContext.waitingCopy && <p className="game-waiting-header">{gameContext.waitingCopy}</p>}
           </div>

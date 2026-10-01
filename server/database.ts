@@ -205,6 +205,115 @@ const migrations = [
       CREATE INDEX PlayerRatingEvent_game ON PlayerRatingEvent(gameId);
     `,
   },
+  {
+    version: 6,
+    sql: `
+      CREATE TEMP TABLE PlayerRatingEvent_backup AS SELECT * FROM PlayerRatingEvent;
+      DROP TABLE PlayerRatingEvent;
+      DROP TRIGGER ChessGame_unique_player_insert;
+      DROP TRIGGER ChessGame_unique_player_update;
+      DROP INDEX ChessGame_ongoing_table;
+      ALTER TABLE ChessGame RENAME TO ChessGame_v5;
+      CREATE TABLE ChessGame (
+        id INTEGER PRIMARY KEY,
+        tableNumber INTEGER NOT NULL CHECK (tableNumber >= 1),
+        createdAt TEXT NOT NULL CHECK (
+          length(createdAt) >= 20 AND datetime(createdAt) IS NOT NULL
+        ),
+        finishedAt TEXT CHECK (
+          finishedAt IS NULL OR (length(finishedAt) >= 20 AND datetime(finishedAt) IS NOT NULL)
+        ),
+        blackPlayerId INTEGER REFERENCES Player(id) ON DELETE RESTRICT,
+        whitePlayerId INTEGER REFERENCES Player(id) ON DELETE RESTRICT,
+        result TEXT CHECK (result IS NULL OR result IN ('1-0', '0-1', '1/2-1/2')),
+        cancelledAt TEXT CHECK (
+          cancelledAt IS NULL OR (length(cancelledAt) >= 20 AND datetime(cancelledAt) IS NOT NULL)
+        ),
+        cancellationReason TEXT CHECK (
+          cancellationReason IS NULL OR length(trim(cancellationReason)) BETWEEN 1 AND 500
+        ),
+        CHECK (
+          blackPlayerId IS NULL OR whitePlayerId IS NULL
+          OR blackPlayerId <> whitePlayerId
+        ),
+        CHECK (result IS NULL OR (
+          blackPlayerId IS NOT NULL AND whitePlayerId IS NOT NULL AND finishedAt IS NOT NULL
+        )),
+        CHECK (result IS NOT NULL OR finishedAt IS NULL),
+        CHECK (cancelledAt IS NOT NULL OR cancellationReason IS NULL)
+      ) STRICT;
+      INSERT INTO ChessGame(
+        id, tableNumber, createdAt, finishedAt, blackPlayerId, whitePlayerId, result,
+        cancelledAt, cancellationReason
+      )
+      SELECT id, tableNumber, createdAt, finishedAt, blackPlayerId, whitePlayerId, result,
+             NULL, NULL
+      FROM ChessGame_v5;
+      DROP TABLE ChessGame_v5;
+
+      CREATE UNIQUE INDEX ChessGame_ongoing_table
+      ON ChessGame(tableNumber) WHERE result IS NULL AND cancelledAt IS NULL;
+
+      CREATE TRIGGER ChessGame_unique_player_insert
+      BEFORE INSERT ON ChessGame
+      WHEN NEW.result IS NULL AND NEW.cancelledAt IS NULL AND EXISTS (
+        SELECT 1 FROM ChessGame
+        WHERE result IS NULL AND cancelledAt IS NULL AND (
+          blackPlayerId IN (NEW.blackPlayerId, NEW.whitePlayerId)
+          OR whitePlayerId IN (NEW.blackPlayerId, NEW.whitePlayerId)
+        )
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'player already belongs to an ongoing game');
+      END;
+
+      CREATE TRIGGER ChessGame_unique_player_update
+      BEFORE UPDATE OF blackPlayerId, whitePlayerId, result, cancelledAt ON ChessGame
+      WHEN NEW.result IS NULL AND NEW.cancelledAt IS NULL AND EXISTS (
+        SELECT 1 FROM ChessGame
+        WHERE id <> OLD.id AND result IS NULL AND cancelledAt IS NULL AND (
+          blackPlayerId IN (NEW.blackPlayerId, NEW.whitePlayerId)
+          OR whitePlayerId IN (NEW.blackPlayerId, NEW.whitePlayerId)
+        )
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'player already belongs to an ongoing game');
+      END;
+
+      CREATE TABLE PlayerRatingEvent (
+        id INTEGER PRIMARY KEY,
+        playerId INTEGER NOT NULL REFERENCES Player(id) ON DELETE RESTRICT,
+        gameId INTEGER REFERENCES ChessGame(id) ON DELETE RESTRICT,
+        previousRating INTEGER NOT NULL CHECK (previousRating BETWEEN 0 AND 10000),
+        rating INTEGER NOT NULL CHECK (rating BETWEEN 0 AND 10000),
+        delta INTEGER NOT NULL CHECK (delta BETWEEN -1000 AND 1000),
+        recordedAt TEXT NOT NULL CHECK (
+          length(recordedAt) >= 20 AND datetime(recordedAt) IS NOT NULL
+        ),
+        reason TEXT NOT NULL CHECK (reason IN ('baseline', 'game', 'migration', 'compensation')),
+        opponentId INTEGER REFERENCES Player(id) ON DELETE RESTRICT,
+        result TEXT CHECK (result IS NULL OR result IN ('1-0', '0-1', '1/2-1/2')),
+        CHECK (rating = previousRating + delta),
+        CHECK (
+          (reason IN ('game', 'compensation') AND gameId IS NOT NULL
+            AND opponentId IS NOT NULL AND result IS NOT NULL)
+          OR (reason NOT IN ('game', 'compensation')
+            AND gameId IS NULL AND opponentId IS NULL AND result IS NULL)
+        )
+      ) STRICT;
+      INSERT INTO PlayerRatingEvent
+      SELECT * FROM PlayerRatingEvent_backup;
+      DROP TABLE PlayerRatingEvent_backup;
+      CREATE UNIQUE INDEX PlayerRatingEvent_player_game_reason
+      ON PlayerRatingEvent(playerId, gameId, reason)
+      WHERE gameId IS NOT NULL;
+      CREATE INDEX PlayerRatingEvent_player_latest
+      ON PlayerRatingEvent(playerId, id DESC);
+      CREATE INDEX PlayerRatingEvent_leaderboard
+      ON PlayerRatingEvent(rating DESC, playerId, recordedAt DESC);
+      CREATE INDEX PlayerRatingEvent_game ON PlayerRatingEvent(gameId);
+    `,
+  },
 ] as const;
 
 function backfillRatingLedger(db: DatabaseSync, recordedAt: string): void {

@@ -282,7 +282,8 @@ describe('Sunset Chess HTTP and MCP', () => {
     const app = await fixture();
     const tools = await app.client.listTools();
     expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
-      'game-create', 'game-delete', 'game-get', 'game-list', 'game-result-set',
+      'game-cancel', 'game-create', 'game-delete', 'game-get', 'game-list', 'game-result-set',
+      'game-seat-update',
       'leaderboard-list', 'player-check-in', 'player-create', 'player-delete',
       'player-get', 'player-list', 'player-name-update', 'player-profile-get', 'player-upsert',
     ]);
@@ -325,7 +326,7 @@ describe('Sunset Chess HTTP and MCP', () => {
       .toEqual({ games: [{
         id: game.id, tableNumber: 1, createdAt: expect.any(String),
         blackPlayerId: alice.id, whitePlayerId: 1001,
-        finishedAt: null, result: null,
+        finishedAt: null, result: null, cancelledAt: null, cancellationReason: null,
       }] });
     expect(await (await fetch(`http://127.0.0.1:${app.port}/api/games`)).json()).toEqual({
       games: [{
@@ -334,8 +335,12 @@ describe('Sunset Chess HTTP and MCP', () => {
         createdAt: expect.any(String),
         finishedAt: null,
         result: null,
+        cancelledAt: null,
+        cancellationReason: null,
         blackPlayerId: alice.id,
         whitePlayerId: 1001,
+        blackRatingDelta: null,
+        whiteRatingDelta: null,
         blackPlayer: alice,
         whitePlayer: { id: 1001, name: 'Bob', rating: 700 },
       }],
@@ -351,12 +356,15 @@ describe('Sunset Chess HTTP and MCP', () => {
     await app.client.callTool({ name: 'game-delete', arguments: { id: game.id } });
     expect((await app.client.callTool({
       name: 'player-delete', arguments: { id: alice.id },
-    })).structuredContent).toEqual({ player: alice });
+    })).isError).toBe(true);
     expect((await app.client.callTool({
       name: 'player-delete', arguments: { id: 1001 },
-    })).structuredContent).toEqual({ player: { id: 1001, name: 'Bob', rating: 700 } });
+    })).isError).toBe(true);
     expect((await app.client.callTool({ name: 'player-list', arguments: {} })).structuredContent)
-      .toEqual({ players: [] });
+      .toEqual({ players: [
+        { id: 1001, name: 'Bob', rating: 700 },
+        alice,
+      ].sort((left, right) => left.id - right.id) });
     await app.close();
   });
 
@@ -370,6 +378,7 @@ describe('Sunset Chess HTTP and MCP', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ result: '1/2-1/2' }),
     });
+
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ game: { result: '1/2-1/2' } });
     expect(app.repository.getPlayer(1000).rating).toBe(700);
@@ -388,6 +397,39 @@ describe('Sunset Chess HTTP and MCP', () => {
     expect(mcp.structuredContent).toMatchObject({ game: { result: '0-1' } });
     expect(app.repository.getPlayer(1000).rating).toBe(716);
     expect(app.repository.getPlayer(1001).rating).toBe(684);
+    await app.close();
+  });
+
+  it('updates active seats and audit-cancels through HTTP and MCP', async () => {
+    const app = await fixture();
+    for (const [id, name] of [[1000, 'Alice'], [1001, 'Bob'], [1002, 'Carol']] as const) {
+      app.repository.upsertPlayer(id, name);
+    }
+    const game = app.repository.createGame(1000, 1001);
+    const seat = await fetch(`http://127.0.0.1:${app.port}/api/games/${game.id}/seats/black`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ playerId: 1002 }),
+    });
+    expect(seat.status).toBe(200);
+    expect(await seat.json()).toMatchObject({ game: { blackPlayerId: 1002 } });
+    const removed = await app.client.callTool({
+      name: 'game-seat-update',
+      arguments: { id: game.id, side: 'white', playerId: null },
+    });
+    expect(removed.structuredContent).toMatchObject({ game: { whitePlayerId: null } });
+    const cancelled = await fetch(`http://127.0.0.1:${app.port}/api/games/${game.id}`, {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'duplicate table' }),
+    });
+    expect(cancelled.status).toBe(200);
+    expect(await cancelled.json()).toMatchObject({
+      game: { cancellationReason: 'duplicate table', cancelledAt: expect.any(String) },
+    });
+    expect((await app.client.callTool({
+      name: 'game-cancel', arguments: { id: game.id },
+    })).isError).not.toBe(true);
     await app.close();
   });
 
