@@ -640,7 +640,11 @@ widget for the backdrop, X close control, Escape handling, focus trap, and
 focus restoration. Each table card has a keyboard-accessible gear menu. Active
 empty seats have an accessible add action for assignment, while occupied seats
 have a pencil action and a searchable player picker whose special Empty option
-clears the seat. Server-provided finished-game deltas use signed, tabular,
+clears the seat. While that picker is open, an authoritatively decoded player
+piece selects the same eligible list entry without submitting; the user still
+confirms Assign player or Replace player. Current/opposing occupants, players
+at other live tables, and unknown or unavailable roster entries are rejected
+with an accessible status message. Server-provided finished-game deltas use signed, tabular,
 positive/negative/neutral styling. Cancelled cards retain the subdued original
 result and cancellation time, omit deltas and management controls, and remain
 available as audit records in Recent Games.

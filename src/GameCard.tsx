@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import type { LeaderboardEntry } from './PlayerCardDialog'
 import { ModalDialog } from './ModalDialog'
 
@@ -19,11 +19,17 @@ export interface OngoingGame {
   whitePlayer: { id: number; name: string; rating: number } | null
 }
 
+export interface AuthoritativePlayerScan {
+  playerId: number
+  token: string
+}
+
 const backRank = ['rook', 'knight', 'bishop', 'queen', 'king', 'bishop', 'knight', 'rook'] as const
 const pieceSymbols = {
   black: ['♜', '♞', '♝', '♛', '♚', '♝', '♞', '♜'],
   white: ['♖', '♘', '♗', '♕', '♔', '♗', '♘', '♖'],
 } as const
+const noUnavailablePlayerIds: readonly number[] = []
 
 function MiniBoard() {
   return (
@@ -99,7 +105,8 @@ export function GameCard({
   height,
   onMutate,
   management = true,
-  unavailablePlayerIds = [],
+  unavailablePlayerIds = noUnavailablePlayerIds,
+  authoritativePlayerScan = null,
 }: {
   game: OngoingGame
   className?: string
@@ -110,6 +117,7 @@ export function GameCard({
   onMutate?: (game: OngoingGame) => void | Promise<void>
   management?: boolean
   unavailablePlayerIds?: readonly number[]
+  authoritativePlayerScan?: AuthoritativePlayerScan | null
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [dialog, setDialog] = useState<'cancel' | 'black' | 'white' | null>(null)
@@ -120,6 +128,7 @@ export function GameCard({
   const [activeOption, setActiveOption] = useState(-1)
   const [loadingPlayers, setLoadingPlayers] = useState(false)
   const [playersError, setPlayersError] = useState('')
+  const [scanMessage, setScanMessage] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const pickerId = useId()
@@ -128,6 +137,7 @@ export function GameCard({
   const gearRef = useRef<HTMLButtonElement>(null)
   const replacementInputRef = useRef<HTMLInputElement>(null)
   const dialogReturnFocusRef = useRef<HTMLElement | null>(null)
+  const handledScanTokenRef = useRef<string | null>(null)
   const cancelled = Boolean(game.cancelledAt)
   const canCancel = game.canCancel !== false
   const closeDialog = () => {
@@ -180,7 +190,9 @@ export function GameCard({
     setActiveOption(-1)
     setPlayers([])
     setPlayersError('')
+    setScanMessage('')
     setLoadingPlayers(next !== 'cancel')
+    handledScanTokenRef.current = authoritativePlayerScan?.token ?? null
     setDialog(next)
   }
   const mutate = async (url: string, init: RequestInit) => {
@@ -204,9 +216,10 @@ export function GameCard({
   const opponent = dialog === 'black' ? game.whitePlayerId : game.blackPlayerId
   const current = dialog === 'black' ? game.blackPlayerId : game.whitePlayerId
   const assigning = current === null
-  const unavailablePlayers = new Set(unavailablePlayerIds)
-  const eligiblePlayers = players.filter((candidate) =>
-    candidate.id !== opponent && candidate.id !== current && !unavailablePlayers.has(candidate.id))
+  const unavailablePlayers = useMemo(() => new Set(unavailablePlayerIds), [unavailablePlayerIds])
+  const eligiblePlayers = useMemo(() => players.filter((candidate) =>
+    candidate.id !== opponent && candidate.id !== current && !unavailablePlayers.has(candidate.id)),
+  [current, opponent, players, unavailablePlayers])
   const normalizedQuery = replacementQuery.trim().toLocaleLowerCase()
   const replacementOptions = [
     ...(!assigning && (!normalizedQuery || 'empty'.includes(normalizedQuery))
@@ -225,7 +238,65 @@ export function GameCard({
     setReplacementQuery(candidate.label)
     setPickerOpen(false)
     setActiveOption(-1)
+    setScanMessage('')
   }
+
+  useEffect(() => {
+    if (
+      !dialog
+      || dialog === 'cancel'
+      || !authoritativePlayerScan
+      || handledScanTokenRef.current === authoritativePlayerScan.token
+    ) return
+    handledScanTokenRef.current = authoritativePlayerScan.token
+    const timer = window.setTimeout(() => {
+      const playerId = authoritativePlayerScan.playerId
+      const knownPlayer = players.find((candidate) => candidate.id === playerId)
+      if (loadingPlayers) {
+        setScanMessage('The player list is still loading. Scan the piece again when loading is complete.')
+        return
+      }
+      if (playersError) {
+        setScanMessage('The scanned player cannot be selected because the player list is unavailable.')
+        return
+      }
+      if (playerId === current) {
+        setScanMessage(`${knownPlayer?.name ?? `Player #${playerId}`} is already in this seat and cannot be selected.`)
+        return
+      }
+      if (playerId === opponent) {
+        setScanMessage(`${knownPlayer?.name ?? `Player #${playerId}`} is already in the opposing seat and cannot be selected.`)
+        return
+      }
+      if (unavailablePlayers.has(playerId)) {
+        setScanMessage(`${knownPlayer?.name ?? `Player #${playerId}`} is seated in another ongoing game and cannot be selected.`)
+        return
+      }
+      const eligiblePlayer = eligiblePlayers.find((candidate) => candidate.id === playerId)
+      if (!eligiblePlayer) {
+        setScanMessage(`Scanned player #${playerId} is not in the loaded player list.`)
+        return
+      }
+      setReplacement(String(eligiblePlayer.id))
+      setReplacementQuery(`${eligiblePlayer.name} (${eligiblePlayer.currentRating} Elo)`)
+      setPickerOpen(false)
+      setActiveOption(-1)
+      setScanMessage(`${eligiblePlayer.name} selected from the scanned piece. Confirm to ${assigning ? 'assign' : 'replace'} the player.`)
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [
+    assigning,
+    authoritativePlayerScan,
+    current,
+    dialog,
+    eligiblePlayers,
+    loadingPlayers,
+    opponent,
+    players,
+    playersError,
+    unavailablePlayers,
+  ])
+
   const openPicker = () => {
     setPickerOpen(true)
     setActiveOption((index) => replacementOptions.length === 0 ? -1 : Math.min(Math.max(index, 0), replacementOptions.length - 1))
@@ -337,6 +408,7 @@ export function GameCard({
           </div>
         </> : <>
           <label htmlFor={`seat-player-${game.id}`}>Replacement player</label>
+          <p className="seat-scan-hint">Scan a player piece, or search the list.</p>
           <div className="replacement-combobox">
             <input
               ref={replacementInputRef}
@@ -357,6 +429,7 @@ export function GameCard({
               onChange={(event) => {
                 setReplacementQuery(event.target.value)
                 setReplacement('')
+                setScanMessage('')
                 setPickerOpen(true)
                 setActiveOption(0)
               }}
@@ -388,6 +461,7 @@ export function GameCard({
               </div>
             )}
           </div>
+          {scanMessage && <p role="status" aria-live="polite" className="seat-scan-message">{scanMessage}</p>}
           {error && <p role="alert" className="form-error">{error}</p>}
           <div className="dialog-actions">
             <button type="button" disabled={busy || !replacement}

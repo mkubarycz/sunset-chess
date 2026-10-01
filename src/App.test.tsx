@@ -1879,6 +1879,59 @@ describe('ongoing games', () => {
 
   afterEach(() => vi.useRealTimers())
 
+  it('routes a newly decoded player scan into an open seat picker without submitting', async () => {
+    const camera = setupCamera()
+    let now = 1_000
+    vi.spyOn(performance, 'now').mockImplementation(() => now)
+    let detections: Awaited<ReturnType<NativeBarcodeDetector['detect']>> = []
+    const detect = vi.fn(async () => detections)
+    const roster = [
+      { rank: 1, id: 1111, name: 'Noir', currentRating: 700, gamesPlayed: 0, wins: 0, losses: 0, draws: 0, lastPlayedAt: null },
+      { rank: 2, id: 1222, name: 'Blanca', currentRating: 700, gamesPlayed: 0, wins: 0, losses: 0, draws: 0, lastPlayedAt: null },
+      { rank: 3, id: 3000, name: 'Zelda Knight', currentRating: 812, gamesPlayed: 0, wins: 0, losses: 0, draws: 0, lastPlayedAt: null },
+    ]
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => new Response(
+      JSON.stringify(input === '/api/players' ? { players: roster } : { players: [] }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ))
+    render(<App
+      nativeDetectorFactory={() => ({ detect })}
+      fetchGames={vi.fn().mockResolvedValue({ games: [game], recentGames: [] })}
+      gamesPollIntervalMs={60_000}
+    />)
+    const video = screen.getByLabelText('Mirrored live camera preview')
+    Object.defineProperties(video, {
+      videoWidth: { configurable: true, value: 400 },
+      videoHeight: { configurable: true, value: 300 },
+      clientWidth: { configurable: true, value: 400 },
+      clientHeight: { configurable: true, value: 300 },
+      readyState: { configurable: true, value: HTMLMediaElement.HAVE_CURRENT_DATA },
+    })
+    await screen.findByLabelText('Ongoing games')
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Black player on Table 2' }))
+    await waitFor(() => expect(screen.queryByText('Loading players…')).not.toBeInTheDocument())
+
+    detections = [{
+      rawValue: JSON.stringify({ v: 1, kind: 'player', playerId: 3000, name: 'Zelda Knight' }),
+      cornerPoints: [
+        { x: 180, y: 130 }, { x: 220, y: 130 },
+        { x: 220, y: 170 }, { x: 180, y: 170 },
+      ],
+    }]
+    for (let index = 0; index < 12; index += 1) {
+      now += 100
+      await act(async () => camera.callbacks.shift()?.(now))
+    }
+
+    expect(detect.mock.calls.length).toBeGreaterThan(1)
+    expect(await screen.findByText('Zelda Knight · #3000')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Replacement player' }))
+      .toHaveValue('Zelda Knight (812 Elo)'))
+    expect(screen.getByRole('button', { name: 'Replace player' })).toBeEnabled()
+    expect(fetchSpy.mock.calls.some(([input]) =>
+      input === '/api/games/9/seats/black')).toBe(false)
+  })
+
   it('loads immediately, shows empty and error states, and retries', async () => {
     let resolveInitial: ((games: typeof game[]) => void) | undefined
     const fetchGames = vi.fn()

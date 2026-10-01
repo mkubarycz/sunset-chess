@@ -86,7 +86,11 @@ import {
   type ResultAssignment,
 } from './actionZones'
 import { ActionZoneView } from './ActionZoneView'
-import { GameCard, type OngoingGame } from './GameCard'
+import {
+  GameCard,
+  type AuthoritativePlayerScan,
+  type OngoingGame,
+} from './GameCard'
 import { createJsQrWorker, createQrWorker, WorkerDecoder } from './workerDecoder'
 import { createOpenCvWorker, OpticalFlowTracker } from './opticalFlowTracker'
 import {
@@ -2417,6 +2421,15 @@ export default function App({
 
   const copy = stateCopy[cameraState]
   const parsedRaw = remembered ? parseQrPayload(remembered.detection.data) : null
+  const authoritativePlayerScan: AuthoritativePlayerScan | null = remembered
+    && (parsedRaw?.kind === 'player' || parsedRaw?.kind === 'player-reference')
+    ? {
+        playerId: parsedRaw.kind === 'player'
+          ? parsedRaw.player.playerId
+          : parsedRaw.reference.playerId,
+        token: `${remembered.detection.data}:${remembered.seenAt}`,
+      }
+    : null
   const parsed = parsedRaw?.kind === 'player-reference'
     ? playerCacheRef.current.has(parsedRaw.reference.playerId)
       ? {
@@ -2725,6 +2738,7 @@ export default function App({
                     game={game}
                     onMutate={handleGameMutate}
                     unavailablePlayerIds={unavailablePlayerIds}
+                    authoritativePlayerScan={authoritativePlayerScan}
                     cardRef={(element) => {
                       const key = gameIdentityKey(game)
                       if (element) gameCardRefs.current.set(key, element)

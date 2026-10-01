@@ -244,6 +244,100 @@ describe('GameCard', () => {
     expect(screen.getByRole('dialog')).toHaveClass('modal-dialog')
   })
 
+  it('selects an eligible authoritative scan without submitting and handles each scan token once', async () => {
+    const user = userEvent.setup()
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(
+      JSON.stringify({ players: roster }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ))
+    const view = render(<GameCard game={game} />)
+    await user.click(screen.getByRole('button', { name: 'Edit Black player on Table 2' }))
+    await waitFor(() => expect(screen.queryByText('Loading players…')).not.toBeInTheDocument())
+
+    view.rerender(<GameCard game={game}
+      authoritativePlayerScan={{ playerId: 3000, token: 'zelda-1' }} />)
+
+    const input = screen.getByRole('combobox', { name: 'Replacement player' })
+    await waitFor(() => expect(input).toHaveValue('Zelda Knight (812 Elo)'))
+    expect(screen.getByRole('button', { name: 'Replace player' })).toBeEnabled()
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Zelda Knight selected from the scanned piece. Confirm to replace the player.',
+    )
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+
+    await user.clear(input)
+    await user.type(input, 'Player 3')
+    view.rerender(<GameCard game={game}
+      authoritativePlayerScan={{ playerId: 3000, token: 'zelda-1' }} />)
+    expect(input).toHaveValue('Player 3')
+    expect(screen.getByRole('button', { name: 'Replace player' })).toBeDisabled()
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects scanned occupants, players at other tables, and unknown players accessibly', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(
+      JSON.stringify({ players: roster }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ))
+    const view = render(<GameCard game={game} unavailablePlayerIds={[1111, 1222, 2001]} />)
+    await user.click(screen.getByRole('button', { name: 'Edit Black player on Table 2' }))
+    await waitFor(() => expect(screen.queryByText('Loading players…')).not.toBeInTheDocument())
+
+    view.rerender(<GameCard game={game} unavailablePlayerIds={[1111, 1222, 2001]}
+      authoritativePlayerScan={{ playerId: 1111, token: 'current-1' }} />)
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(
+      'Noir is already in this seat and cannot be selected.',
+    ))
+
+    view.rerender(<GameCard game={game} unavailablePlayerIds={[1111, 1222, 2001]}
+      authoritativePlayerScan={{ playerId: 1222, token: 'opponent-1' }} />)
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(
+      'Blanca is already in the opposing seat and cannot be selected.',
+    ))
+
+    view.rerender(<GameCard game={game} unavailablePlayerIds={[1111, 1222, 2001]}
+      authoritativePlayerScan={{ playerId: 2001, token: 'other-game-1' }} />)
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(
+      'Player 2 is seated in another ongoing game and cannot be selected.',
+    ))
+
+    view.rerender(<GameCard game={game} unavailablePlayerIds={[1111, 1222, 2001]}
+      authoritativePlayerScan={{ playerId: 9999, token: 'unknown-1' }} />)
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(
+      'Scanned player #9999 is not in the loaded player list.',
+    ))
+    expect(screen.getByRole('button', { name: 'Replace player' })).toBeDisabled()
+  })
+
+  it('announces a scan while the roster is unloaded and requires a new scan token', async () => {
+    const user = userEvent.setup()
+    let resolvePlayers!: (response: Response) => void
+    vi.spyOn(globalThis, 'fetch').mockReturnValueOnce(
+      new Promise((resolve) => { resolvePlayers = resolve }),
+    )
+    const view = render(<GameCard game={game} />)
+    await user.click(screen.getByRole('button', { name: 'Edit Black player on Table 2' }))
+
+    view.rerender(<GameCard game={game}
+      authoritativePlayerScan={{ playerId: 3000, token: 'zelda-loading' }} />)
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(
+      'The player list is still loading. Scan the piece again when loading is complete.',
+    ))
+
+    resolvePlayers(new Response(
+      JSON.stringify({ players: roster }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ))
+    await waitFor(() => expect(screen.queryByText('Loading players…')).not.toBeInTheDocument())
+    expect(screen.getByRole('combobox', { name: 'Replacement player' })).toHaveValue('')
+
+    view.rerender(<GameCard game={game}
+      authoritativePlayerScan={{ playerId: 3000, token: 'zelda-reentry' }} />)
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Replacement player' }))
+      .toHaveValue('Zelda Knight (812 Elo)'))
+  })
+
   it('empties an occupied seat through the special Empty option', async () => {
     const user = userEvent.setup()
     const input = await openBlackSeat(user)
