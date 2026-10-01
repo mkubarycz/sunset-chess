@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
 import { GameCard, type OngoingGame } from './GameCard'
+import { ModalDialog } from './ModalDialog'
 import { normalizePlayerName } from './qrPayload'
 
 export interface LeaderboardEntry {
@@ -110,7 +110,6 @@ export function PlayerCardDialog({
   const [confirmDelete, setConfirmDelete] = useState(confirmDeleteInitially)
   const [busy, setBusy] = useState(false)
   const [savingName, setSavingName] = useState(false)
-  const dialogRef = useRef<HTMLDivElement>(null)
   const nameInputRef = useRef<HTMLInputElement>(null)
   const savedNameRef = useRef(player.name)
   const savePromiseRef = useRef<Promise<boolean> | null>(null)
@@ -135,10 +134,6 @@ export function PlayerCardDialog({
       if (!controller.signal.aborted) {
         setProfileError(reason instanceof Error ? reason.message : 'Could not load player profile.')
       }
-    })
-    window.requestAnimationFrame(() => {
-      if (nameInputRef.current) nameInputRef.current.focus()
-      else dialogRef.current?.focus()
     })
     return () => controller.abort()
   }, [confirmDeleteInitially, loadProfile, player.name])
@@ -207,36 +202,11 @@ export function PlayerCardDialog({
     }
   }
 
-  return createPortal(
-    <div className="profile-backdrop" onMouseDown={(event) => {
-      if (event.target === event.currentTarget) void closeAfterSave()
-    }}>
-      <div className="profile-dialog player-edit-dialog" role="dialog" aria-modal="true"
-        aria-label={`Player card for ${profile?.name ?? player.name}`}
-        aria-busy={busy || savingName} tabIndex={-1} ref={dialogRef}
-        onKeyDown={(event) => {
-          if (event.key === 'Escape') {
-            event.preventDefault()
-            void closeAfterSave()
-            return
-          }
-          if (event.key !== 'Tab') return
-          const focusable = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(
-            'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
-          ))
-          const first = focusable[0]
-          const last = focusable.at(-1)
-          if (!first || !last) return
-          if (event.shiftKey && document.activeElement === first) {
-            event.preventDefault()
-            last.focus()
-          } else if (!event.shiftKey && document.activeElement === last) {
-            event.preventDefault()
-            first.focus()
-          }
-        }}>
-        <button type="button" className="profile-close" onClick={() => void closeAfterSave()}
-          aria-label="Close player card">×</button>
+  return (
+    <ModalDialog className=" profile-dialog player-edit-dialog"
+      ariaLabel={`Player card for ${profile?.name ?? player.name}`}
+      closeLabel="Close player card" initialFocusRef={nameInputRef} onClose={closeAfterSave}>
+      <div aria-busy={busy || savingName}>
         <div className="player-card-identity">
           <form className="player-edit-form"
             onSubmit={(event) => { event.preventDefault(); void saveName() }}>
@@ -317,7 +287,6 @@ export function PlayerCardDialog({
               </>}
         </div>
       </div>
-    </div>,
-    document.body,
+    </ModalDialog>
   )
 }

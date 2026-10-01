@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import type { LeaderboardEntry } from './PlayerCardDialog'
+import { ModalDialog } from './ModalDialog'
 
 export interface OngoingGame {
   id: number
@@ -57,7 +58,7 @@ function PlayerSide({
   result: OngoingGame['result']
   ratingDelta?: number | null
   cancelled: boolean
-  onEdit?: () => void
+  onEdit?: (trigger: HTMLButtonElement) => void
   tableNumber?: number
 }) {
   const isWinner = (side === 'black' && result === '0-1') || (side === 'white' && result === '1-0')
@@ -77,7 +78,7 @@ function PlayerSide({
         </span>
       )}
       {!result && onEdit && (
-        <button type="button" className="seat-edit-button" onClick={onEdit}
+        <button type="button" className="seat-edit-button" onClick={(event) => onEdit(event.currentTarget)}
           aria-label={`${player ? 'Edit' : 'Assign'} ${label} player${tableNumber ? ` on Table ${tableNumber}` : ''}`}>
           {player ? '✎' : '＋'}
         </button>
@@ -122,13 +123,11 @@ export function GameCard({
   const listboxId = `replacement-listbox-${pickerId}`
   const menuRef = useRef<HTMLDivElement>(null)
   const gearRef = useRef<HTMLButtonElement>(null)
-  const dialogRef = useRef<HTMLDialogElement>(null)
+  const replacementInputRef = useRef<HTMLInputElement>(null)
+  const dialogReturnFocusRef = useRef<HTMLElement | null>(null)
   const cancelled = Boolean(game.cancelledAt)
   const closeDialog = () => {
-    if (typeof dialogRef.current?.close === 'function') dialogRef.current.close()
-    else dialogRef.current?.removeAttribute('open')
     setDialog(null)
-    gearRef.current?.focus()
   }
 
   useEffect(() => {
@@ -148,43 +147,28 @@ export function GameCard({
   }, [menuOpen])
 
   useEffect(() => {
-    if (!dialog) return
-    const element = dialogRef.current
-    if (typeof element?.showModal === 'function') element.showModal()
-    else element?.setAttribute('open', '')
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault()
-        closeDialog()
-      }
-    }
-    document.addEventListener('keydown', escape)
-    if (dialog !== 'cancel') {
-      const controller = new AbortController()
-      void fetch('/api/players', { signal: controller.signal, headers: { accept: 'application/json' } })
-        .then(async (response) => {
-          const body = await response.json() as { players?: LeaderboardEntry[]; error?: string }
-          if (!response.ok || !body.players) throw new Error(body.error || 'Could not load players.')
-          setPlayers(body.players)
-          setPlayersError('')
-        })
-        .catch((cause: unknown) => {
-          if (!(cause instanceof DOMException && cause.name === 'AbortError')) {
-            setPlayersError(cause instanceof Error ? cause.message : String(cause))
-          }
-        })
-        .finally(() => {
-          if (!controller.signal.aborted) setLoadingPlayers(false)
-        })
-      return () => {
-        controller.abort()
-        document.removeEventListener('keydown', escape)
-      }
-    }
-    return () => document.removeEventListener('keydown', escape)
+    if (!dialog || dialog === 'cancel') return
+    const controller = new AbortController()
+    void fetch('/api/players', { signal: controller.signal, headers: { accept: 'application/json' } })
+      .then(async (response) => {
+        const body = await response.json() as { players?: LeaderboardEntry[]; error?: string }
+        if (!response.ok || !body.players) throw new Error(body.error || 'Could not load players.')
+        setPlayers(body.players)
+        setPlayersError('')
+      })
+      .catch((cause: unknown) => {
+        if (!(cause instanceof DOMException && cause.name === 'AbortError')) {
+          setPlayersError(cause instanceof Error ? cause.message : String(cause))
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoadingPlayers(false)
+      })
+    return () => controller.abort()
   }, [dialog])
 
-  const openDialog = (next: 'cancel' | 'black' | 'white') => {
+  const openDialog = (next: 'cancel' | 'black' | 'white', returnFocus: HTMLElement | null) => {
+    dialogReturnFocusRef.current = returnFocus
     setError('')
     setReplacement('')
     setReplacementQuery('')
@@ -209,9 +193,9 @@ export function GameCard({
       setBusy(false)
     }
   }
-  const editSide = (side: 'black' | 'white') => {
+  const editSide = (side: 'black' | 'white', returnFocus: HTMLButtonElement) => {
     setMenuOpen(false)
-    openDialog(side)
+    openDialog(side, returnFocus)
   }
   const opponent = dialog === 'black' ? game.whitePlayerId : game.blackPlayerId
   const current = dialog === 'black' ? game.blackPlayerId : game.whitePlayerId
@@ -220,18 +204,27 @@ export function GameCard({
   const eligiblePlayers = players.filter((candidate) =>
     candidate.id !== opponent && candidate.id !== current && !unavailablePlayers.has(candidate.id))
   const normalizedQuery = replacementQuery.trim().toLocaleLowerCase()
-  const filteredPlayers = eligiblePlayers.filter((candidate) =>
-    !normalizedQuery || candidate.name.toLocaleLowerCase().includes(normalizedQuery))
-  const optionId = (candidate: LeaderboardEntry) => `${listboxId}-option-${candidate.id}`
-  const selectReplacement = (candidate: LeaderboardEntry) => {
-    setReplacement(String(candidate.id))
-    setReplacementQuery(`${candidate.name} (${candidate.currentRating} Elo)`)
+  const replacementOptions = [
+    ...(!assigning && (!normalizedQuery || 'empty'.includes(normalizedQuery))
+      ? [{ value: 'empty', label: 'Empty' }]
+      : []),
+    ...eligiblePlayers
+      .filter((candidate) => !normalizedQuery || candidate.name.toLocaleLowerCase().includes(normalizedQuery))
+      .map((candidate) => ({
+        value: String(candidate.id),
+        label: `${candidate.name} (${candidate.currentRating} Elo)`,
+      })),
+  ]
+  const optionId = (candidate: { value: string }) => `${listboxId}-option-${candidate.value}`
+  const selectReplacement = (candidate: { value: string; label: string }) => {
+    setReplacement(candidate.value)
+    setReplacementQuery(candidate.label)
     setPickerOpen(false)
     setActiveOption(-1)
   }
   const openPicker = () => {
     setPickerOpen(true)
-    setActiveOption((index) => filteredPlayers.length === 0 ? -1 : Math.min(Math.max(index, 0), filteredPlayers.length - 1))
+    setActiveOption((index) => replacementOptions.length === 0 ? -1 : Math.min(Math.max(index, 0), replacementOptions.length - 1))
   }
   const handlePickerKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Escape' && pickerOpen) {
@@ -248,32 +241,33 @@ export function GameCard({
     }
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter'].includes(event.key)) return
     if (event.key === 'Enter') {
-      if (pickerOpen && activeOption >= 0 && filteredPlayers[activeOption]) {
+      if (pickerOpen && activeOption >= 0 && replacementOptions[activeOption]) {
         event.preventDefault()
-        selectReplacement(filteredPlayers[activeOption])
+        selectReplacement(replacementOptions[activeOption])
       }
       return
     }
     event.preventDefault()
     if (!pickerOpen) setPickerOpen(true)
-    if (filteredPlayers.length === 0) {
+    if (replacementOptions.length === 0) {
       setActiveOption(-1)
     } else if (event.key === 'Home') {
       setActiveOption(0)
     } else if (event.key === 'End') {
-      setActiveOption(filteredPlayers.length - 1)
+      setActiveOption(replacementOptions.length - 1)
     } else if (event.key === 'ArrowDown') {
-      setActiveOption((index) => index < 0 ? 0 : Math.min(index + 1, filteredPlayers.length - 1))
+      setActiveOption((index) => index < 0 ? 0 : Math.min(index + 1, replacementOptions.length - 1))
     } else {
-      setActiveOption((index) => index < 0 ? filteredPlayers.length - 1 : Math.max(index - 1, 0))
+      setActiveOption((index) => index < 0 ? replacementOptions.length - 1 : Math.max(index - 1, 0))
     }
   }
 
+  const activeOptionValue = replacementOptions[activeOption]?.value
   useEffect(() => {
-    const candidate = filteredPlayers[activeOption]
-    if (!pickerOpen || activeOption < 0 || !candidate) return
-    document.getElementById(`${listboxId}-option-${candidate.id}`)?.scrollIntoView?.({ block: 'nearest' })
-  }, [activeOption, pickerOpen, filteredPlayers, listboxId])
+    if (!pickerOpen || !activeOptionValue) return
+    document.getElementById(`${listboxId}-option-${activeOptionValue}`)
+      ?.scrollIntoView?.({ block: 'nearest' })
+  }, [activeOptionValue, pickerOpen, listboxId])
 
   return (
     <article
@@ -290,7 +284,9 @@ export function GameCard({
       <PlayerSide side="black" player={game.blackPlayer} result={game.result}
         ratingDelta={game.blackRatingDelta} cancelled={cancelled}
         tableNumber={game.tableNumber}
-        onEdit={management && !cancelled && !game.result ? () => editSide('black') : undefined} />
+        onEdit={management && !cancelled && !game.result
+          ? (trigger) => editSide('black', trigger)
+          : undefined} />
       <div className="mini-board-wrap">
         <MiniBoard />
         <span className="game-table-badge">Table {game.tableNumber}</span>
@@ -299,7 +295,10 @@ export function GameCard({
             aria-haspopup="menu" aria-expanded={menuOpen} ref={gearRef}
             onClick={() => setMenuOpen((open) => !open)}>⚙</button>
           {menuOpen && <div role="menu" className="game-card-menu-popover">
-            <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); openDialog('cancel') }}>
+            <button type="button" role="menuitem" onClick={() => {
+              setMenuOpen(false)
+              openDialog('cancel', gearRef.current)
+            }}>
               Cancel game
             </button>
           </div>}
@@ -308,17 +307,22 @@ export function GameCard({
       <PlayerSide side="white" player={game.whitePlayer} result={game.result}
         ratingDelta={game.whiteRatingDelta} cancelled={cancelled}
         tableNumber={game.tableNumber}
-        onEdit={management && !cancelled && !game.result ? () => editSide('white') : undefined} />
+        onEdit={management && !cancelled && !game.result
+          ? (trigger) => editSide('white', trigger)
+          : undefined} />
       {cancelled && game.cancelledAt && (
         <p className="cancelled-at">Cancelled {new Date(game.cancelledAt).toLocaleString()}</p>
       )}
-      <dialog ref={dialogRef}
-        className={`game-management-dialog${dialog && dialog !== 'cancel' ? ' seat-management-dialog' : ''}`}
-        aria-labelledby={`game-dialog-title-${game.id}`}
-        onCancel={(event) => { event.preventDefault(); closeDialog() }}
-        onClick={(event) => { if (event.target === dialogRef.current) closeDialog() }}>
+      {dialog && <ModalDialog
+        className={` game-management-dialog${dialog !== 'cancel' ? ' seat-management-dialog' : ''}`}
+        title={dialog === 'cancel'
+          ? `Cancel Table ${game.tableNumber}?`
+          : `${assigning ? 'Assign' : 'Edit'} ${dialog === 'black' ? 'Black' : 'White'} player`}
+        closeLabel={dialog === 'cancel' ? 'Close cancellation dialog' : 'Close player assignment'}
+        initialFocusRef={dialog === 'cancel' ? undefined : replacementInputRef}
+        returnFocusRef={dialogReturnFocusRef}
+        onClose={closeDialog}>
         {dialog === 'cancel' ? <>
-          <h2 id={`game-dialog-title-${game.id}`}>Cancel Table {game.tableNumber}?</h2>
           <p>{game.result
             ? 'Cancellation is allowed only if this is both players’ latest game. Elo changes will be reversed with auditable compensation events; otherwise an administrator-contact error will explain the block.'
             : 'This removes the game from ongoing play and frees its occupied seats. No Elo event will be created.'}</p>
@@ -329,21 +333,19 @@ export function GameCard({
               method: 'DELETE', headers: { accept: 'application/json' },
             })}>{busy ? 'Cancelling…' : 'Cancel game'}</button>
           </div>
-        </> : dialog ? <>
-          <h2 id={`game-dialog-title-${game.id}`}>
-            {assigning ? 'Assign' : 'Edit'} {dialog === 'black' ? 'Black' : 'White'} player
-          </h2>
+        </> : <>
           <label htmlFor={`seat-player-${game.id}`}>Replacement player</label>
           <div className="replacement-combobox">
             <input
+              ref={replacementInputRef}
               id={`seat-player-${game.id}`}
               type="text"
               role="combobox"
               aria-autocomplete="list"
               aria-expanded={pickerOpen}
               aria-controls={listboxId}
-              aria-activedescendant={pickerOpen && activeOption >= 0 && filteredPlayers[activeOption]
-                ? optionId(filteredPlayers[activeOption])
+              aria-activedescendant={pickerOpen && activeOption >= 0 && replacementOptions[activeOption]
+                ? optionId(replacementOptions[activeOption])
                 : undefined}
               autoComplete="off"
               placeholder="Search replacement player"
@@ -365,12 +367,12 @@ export function GameCard({
                   <p role="status" className="replacement-picker-message">Loading players…</p>
                 ) : playersError ? (
                   <p role="alert" className="replacement-picker-message">{playersError}</p>
-                ) : filteredPlayers.length === 0 ? (
+                ) : replacementOptions.length === 0 ? (
                   <p role="status" className="replacement-picker-message">No replacement players found.</p>
-                ) : filteredPlayers.map((candidate, index) => (
+                ) : replacementOptions.map((candidate, index) => (
                   <div
                     id={optionId(candidate)}
-                    key={candidate.id}
+                    key={candidate.value}
                     role="option"
                     aria-selected={index === activeOption}
                     className="replacement-option"
@@ -378,7 +380,7 @@ export function GameCard({
                     onMouseEnter={() => setActiveOption(index)}
                     onClick={() => selectReplacement(candidate)}
                   >
-                    {candidate.name} ({candidate.currentRating} Elo)
+                    {candidate.label}
                   </div>
                 ))}
               </div>
@@ -386,22 +388,14 @@ export function GameCard({
           </div>
           {error && <p role="alert" className="form-error">{error}</p>}
           <div className="dialog-actions">
-            <button type="button" className="secondary" onClick={closeDialog}>Close</button>
-            {!assigning && (
-              <button type="button" className="secondary" disabled={busy}
-                onClick={() => void mutate(`/api/games/${game.id}/seats/${dialog}`, {
-                  method: 'PATCH', headers: { accept: 'application/json', 'content-type': 'application/json' },
-                  body: JSON.stringify({ playerId: null }),
-                })}>Remove player</button>
-            )}
             <button type="button" disabled={busy || !replacement}
               onClick={() => void mutate(`/api/games/${game.id}/seats/${dialog}`, {
                 method: 'PATCH', headers: { accept: 'application/json', 'content-type': 'application/json' },
-                body: JSON.stringify({ playerId: Number(replacement) }),
+                body: JSON.stringify({ playerId: replacement === 'empty' ? null : Number(replacement) }),
               })}>{busy ? 'Saving…' : assigning ? 'Assign player' : 'Replace player'}</button>
           </div>
-        </> : null}
-      </dialog>
+        </>}
+      </ModalDialog>}
     </article>
   )
 }

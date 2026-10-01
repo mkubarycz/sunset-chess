@@ -125,6 +125,7 @@ describe('GameCard', () => {
     expect(screen.getByRole('dialog', { name: 'Assign Black player' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Assign player' })).toBeDisabled()
     expect(screen.queryByRole('button', { name: 'Remove player' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: 'Empty' })).not.toBeInTheDocument()
     const input = screen.getByRole('combobox', { name: 'Replacement player' })
     await user.click(input)
     expect(screen.getByRole('option', { name: 'Zelda Knight (812 Elo)' })).toBeVisible()
@@ -209,9 +210,30 @@ describe('GameCard', () => {
     expect(screen.getByRole('option', { name: 'Zelda Knight (812 Elo)' })).toBeVisible()
     expect(screen.queryByRole('option', { name: /Noir/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('option', { name: /Blanca/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'Empty' })).toBeVisible()
     expect(listbox).toHaveClass('replacement-listbox')
     expect(screen.getByRole('button', { name: 'Replace player' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Remove player' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Remove player' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Close player assignment' })).toHaveTextContent('×')
+    expect(screen.getByRole('dialog')).toHaveClass('modal-dialog')
+  })
+
+  it('empties an occupied seat through the special Empty option', async () => {
+    const user = userEvent.setup()
+    const input = await openBlackSeat(user)
+    const fetchSpy = vi.mocked(globalThis.fetch)
+    fetchSpy.mockResolvedValueOnce(new Response(
+      JSON.stringify({ game: { ...game, blackPlayerId: null, blackPlayer: null } }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ))
+
+    await user.click(screen.getByRole('option', { name: 'Empty' }))
+    expect(input).toHaveValue('Empty')
+    await user.click(screen.getByRole('button', { name: 'Replace player' }))
+    expect(fetchSpy).toHaveBeenLastCalledWith('/api/games/9/seats/black', expect.objectContaining({
+      method: 'PATCH',
+      body: JSON.stringify({ playerId: null }),
+    }))
   })
 
   it('does not offer seat controls for a finished game', () => {
@@ -300,7 +322,7 @@ describe('GameCard', () => {
     await user.clear(input)
     await user.type(input, 'zelda')
     await user.keyboard('{ArrowDown}{Enter}')
-    await user.click(screen.getByRole('button', { name: 'Close' }))
+    await user.click(screen.getByRole('button', { name: 'Close player assignment' }))
 
     vi.mocked(globalThis.fetch).mockResolvedValueOnce(new Response(
       JSON.stringify({ players: roster }),

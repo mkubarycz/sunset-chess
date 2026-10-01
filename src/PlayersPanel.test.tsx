@@ -76,6 +76,8 @@ describe('PlayersPanel', () => {
     expect(screen.getByRole('table', { name: 'Elo history for Alice' })).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Save name' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Delete player' })).toHaveTextContent('🗑')
+    expect(screen.getByRole('button', { name: 'Close player card' })).toHaveTextContent('×')
+    expect(dialog).toHaveClass('modal-dialog')
     fireEvent.keyDown(dialog, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     await waitFor(() => expect(nameButton).toHaveFocus())
