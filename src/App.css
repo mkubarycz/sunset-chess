@@ -362,6 +362,8 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .game-card { width: 100%; min-width: 0; flex: 0 0 auto; overflow: hidden; border: 1px solid #4a5560; border-radius: var(--radius-sm); background: #0d1015; transition: border-color 180ms ease, box-shadow 180ms ease; }
 .game-card h3 { margin: 0; padding: 7px 9px; font-family: Georgia, serif; font-size: .9rem; font-weight: 600; }
 .player-side { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 7px; align-items: center; min-height: 47px; padding: 7px 8px; overflow: hidden; }
+.table-player-side { grid-template-columns: minmax(0, 1fr); gap: 0; }
+.table-player-side .player-rating { grid-column: 1; }
 .player-side strong { overflow-wrap: anywhere; }
 .player-rating { grid-column: 2; font-size: .61rem; opacity: .78; }
 .side-label { grid-row: 1 / span 2; align-self: center; font-size: .54rem; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }

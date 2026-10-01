@@ -52,10 +52,9 @@ function PlayerSide({
   const label = side === 'black' ? 'Black' : 'White'
   return (
     <div
-      className={`player-side ${side}-side${isWinner ? ' winner' : ''}${isDraw ? ' draw' : ''}`}
+      className={`player-side table-player-side ${side}-side${isWinner ? ' winner' : ''}${isDraw ? ' draw' : ''}`}
       aria-label={player ? `${label} player: ${player.name}, rating ${player.rating}` : `Waiting for ${label}`}
     >
-      <span className="side-label">{label}</span>
       <strong>{player?.name ?? `Waiting for ${label}`}</strong>
       {player && <span className="player-rating">{player.rating} Elo</span>}
     </div>
