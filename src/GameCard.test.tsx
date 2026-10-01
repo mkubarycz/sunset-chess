@@ -102,12 +102,13 @@ describe('GameCard', () => {
       blackRatingDelta: 0,
       whiteRatingDelta: 0,
     }} />)
-    expect(screen.getByText('Cancelled')).toBeVisible()
+    expect(screen.getByText('Table 2 - Cancelled')).toHaveClass('game-table-badge', 'cancelled')
     expect(screen.queryByText('Draw')).not.toBeInTheDocument()
     expect(screen.queryByText('1/2-1/2')).not.toBeInTheDocument()
     expect(screen.queryByText('+0')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Manage Table 2' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Edit|Assign/ })).not.toBeInTheDocument()
+    expect(screen.queryByText(/Cancelled 1/)).not.toBeInTheDocument()
   })
 
   it('hides cancellation management when a finished game is not eligible', () => {
@@ -211,7 +212,7 @@ describe('GameCard', () => {
     const user = userEvent.setup()
     const onMutate = vi.fn()
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(
-      JSON.stringify({ game: { ...game, cancelledAt: '2026-01-02T00:00:00.000Z' } }),
+      JSON.stringify({ game }),
       { status: 200, headers: { 'content-type': 'application/json' } },
     ))
     render(<GameCard game={game} onMutate={onMutate} />)
@@ -219,10 +220,7 @@ describe('GameCard', () => {
     await user.click(screen.getByRole('menuitem', { name: 'Cancel game' }))
     await user.click(screen.getByRole('button', { name: 'Cancel Game' }))
     expect(fetchSpy).toHaveBeenCalledWith('/api/games/9', expect.objectContaining({ method: 'DELETE' }))
-    expect(onMutate).toHaveBeenCalledWith(expect.objectContaining({
-      id: 9,
-      cancelledAt: '2026-01-02T00:00:00.000Z',
-    }))
+    expect(onMutate).toHaveBeenCalledWith(expect.objectContaining({ id: 9, result: null }))
   })
 
   it('uses an accessible searchable listbox with authoritative Elo and excludes seated players', async () => {

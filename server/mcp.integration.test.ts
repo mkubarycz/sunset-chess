@@ -8,6 +8,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { afterEach, describe, expect, it } from 'vitest';
 import { openDatabase } from './database.js';
+import { NotFoundError } from './errors.js';
 import {
   allowedHostAuthority,
   allowedOriginValue,
@@ -337,6 +338,7 @@ describe('Sunset Chess HTTP and MCP', () => {
         result: null,
         cancelledAt: null,
         cancellationReason: null,
+        canCancel: true,
         blackPlayerId: alice.id,
         whitePlayerId: 1001,
         blackRatingDelta: null,
@@ -353,18 +355,16 @@ describe('Sunset Chess HTTP and MCP', () => {
     expect((await app.client.callTool({
       name: 'player-delete', arguments: { id: alice.id },
     })).isError).toBe(true);
-    await app.client.callTool({ name: 'game-delete', arguments: { id: game.id } });
+    expect((await app.client.callTool({ name: 'game-delete', arguments: { id: game.id } })).isError)
+      .not.toBe(true);
     expect((await app.client.callTool({
       name: 'player-delete', arguments: { id: alice.id },
-    })).isError).toBe(true);
+    })).isError).not.toBe(true);
     expect((await app.client.callTool({
       name: 'player-delete', arguments: { id: 1001 },
-    })).isError).toBe(true);
+    })).isError).not.toBe(true);
     expect((await app.client.callTool({ name: 'player-list', arguments: {} })).structuredContent)
-      .toEqual({ players: [
-        { id: 1001, name: 'Bob', rating: 700 },
-        alice,
-      ].sort((left, right) => left.id - right.id) });
+      .toEqual({ players: [] });
     await app.close();
   });
 
@@ -400,7 +400,7 @@ describe('Sunset Chess HTTP and MCP', () => {
     await app.close();
   });
 
-  it('updates active seats and audit-cancels through HTTP and MCP', async () => {
+  it('updates active seats and deletes an unfinished game through HTTP', async () => {
     const app = await fixture();
     for (const [id, name] of [[1000, 'Alice'], [1001, 'Bob'], [1002, 'Carol']] as const) {
       app.repository.upsertPlayer(id, name);
@@ -424,12 +424,11 @@ describe('Sunset Chess HTTP and MCP', () => {
       body: JSON.stringify({ reason: 'duplicate table' }),
     });
     expect(cancelled.status).toBe(200);
-    expect(await cancelled.json()).toMatchObject({
-      game: { cancellationReason: 'duplicate table', cancelledAt: expect.any(String) },
-    });
+    expect(await cancelled.json()).toMatchObject({ game: { id: game.id, result: null } });
+    expect(() => app.repository.getGame(game.id)).toThrow(NotFoundError);
     expect((await app.client.callTool({
       name: 'game-cancel', arguments: { id: game.id },
-    })).isError).not.toBe(true);
+    })).isError).toBe(true);
     await app.close();
   });
 

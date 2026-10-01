@@ -378,6 +378,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .game-card-gear, .seat-edit-button { min-width: 36px; min-height: 36px; padding: 4px; border: 0; background: transparent; color: var(--paper); }
 .mini-board-wrap { position: relative; }
 .game-table-badge { position: absolute; z-index: 2; top: 5px; left: 5px; border: 1px solid rgba(255,255,255,.72); border-radius: 4px; padding: 3px 6px; color: #fff; background: rgba(4,6,9,.92); box-shadow: 0 2px 8px rgba(0,0,0,.65); font-size: .63rem; font-weight: 900; letter-spacing: .03em; }
+.game-table-badge.cancelled { text-decoration: line-through; }
 .game-card-menu { position: absolute; z-index: 3; top: 3px; right: 3px; }
 .game-card-gear { border: 1px solid rgba(255,255,255,.72); border-radius: 4px; color: #fff; background: rgba(4,6,9,.92); box-shadow: 0 2px 8px rgba(0,0,0,.65); }
 .game-card-gear:hover, .game-card-gear:focus-visible { background: #202833; }
@@ -407,8 +408,6 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .white-rank .mini-square { color: #fff8e9; text-shadow: 0 1px 1px rgba(0,0,0,.7); }
 .player-side.winner { box-shadow: inset 4px 0 var(--amber); }
 .player-side.draw { opacity: .9; }
-.cancelled-status { margin: 7px 9px; color: #f0bd73; font-weight: 900; }
-.cancelled-at { margin: 7px 9px; color: #aeb8bf; font-size: .68rem; }
 .game-management-dialog { width: min(460px, calc(100vw - 28px)); }
 .seat-management-dialog { width: min(680px, calc(100vw - 28px)); min-height: min(560px, calc(100dvh - 28px)); }
 .replacement-combobox { position: relative; margin: 7px 0 12px; }

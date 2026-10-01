@@ -527,7 +527,7 @@ describe('ChessRepository', () => {
     db.close();
   });
 
-  it('cancels an active game and supports transactional seat removal and replacement', () => {
+  it('deletes an active game and supports transactional seat removal and replacement', () => {
     const { db, repository } = fixture();
     repository.upsertPlayer(1000, 'Alice');
     repository.upsertPlayer(1001, 'Bob');
@@ -550,10 +550,14 @@ describe('ChessRepository', () => {
     expect(() => repository.updateGameSeat(game.id, 'white', 1002)).toThrow(ValidationError);
     const occupied = repository.createGame(1000, 1003);
     expect(() => repository.updateGameSeat(game.id, 'black', 1000)).toThrow(ConflictError);
-    expect(repository.cancelGame(occupied.id, 'mistake', () => '2026-06-01T00:00:00.000Z'))
-      .toMatchObject({ cancelledAt: '2026-06-01T00:00:00.000Z', cancellationReason: 'mistake' });
+    expect(repository.cancelGame(occupied.id, 'mistake')).toMatchObject({
+      id: occupied.id,
+      result: null,
+      cancelledAt: null,
+    });
     expect(repository.listJoinedGames('ongoing').map(({ id }) => id)).toEqual([game.id]);
-    expect(repository.cancelGame(occupied.id).id).toBe(occupied.id);
+    expect(() => repository.getGame(occupied.id)).toThrow(NotFoundError);
+    expect(() => repository.cancelGame(occupied.id)).toThrow(NotFoundError);
     expect(db.prepare('SELECT COUNT(*) AS count FROM PlayerRatingEvent WHERE gameId = ?').get(occupied.id))
       .toEqual({ count: 0 });
     db.close();

@@ -282,7 +282,6 @@ export function GameCard({
         game.blackPlayer ? `${game.blackPlayer.name} plays black` : 'waiting for Black'
       }, ${game.whitePlayer ? `${game.whitePlayer.name} plays white` : 'waiting for White'}`}
     >
-      {cancelled && <p className="cancelled-status">Cancelled</p>}
       <PlayerSide side="black" player={game.blackPlayer} result={game.result}
         ratingDelta={game.blackRatingDelta} cancelled={cancelled}
         tableNumber={game.tableNumber}
@@ -291,7 +290,9 @@ export function GameCard({
           : undefined} />
       <div className="mini-board-wrap">
         <MiniBoard />
-        <span className="game-table-badge">Table {game.tableNumber}</span>
+        <span className={`game-table-badge${cancelled ? ' cancelled' : ''}`}>
+          Table {game.tableNumber}{cancelled ? ' - Cancelled' : ''}
+        </span>
         {management && !cancelled && canCancel && <div className="game-card-menu" ref={menuRef}>
           <button type="button" className="game-card-gear" aria-label={`Manage Table ${game.tableNumber}`}
             aria-haspopup="menu" aria-expanded={menuOpen} ref={gearRef}
@@ -312,9 +313,6 @@ export function GameCard({
         onEdit={management && !cancelled && !game.result
           ? (trigger) => editSide('white', trigger)
           : undefined} />
-      {cancelled && game.cancelledAt && (
-        <p className="cancelled-at">Cancelled {new Date(game.cancelledAt).toLocaleString()}</p>
-      )}
       {dialog && <ModalDialog
         className={` game-management-dialog${dialog !== 'cancel' ? ' seat-management-dialog' : ''}`}
         title={dialog === 'cancel'
@@ -327,7 +325,7 @@ export function GameCard({
         {dialog === 'cancel' ? <>
           <p>{game.result
             ? 'Cancellation is allowed only if this is both players’ latest game. Click “Cancel Game” to proceed.'
-            : 'This removes the game from ongoing play and frees its occupied seats. No Elo event will be created.'}</p>
+            : 'This permanently removes the unfinished game and frees its occupied seats. No Elo event will be created.'}</p>
           {error && <p role="alert" className="form-error">{error}</p>}
           <div className="dialog-actions">
             <button type="button" className="secondary" onClick={closeDialog}>Keep game</button>

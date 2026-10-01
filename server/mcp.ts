@@ -96,12 +96,12 @@ export function createMcpServer(repository: ChessRepository): McpServer {
   }, async ({ blackPlayerId, whitePlayerId }) =>
     domainResult(() => ({ game: repository.createGame(blackPlayerId, whitePlayerId) })));
   server.registerTool('game-cancel', {
-    description: 'Audit-cancel a game. Finished games are compensated only when latest for both players.',
+    description: 'Delete an unfinished game or audit-cancel a finished game when latest for both players.',
     inputSchema: { id: gameId, reason: z.string().trim().min(1).max(500).optional() },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   }, async ({ id, reason }) => domainResult(() => ({ game: repository.cancelGame(id, reason) })));
   server.registerTool('game-delete', {
-    description: 'Backward-compatible alias that audit-cancels one game without deleting history.',
+    description: 'Backward-compatible alias that deletes an unfinished game or audit-cancels a finished game.',
     inputSchema: { id: gameId },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   }, async ({ id }) => domainResult(() => ({ game: repository.deleteGame(id) })));

@@ -538,55 +538,58 @@ export class ChessRepository {
         this.db.exec('COMMIT');
         return game;
       }
+      if (game.result === null) {
+        this.db.prepare('DELETE FROM ChessGame WHERE id = ?').run(id);
+        this.db.exec('COMMIT');
+        return game;
+      }
       const cancelledAt = now();
       if (typeof cancelledAt !== 'string' || Number.isNaN(Date.parse(cancelledAt))) {
         throw new Error('Clock source returned an invalid ISO timestamp.');
       }
-      if (game.result !== null) {
-        const players = [
-          { id: game.whitePlayerId as number },
-          { id: game.blackPlayerId as number },
-        ];
-        const blocked = players.flatMap(({ id: playerId }) => {
-          const later = this.db.prepare(`
-            SELECT 1 FROM ChessGame
-            WHERE cancelledAt IS NULL AND result IS NOT NULL
-              AND (whitePlayerId = ? OR blackPlayerId = ?)
-              AND (finishedAt > ? OR (finishedAt = ? AND id > ?))
-            LIMIT 1
-          `).get(playerId, playerId, game.finishedAt, game.finishedAt, game.id);
-          return later ? [this.getPlayer(playerId).name] : [];
-        });
-        blocked.sort((left, right) => left.localeCompare(right));
-        if (blocked.length) {
-          const subject = blocked.length === 1 ? blocked[0] : `${blocked[0]} and ${blocked[1]}`;
-          throw new ConflictError(
-            `${subject} ${blocked.length === 1 ? 'has' : 'have'} played other games. `
-            + 'Cancelling this game would affect their Elo and other players’ Elo. Contact your administrator.',
-          );
-        }
-        const originalEvents = this.db.prepare(`
-          SELECT playerId, opponentId, result, delta
-          FROM PlayerRatingEvent WHERE gameId = ? AND reason = 'game'
-          ORDER BY playerId
-        `).all(id) as unknown as Array<{
-          playerId: number; opponentId: number; result: GameResult; delta: number
-        }>;
-        if (originalEvents.length !== 2) throw new Error(`Game ${id} does not have two original rating events.`);
-        const insert = this.db.prepare(`
-          INSERT INTO PlayerRatingEvent(
-            playerId, gameId, previousRating, rating, delta, recordedAt, reason, opponentId, result
-          ) VALUES (?, ?, ?, ?, ?, ?, 'compensation', ?, ?)
-        `);
-        for (const event of originalEvents) {
-          const player = this.getPlayer(event.playerId);
-          insert.run(
-            event.playerId, id, player.rating, player.rating - event.delta, -event.delta,
-            cancelledAt, event.opponentId, event.result,
-          );
-          this.db.prepare('UPDATE Player SET rating = ? WHERE id = ?')
-            .run(player.rating - event.delta, event.playerId);
-        }
+      const players = [
+        { id: game.whitePlayerId as number },
+        { id: game.blackPlayerId as number },
+      ];
+      const blocked = players.flatMap(({ id: playerId }) => {
+        const later = this.db.prepare(`
+          SELECT 1 FROM ChessGame
+          WHERE cancelledAt IS NULL AND result IS NOT NULL
+            AND (whitePlayerId = ? OR blackPlayerId = ?)
+            AND (finishedAt > ? OR (finishedAt = ? AND id > ?))
+          LIMIT 1
+        `).get(playerId, playerId, game.finishedAt, game.finishedAt, game.id);
+        return later ? [this.getPlayer(playerId).name] : [];
+      });
+      blocked.sort((left, right) => left.localeCompare(right));
+      if (blocked.length) {
+        const subject = blocked.length === 1 ? blocked[0] : `${blocked[0]} and ${blocked[1]}`;
+        throw new ConflictError(
+          `${subject} ${blocked.length === 1 ? 'has' : 'have'} played other games. `
+          + 'Cancelling this game would affect their Elo and other players’ Elo. Contact your administrator.',
+        );
+      }
+      const originalEvents = this.db.prepare(`
+        SELECT playerId, opponentId, result, delta
+        FROM PlayerRatingEvent WHERE gameId = ? AND reason = 'game'
+        ORDER BY playerId
+      `).all(id) as unknown as Array<{
+        playerId: number; opponentId: number; result: GameResult; delta: number
+      }>;
+      if (originalEvents.length !== 2) throw new Error(`Game ${id} does not have two original rating events.`);
+      const insert = this.db.prepare(`
+        INSERT INTO PlayerRatingEvent(
+          playerId, gameId, previousRating, rating, delta, recordedAt, reason, opponentId, result
+        ) VALUES (?, ?, ?, ?, ?, ?, 'compensation', ?, ?)
+      `);
+      for (const event of originalEvents) {
+        const player = this.getPlayer(event.playerId);
+        insert.run(
+          event.playerId, id, player.rating, player.rating - event.delta, -event.delta,
+          cancelledAt, event.opponentId, event.result,
+        );
+        this.db.prepare('UPDATE Player SET rating = ? WHERE id = ?')
+          .run(player.rating - event.delta, event.playerId);
       }
       this.db.prepare(`
         UPDATE ChessGame SET cancelledAt = ?, cancellationReason = ? WHERE id = ? AND cancelledAt IS NULL

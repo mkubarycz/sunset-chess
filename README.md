@@ -504,9 +504,9 @@ foreign keys with `ON DELETE RESTRICT`, and transactional `schema_migrations`.
 Every migrated game is ongoing. `ChessGame.tableNumber` is positive and unique
 among ongoing games; completed games retain their historical table number.
 `createdAt` records creation, `finishedAt` records finalization, and either or
-both sides may be empty only while ongoing. `cancelledAt` and optional
-`cancellationReason` preserve cancellation as an auditable state rather than
-deleting a game.
+both sides may be empty only while ongoing. Cancelling an unfinished game
+deletes it. `cancelledAt` and optional `cancellationReason` preserve finished
+game cancellation as an auditable state.
 `ChessGame.result` is null while ongoing, or one of the standard PGN tokens
 `1-0`, `0-1`, and `1/2-1/2`. A non-null result is final and immutable through
 normal APIs.
@@ -548,7 +548,7 @@ MCP is published at <http://localhost:4175/mcp>. Tools are `player-list`,
 `player-get`, `player-create`, `player-upsert`, `player-name-update`,
 `player-check-in`, `player-delete`,
 `game-list`, `game-get`, `game-create`, `game-result-set`, `game-cancel`,
-`game-seat-update`, and the backward-compatible audit-cancelling `game-delete`.
+`game-seat-update`, and the backward-compatible `game-delete`.
 Read tools also include `leaderboard-list` and `player-profile-get` for ranked
 records, recent games, and chronological rating history.
 Use `game-result-set` to finalize a fully seated game. It accepts only canonical
@@ -566,9 +566,9 @@ table) and `recentGames` (the 20 most recently finished). `PATCH
 /api/games/:id/result` with JSON `{ "result": "1-0" }` (or either other
 canonical token) finalizes a fully seated game. `PATCH
 /api/games/:id/seats/:side` accepts `{ "playerId": 1234 }` or `null` to assign,
-replace, or remove one active seat. `DELETE /api/games/:id` audit-cancels an active or
-eligible finished game and may accept JSON `{ "reason": "..." }`. Active
-cancellation creates no rating event; finished cancellation follows the guarded
+replace, or remove one active seat. `DELETE /api/games/:id` deletes an unfinished
+game or audit-cancels an eligible finished game and may accept JSON
+`{ "reason": "..." }`. Finished cancellation follows the guarded
 compensation policy above. The browser loads it immediately,
 polls without overlapping requests, refreshes on focus/visibility, preserves
 the last successful view on errors, and offers retry. A locally checked-in game
