@@ -1,39 +1,14 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { normalizePlayerName } from './qrPayload'
 import { printRoundPlayerSticker } from './playerSticker'
-import type { LeaderboardEntry, PlayerProfile } from './Leaderboard'
-import { GameCard, type OngoingGame } from './GameCard'
+import { PlayerCardDialog, type LeaderboardEntry } from './PlayerCardDialog'
 
 async function responseBody(response: Response) {
   return response.json() as Promise<{
     player?: unknown
     players?: LeaderboardEntry[]
-    profile?: PlayerProfile
     error?: string
   }>
-}
-
-function profileGameToGameCard(
-  profile: PlayerProfile,
-  game: PlayerProfile['recentGames'][number],
-): OngoingGame {
-  const player = { id: profile.id, name: profile.name, rating: game.ratingAfter }
-  const opponent = { id: game.opponent.id, name: game.opponent.name, rating: game.opponent.rating }
-  const playerIsBlack = game.color === 'black'
-  return {
-    id: game.id,
-    tableNumber: game.tableNumber,
-    createdAt: game.finishedAt,
-    finishedAt: game.finishedAt,
-    result: game.result,
-    blackPlayerId: playerIsBlack ? player.id : opponent.id,
-    whitePlayerId: playerIsBlack ? opponent.id : player.id,
-    blackPlayer: playerIsBlack ? player : opponent,
-    whitePlayer: playerIsBlack ? opponent : player,
-    blackRatingDelta: playerIsBlack ? game.delta : game.opponent.delta,
-    whiteRatingDelta: playerIsBlack ? game.opponent.delta : game.delta,
-  }
 }
 
 export function PlayersPanel({
@@ -48,15 +23,9 @@ export function PlayersPanel({
   const [players, setPlayers] = useState<LeaderboardEntry[]>([])
   const [listError, setListError] = useState('')
   const [selected, setSelected] = useState<LeaderboardEntry | null>(null)
-  const [profile, setProfile] = useState<PlayerProfile | null>(null)
-  const [profileError, setProfileError] = useState('')
-  const [editName, setEditName] = useState('')
-  const [confirmDelete, setConfirmDelete] = useState(false)
-  const [busy, setBusy] = useState(false)
+  const [confirmDeleteInitially, setConfirmDeleteInitially] = useState(false)
   const [menuPlayer, setMenuPlayer] = useState<LeaderboardEntry | null>(null)
   const [menuPosition, setMenuPosition] = useState({ top: 0, right: 0 })
-  const dialogRef = useRef<HTMLDivElement>(null)
-  const nameInputRef = useRef<HTMLInputElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const returnFocusRef = useRef<HTMLElement | null>(null)
   const menuTriggerRefs = useRef(new Map<number, HTMLButtonElement>())
@@ -71,19 +40,6 @@ export function PlayersPanel({
     return body.players
   }, [])
 
-  const loadProfile = useCallback(async (id: number, signal?: AbortSignal) => {
-    const response = await fetch(`/api/players/${id}/profile?recentLimit=10`, {
-      signal,
-      headers: { accept: 'application/json' },
-    })
-    const body = await responseBody(response)
-    if (!response.ok || !body.profile) throw new Error(body.error || 'Could not load player profile.')
-    setProfile(body.profile)
-    setEditName(body.profile.name)
-    setProfileError('')
-    return body.profile
-  }, [])
-
   useEffect(() => {
     const controller = new AbortController()
     void Promise.resolve().then(() => refresh(controller.signal)).catch((reason) => {
@@ -91,21 +47,6 @@ export function PlayersPanel({
     })
     return () => controller.abort()
   }, [refresh, refreshKey])
-
-  useEffect(() => {
-    if (!selected) return
-    const controller = new AbortController()
-    void Promise.resolve().then(() => loadProfile(selected.id, controller.signal)).catch((reason) => {
-      if (!controller.signal.aborted) {
-        setProfileError(reason instanceof Error ? reason.message : 'Could not load player profile.')
-      }
-    })
-    window.requestAnimationFrame(() => {
-      if (nameInputRef.current) nameInputRef.current.focus()
-      else dialogRef.current?.focus()
-    })
-    return () => controller.abort()
-  }, [loadProfile, selected])
 
   const closeMenu = useCallback((restoreFocus = true) => {
     const trigger = menuPlayer ? menuTriggerRefs.current.get(menuPlayer.id) : null
@@ -151,63 +92,14 @@ export function PlayersPanel({
   const openEditor = (player: LeaderboardEntry, returnFocus: HTMLElement, deleting = false) => {
     closeMenu(false)
     returnFocusRef.current = returnFocus
-    setProfile(null)
-    setProfileError('')
-    setConfirmDelete(deleting)
-    setEditName(player.name)
+    setConfirmDeleteInitially(deleting)
     setSelected(player)
   }
 
   const closeEditor = () => {
     setSelected(null)
-    setProfile(null)
-    setProfileError('')
-    setConfirmDelete(false)
+    setConfirmDeleteInitially(false)
     window.requestAnimationFrame(() => returnFocusRef.current?.focus())
-  }
-
-  const rename = async () => {
-    if (!selected) return
-    setBusy(true)
-    setProfileError('')
-    try {
-      const name = normalizePlayerName(editName)
-      const response = await fetch(`/api/players/${selected.id}`, {
-        method: 'PATCH',
-        headers: { accept: 'application/json', 'content-type': 'application/json' },
-        body: JSON.stringify({ name }),
-      })
-      const body = await responseBody(response)
-      if (!response.ok) throw new Error(body.error || `Rename failed (${response.status}).`)
-      await refresh()
-      await loadProfile(selected.id)
-      onMutate()
-    } catch (reason) {
-      setProfileError(reason instanceof Error ? reason.message : 'Could not rename player.')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const remove = async () => {
-    if (!selected) return
-    setBusy(true)
-    setProfileError('')
-    try {
-      const response = await fetch(`/api/players/${selected.id}`, {
-        method: 'DELETE',
-        headers: { accept: 'application/json' },
-      })
-      const body = await responseBody(response)
-      if (!response.ok) throw new Error(body.error || `Delete failed (${response.status}).`)
-      await refresh()
-      onMutate()
-      closeEditor()
-    } catch (reason) {
-      setProfileError(reason instanceof Error ? reason.message : 'Could not delete player.')
-    } finally {
-      setBusy(false)
-    }
   }
 
   const doPrint = async (player: LeaderboardEntry) => {
@@ -239,7 +131,7 @@ export function PlayersPanel({
   }
 
   return (
-    <section className="players-panel" aria-labelledby="players-heading" aria-busy={busy}>
+    <section className="players-panel" aria-labelledby="players-heading">
       <div className="players-panel-header">
         <div><p className="eyebrow">Club roster</p><h2 id="players-heading">Players</h2></div>
         <p className="players-count">{players.length} registered</p>
@@ -298,65 +190,12 @@ export function PlayersPanel({
         </div>,
         document.body,
       )}
-      {selected && createPortal(
-        <div className="profile-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeEditor() }}>
-          <div className="profile-dialog player-edit-dialog" role="dialog" aria-modal="true"
-            aria-labelledby="player-edit-title" tabIndex={-1} ref={dialogRef}
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') {
-                event.preventDefault()
-                closeEditor()
-                return
-              }
-              if (event.key !== 'Tab') return
-              const focusable = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(
-                'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
-              ))
-              const first = focusable[0]
-              const last = focusable.at(-1)
-              if (!first || !last) return
-              if (event.shiftKey && document.activeElement === first) {
-                event.preventDefault(); last.focus()
-              } else if (!event.shiftKey && document.activeElement === last) {
-                event.preventDefault(); first.focus()
-              }
-            }}>
-            <button type="button" className="profile-close" onClick={closeEditor} aria-label="Close player editor">×</button>
-            <p className="eyebrow">Player #{selected.id}</p>
-            <h2 id="player-edit-title">Edit {profile?.name ?? selected.name}</h2>
-            <form className="player-edit-form" onSubmit={(event) => { event.preventDefault(); void rename() }}>
-              <label htmlFor="edit-player-name">Player name</label>
-              <div><input id="edit-player-name" ref={nameInputRef} maxLength={80} value={editName}
-                onChange={(event) => setEditName(event.target.value)} />
-                <button type="submit" disabled={busy}>Save name</button></div>
-            </form>
-            {profileError && <p className="games-message error" role="alert">{profileError}</p>}
-            {!profile && !profileError && <p role="status">Loading player profile…</p>}
-            {profile && <>
-              <p className="profile-summary"><strong>{profile.currentRating} Elo</strong> · Rank #{profile.rank} ·
-                {' '}{profile.wins}-{profile.losses}-{profile.draws} ({profile.gamesPlayed} games)</p>
-              <h3>Recent games</h3>
-              {profile.recentGames.length === 0
-                ? <p>No completed games yet. Baseline Elo is 700.</p>
-                : <div className="profile-game-strip" role="region" aria-label={`Recent games for ${profile.name}`} tabIndex={0}>
-                    {profile.recentGames.slice(0, 10).map((game) => (
-                      <GameCard key={game.id} game={profileGameToGameCard(profile, game)} management={false} />
-                    ))}
-                  </div>}
-            </>}
-            <div className="player-delete-zone">
-              {!confirmDelete
-                ? <button type="button" className="danger" onClick={() => setConfirmDelete(true)}>Delete player</button>
-                : <>
-                    <p><strong>Delete {profile?.name ?? selected.name}?</strong> Only players with no game references and baseline-only rating history can be deleted.</p>
-                    <button type="button" className="danger" disabled={busy} onClick={() => void remove()}>Confirm delete</button>
-                    <button type="button" className="secondary" onClick={() => setConfirmDelete(false)}>Cancel delete</button>
-                  </>}
-            </div>
-          </div>
-        </div>,
-        document.body,
-      )}
+      {selected && <PlayerCardDialog key={selected.id} player={selected} onClose={closeEditor}
+        confirmDeleteInitially={confirmDeleteInitially}
+        onMutate={async () => {
+          await refresh()
+          onMutate()
+        }} />}
     </section>
   )
 }

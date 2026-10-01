@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import type { LeaderboardEntry } from './Leaderboard'
+import type { LeaderboardEntry } from './PlayerCardDialog'
 
 export interface OngoingGame {
   id: number

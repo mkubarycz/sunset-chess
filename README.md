@@ -6,10 +6,11 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
 
 - A full-height dashboard with an accessible Leaderboard / Recent Games / Players
   tabbed primary workspace and one persistent, independently scrolling Ongoing
-  Games rail. The Players tab pairs Add New Player with a responsive roster:
-  player names open a focus-trapped editor with recent game cards, while each
-  row's keyboard-operable gear menu provides Edit, one-inch round-sticker
-  printing, and guarded deletion.
+  Games rail. The Players tab pairs Add New Player with a responsive roster.
+  Player names in both the roster and leaderboard open the same reusable,
+  focus-trapped player card with editing, guarded deletion, and recent game
+  cards. Each roster row's keyboard-operable gear menu also provides Edit and
+  one-inch round-sticker printing.
 - Compact Start/Stop Camera and Settings controls share the responsive header,
   leaving the primary tab workspace at full height. Camera state and recovery
   detail remain available to assistive technology, with compact notices shown
@@ -601,9 +602,10 @@ descending, games played descending, case-insensitive name ascending, then ID.
 The bounded limit is 1–200. `GET /api/players/:id/profile?recentLimit=10`
 returns record/rank, newest-first non-cancelled completed games (maximum 50), and full
 chronological Elo history. Malformed bounds return 400 and missing players 404.
-The Elo Leaderboard occupies its dashboard tab. Rows are native keyboard buttons. The profile is an
-ARIA modal with focus entry/return, Escape/close/backdrop dismissal, a textual
-recent-game/history table, and an accessible SVG sparkline.
+The Elo Leaderboard occupies its dashboard tab. Rows are native keyboard
+buttons and open the shared player card used by the Players tab. The ARIA modal
+supports focus entry/return, Escape/close/backdrop dismissal, player editing,
+guarded deletion, and up to ten horizontally scrolling recent game cards.
 
 Each table card has a keyboard-accessible gear menu and custom confirmation
 dialog. Active empty seats have an accessible add action for assignment, while

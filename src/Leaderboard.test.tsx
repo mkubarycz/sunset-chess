@@ -19,7 +19,7 @@ describe('Leaderboard', () => {
           rank: 1, id: 1001, name: 'Bob', currentRating: 716,
           gamesPlayed: 1, wins: 1, losses: 0, draws: 0, lastPlayedAt: '2026-01-02T12:00:00.000Z',
           recentGames: [{
-            id: 1, tableNumber: 1, opponent: { id: 1000, name: 'Alice' },
+            id: 1, tableNumber: 1, opponent: { id: 1000, name: 'Alice', rating: 684, delta: -16 },
             color: 'white', result: '1-0', outcome: 'W',
             finishedAt: '2026-01-02T12:00:00.000Z',
             ratingBefore: 700, ratingAfter: 716, delta: 16,
@@ -46,9 +46,14 @@ describe('Leaderboard', () => {
     fireEvent.click(bob)
     const dialog = await screen.findByRole('dialog')
     expect(dialog.parentElement).toBe(document.body.lastElementChild)
-    expect(dialog).toHaveAccessibleName('Bob')
-    expect(screen.getAllByText(/700→716/)).toHaveLength(2)
-    expect(screen.getByRole('img', { name: /Bob Elo history from 700 to 716/ })).toBeInTheDocument()
+    expect(dialog).toHaveAccessibleName('Edit Bob')
+    expect(dialog).toHaveClass('player-edit-dialog')
+    expect(screen.getByLabelText('Player name')).toHaveValue('Bob')
+    const recentGames = screen.getByRole('region', { name: 'Recent games for Bob' })
+    expect(recentGames.querySelectorAll('.game-card')).toHaveLength(1)
+    expect(screen.getByRole('article', {
+      name: 'Table 1: Alice plays black, Bob plays white',
+    })).toBeVisible()
     fireEvent.keyDown(dialog, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(bob).toHaveFocus()

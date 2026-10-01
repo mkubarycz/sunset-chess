@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import userEvent from '@testing-library/user-event'
 import { GameCard, type OngoingGame } from './GameCard'
-import type { LeaderboardEntry } from './Leaderboard'
+import type { LeaderboardEntry } from './PlayerCardDialog'
 
 const game: OngoingGame = {
   id: 9,

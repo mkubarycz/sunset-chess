@@ -345,10 +345,6 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .profile-dialog { position: relative; width: min(880px, 100%); max-height: calc(100dvh - 32px); overflow: auto; padding: 28px; border: 1px solid var(--amber-bright); border-radius: var(--radius-md); background: var(--ink-900); box-shadow: 0 28px 90px #000; }
 .profile-close { position: absolute; right: 14px; top: 10px; padding: 3px 12px; font-size: 1.7rem; }
 .profile-summary { font-size: 1.05rem; }
-.profile-table-wrap { overflow-x: auto; }
-.profile-dialog table { width: 100%; border-collapse: collapse; font-size: .85rem; }
-.profile-dialog th, .profile-dialog td { padding: 8px; border-bottom: 1px solid var(--line); text-align: left; }
-.rating-sparkline { width: 100%; height: 100px; color: var(--amber); background: var(--ink-950); border-radius: var(--radius-sm); }
 
 .producer { min-height: 0; padding: 14px; overflow-y: auto; scrollbar-gutter: stable; }
 .producer h2 { font-size: 1.25rem; }
