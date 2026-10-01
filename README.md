@@ -8,9 +8,10 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
   tabbed primary workspace and one persistent, independently scrolling Ongoing
   Games rail. The Players tab pairs Add New Player with a responsive roster.
   Player names in both the roster and leaderboard open the same reusable,
-  focus-trapped player card with editing, guarded deletion, ongoing table
-  assignments, and recent game cards. Each roster row's keyboard-operable gear
-  menu also provides Edit and one-inch round-sticker printing.
+  focus-trapped player card with an auto-saving name field, compact ID/Elo
+  identity, guarded deletion, ongoing table assignments, and recent game cards.
+  Each roster row's keyboard-operable gear menu also provides Edit and one-inch
+  round-sticker printing.
 - Compact Start/Stop Camera and Settings controls share the responsive header,
   leaving the primary tab workspace at full height. Camera state and recovery
   detail remain available to assistive technology, with compact notices shown
@@ -609,8 +610,8 @@ buttons and open the shared player card used by the Players tab. The ARIA modal
 supports focus entry/return, Escape/close/backdrop dismissal, player editing,
 guarded deletion, ongoing game cards, and up to ten horizontally scrolling
 recent game cards. An accessible Elo-history chart and chronological rating
-ledger appear below the game cards, while Save and Delete share the modal
-footer.
+ledger appear below the game cards. Name edits save on blur or before the modal
+closes, and the footer retains a trash-marked Delete player action.
 
 Each table card has a keyboard-accessible gear menu and custom confirmation
 dialog. Active empty seats have an accessible add action for assignment, while

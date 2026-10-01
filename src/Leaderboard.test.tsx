@@ -51,9 +51,10 @@ describe('Leaderboard', () => {
     fireEvent.click(bob)
     const dialog = await screen.findByRole('dialog')
     expect(dialog.parentElement).toBe(document.body.lastElementChild)
-    expect(dialog).toHaveAccessibleName('Edit Bob')
+    expect(dialog).toHaveAccessibleName('Player card for Bob')
     expect(dialog).toHaveClass('player-edit-dialog')
     expect(screen.getByLabelText('Player name')).toHaveValue('Bob')
+    expect(screen.queryByRole('heading', { name: /Edit Bob/ })).not.toBeInTheDocument()
     const ongoingGames = screen.getByRole('region', { name: 'Ongoing games for Bob' })
     expect(ongoingGames.querySelectorAll('.game-card')).toHaveLength(1)
     expect(screen.getByRole('article', {

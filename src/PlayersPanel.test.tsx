@@ -49,8 +49,11 @@ describe('PlayersPanel', () => {
 
     const nameButton = screen.getByRole('button', { name: 'Alice' })
     await userEvent.click(nameButton)
-    const dialog = await screen.findByRole('dialog', { name: 'Edit Alice' })
+    const dialog = await screen.findByRole('dialog', { name: 'Player card for Alice' })
     expect(dialog).toContainElement(screen.getByLabelText('Player name'))
+    expect(within(dialog).queryByRole('heading', { name: /Edit Alice/ })).not.toBeInTheDocument()
+    expect(within(dialog).getByText('#1000')).toBeVisible()
+    expect(within(dialog).getByText('716 Elo', { selector: '.player-card-meta strong' })).toBeVisible()
     const ongoingGames = screen.getByRole('region', { name: 'Ongoing games for Alice' })
     expect(ongoingGames.querySelectorAll('.game-card')).toHaveLength(1)
     expect(within(ongoingGames).getByRole('article', {
@@ -71,9 +74,8 @@ describe('PlayersPanel', () => {
     expect(within(recentGames).queryByRole('button')).not.toBeInTheDocument()
     expect(screen.getByRole('img', { name: 'Alice Elo history from 700 to 716' })).toBeVisible()
     expect(screen.getByRole('table', { name: 'Elo history for Alice' })).toBeVisible()
-    const saveButton = screen.getByRole('button', { name: 'Save name' })
-    expect(saveButton.closest('.player-delete-zone')).toBeInTheDocument()
-    expect(saveButton.parentElement).toContainElement(screen.getByRole('button', { name: 'Delete player' }))
+    expect(screen.queryByRole('button', { name: 'Save name' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Delete player' })).toHaveTextContent('🗑')
     fireEvent.keyDown(dialog, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     await waitFor(() => expect(nameButton).toHaveFocus())
@@ -125,7 +127,7 @@ describe('PlayersPanel', () => {
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
   })
 
-  it('saves a validated name, refreshes profile/surfaces, and shows delete conflicts in one dialog', async () => {
+  it('auto-saves a validated name on blur, refreshes surfaces, and shows delete conflicts in one dialog', async () => {
     const renamed = { ...player, name: 'Alicia' }
     const renamedProfile = { ...profile, ...renamed }
     const fetch = vi.fn()
@@ -142,14 +144,61 @@ describe('PlayersPanel', () => {
     const input = await screen.findByRole('textbox', { name: 'Player name' })
     await userEvent.clear(input)
     await userEvent.type(input, ' Alicia ')
-    await userEvent.click(screen.getByRole('button', { name: 'Save name' }))
-    expect(await screen.findByRole('heading', { name: 'Edit Alicia' })).toBeInTheDocument()
-    expect(onMutate).toHaveBeenCalledOnce()
+    await userEvent.tab()
+    await waitFor(() => expect(onMutate).toHaveBeenCalledOnce())
+    expect(input).toHaveValue('Alicia')
+    expect(screen.getByRole('dialog')).toHaveAccessibleName('Player card for Alicia')
+    expect(fetch).toHaveBeenNthCalledWith(3, '/api/players/1000', expect.objectContaining({
+      method: 'PATCH',
+      body: JSON.stringify({ name: 'Alicia' }),
+    }))
     await userEvent.click(screen.getByRole('button', { name: 'Delete player' }))
     expect(screen.getAllByRole('dialog')).toHaveLength(1)
     await userEvent.click(screen.getByRole('button', { name: 'Confirm delete' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('game references')
     expect(screen.getAllByRole('dialog')).toHaveLength(1)
+  })
+
+  it('auto-saves a changed name before closing the player card', async () => {
+    const renamed = { ...player, name: 'Alicia' }
+    const renamedProfile = { ...profile, ...renamed }
+    const fetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ players: [player] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ profile }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ player: renamed }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ players: [renamed] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ profile: renamedProfile }) })
+    vi.stubGlobal('fetch', fetch)
+    const onMutate = vi.fn()
+    render(<PlayersPanel refreshKey={0} onMutate={onMutate} />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Alice' }))
+    const input = await screen.findByRole('textbox', { name: 'Player name' })
+    await userEvent.clear(input)
+    await userEvent.type(input, 'Alicia')
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(onMutate).toHaveBeenCalledOnce()
+    expect(fetch).toHaveBeenNthCalledWith(3, '/api/players/1000', expect.objectContaining({
+      method: 'PATCH',
+      body: JSON.stringify({ name: 'Alicia' }),
+    }))
+  })
+
+  it('keeps the player card open when an automatic save fails', async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ players: [player] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ profile }) })
+      .mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({ error: 'Rename unavailable.' }) }))
+    render(<PlayersPanel refreshKey={0} onMutate={vi.fn()} />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Alice' }))
+    const input = await screen.findByRole('textbox', { name: 'Player name' })
+    await userEvent.clear(input)
+    await userEvent.type(input, 'Alicia')
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Rename unavailable')
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 
   it('announces sticker generation failures', async () => {

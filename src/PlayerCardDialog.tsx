@@ -109,8 +109,11 @@ export function PlayerCardDialog({
   const [editName, setEditName] = useState(player.name)
   const [confirmDelete, setConfirmDelete] = useState(confirmDeleteInitially)
   const [busy, setBusy] = useState(false)
+  const [savingName, setSavingName] = useState(false)
   const dialogRef = useRef<HTMLDivElement>(null)
   const nameInputRef = useRef<HTMLInputElement>(null)
+  const savedNameRef = useRef(player.name)
+  const savePromiseRef = useRef<Promise<boolean> | null>(null)
 
   const loadProfile = useCallback(async (signal?: AbortSignal) => {
     const response = await fetch(`/api/players/${player.id}/profile?recentLimit=10`, {
@@ -121,6 +124,7 @@ export function PlayerCardDialog({
     if (!response.ok || !body.profile) throw new Error(body.error || 'Could not load player profile.')
     setProfile(body.profile)
     setEditName(body.profile.name)
+    savedNameRef.current = body.profile.name
     setProfileError('')
     return body.profile
   }, [player.id])
@@ -139,25 +143,49 @@ export function PlayerCardDialog({
     return () => controller.abort()
   }, [confirmDeleteInitially, loadProfile, player.name])
 
-  const rename = async () => {
-    setBusy(true)
-    setProfileError('')
+  const saveName = () => {
+    if (savePromiseRef.current) return savePromiseRef.current
+    let name: string
     try {
-      const name = normalizePlayerName(editName)
-      const response = await fetch(`/api/players/${player.id}`, {
-        method: 'PATCH',
-        headers: { accept: 'application/json', 'content-type': 'application/json' },
-        body: JSON.stringify({ name }),
-      })
-      const body = await responseBody(response)
-      if (!response.ok) throw new Error(body.error || `Rename failed (${response.status}).`)
-      await onMutate()
-      await loadProfile()
+      name = normalizePlayerName(editName)
     } catch (reason) {
       setProfileError(reason instanceof Error ? reason.message : 'Could not rename player.')
-    } finally {
-      setBusy(false)
+      return Promise.resolve(false)
     }
+    if (name === savedNameRef.current) {
+      if (editName !== name) setEditName(name)
+      return Promise.resolve(true)
+    }
+    const operation = (async () => {
+      setSavingName(true)
+      setProfileError('')
+      try {
+        const response = await fetch(`/api/players/${player.id}`, {
+          method: 'PATCH',
+          headers: { accept: 'application/json', 'content-type': 'application/json' },
+          body: JSON.stringify({ name }),
+        })
+        const body = await responseBody(response)
+        if (!response.ok) throw new Error(body.error || `Rename failed (${response.status}).`)
+        await onMutate()
+        await loadProfile()
+        return true
+      } catch (reason) {
+        setProfileError(reason instanceof Error ? reason.message : 'Could not rename player.')
+        return false
+      } finally {
+        setSavingName(false)
+      }
+    })()
+    savePromiseRef.current = operation
+    void operation.finally(() => {
+      if (savePromiseRef.current === operation) savePromiseRef.current = null
+    })
+    return operation
+  }
+
+  const closeAfterSave = async () => {
+    if (await saveName()) onClose()
   }
 
   const remove = async () => {
@@ -180,13 +208,16 @@ export function PlayerCardDialog({
   }
 
   return createPortal(
-    <div className="profile-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+    <div className="profile-backdrop" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) void closeAfterSave()
+    }}>
       <div className="profile-dialog player-edit-dialog" role="dialog" aria-modal="true"
-        aria-labelledby="player-card-title" aria-busy={busy} tabIndex={-1} ref={dialogRef}
+        aria-label={`Player card for ${profile?.name ?? player.name}`}
+        aria-busy={busy || savingName} tabIndex={-1} ref={dialogRef}
         onKeyDown={(event) => {
           if (event.key === 'Escape') {
             event.preventDefault()
-            onClose()
+            void closeAfterSave()
             return
           }
           if (event.key !== 'Tab') return
@@ -204,68 +235,83 @@ export function PlayerCardDialog({
             first.focus()
           }
         }}>
-        <button type="button" className="profile-close" onClick={onClose} aria-label="Close player card">×</button>
-        <p className="eyebrow">Player #{player.id}</p>
-        <h2 id="player-card-title">Edit {profile?.name ?? player.name}</h2>
-        <form id={`player-name-form-${player.id}`} className="player-edit-form"
-          onSubmit={(event) => { event.preventDefault(); void rename() }}>
-          <label htmlFor="edit-player-name">Player name</label>
+        <button type="button" className="profile-close" onClick={() => void closeAfterSave()}
+          aria-label="Close player card">×</button>
+        <div className="player-card-identity">
+          <form className="player-edit-form"
+            onSubmit={(event) => { event.preventDefault(); void saveName() }}>
           <input id="edit-player-name" ref={nameInputRef} maxLength={80} value={editName}
-            onChange={(event) => setEditName(event.target.value)} />
-        </form>
+              aria-label="Player name" onChange={(event) => setEditName(event.target.value)}
+              onBlur={() => void saveName()} />
+          </form>
+          <p className="player-card-meta">
+            <span>#{player.id}</span>
+            <strong>{profile?.currentRating ?? player.currentRating} Elo</strong>
+          </p>
+        </div>
+        {savingName && <p className="player-save-status" role="status">Saving name…</p>}
         {profileError && <p className="games-message error" role="alert">{profileError}</p>}
         {!profile && !profileError && <p role="status">Loading player profile…</p>}
         {profile && <>
-          <p className="profile-summary"><strong>{profile.currentRating} Elo</strong> · Rank #{profile.rank} ·
+          <p className="profile-summary">Rank #{profile.rank} ·
             {' '}{profile.wins}-{profile.losses}-{profile.draws} ({profile.gamesPlayed} games)</p>
           {profile.ongoingGames.length > 0 && <>
-            <h3>Ongoing games</h3>
-            <div className="profile-game-strip" role="region" aria-label={`Ongoing games for ${profile.name}`} tabIndex={0}>
-              {profile.ongoingGames.map((game) => (
-                <GameCard key={game.id} game={game} management={false} />
-              ))}
-            </div>
-          </>}
-          <h3>Recent games</h3>
-          {profile.recentGames.length === 0
-            ? <p>No completed games yet. Baseline Elo is 700.</p>
-            : <div className="profile-game-strip" role="region" aria-label={`Recent games for ${profile.name}`} tabIndex={0}>
-                {profile.recentGames.slice(0, 10).map((game) => (
-                  <GameCard key={game.id} game={profileGameToGameCard(profile, game)} management={false} />
+            <section className="player-card-section">
+              <h3>Ongoing games</h3>
+              <div className="profile-game-strip" role="region" aria-label={`Ongoing games for ${profile.name}`} tabIndex={0}>
+                {profile.ongoingGames.map((game) => (
+                  <GameCard key={game.id} game={game} management={false} />
                 ))}
-              </div>}
-          <h3>Elo history</h3>
-          {profile.ratingHistory.length === 0
-            ? <p>No Elo history is available.</p>
-            : <div className="rating-history">
-                <Sparkline events={profile.ratingHistory} name={profile.name} />
-                <div className="rating-history-table-wrap">
-                  <table aria-label={`Elo history for ${profile.name}`}>
-                    <thead><tr><th>Date</th><th>Reason</th><th>Change</th><th>Elo</th></tr></thead>
-                    <tbody>{[...profile.ratingHistory].reverse().map((event) => (
-                      <tr key={event.id}>
-                        <td><time dateTime={event.recordedAt}>{new Date(event.recordedAt).toLocaleDateString()}</time></td>
-                        <td>{ratingReason(event.reason)}{event.gameId ? ` #${event.gameId}` : ''}</td>
-                        <td className={event.delta > 0 ? 'positive' : event.delta < 0 ? 'negative' : ''}>
-                          {event.delta > 0 ? '+' : ''}{event.delta}
-                        </td>
-                        <td>{event.rating}</td>
-                      </tr>
-                    ))}</tbody>
-                  </table>
+              </div>
+            </section>
+          </>}
+          <section className="player-card-section player-card-recent">
+            <h3>Recent games</h3>
+            {profile.recentGames.length === 0
+              ? <p>No completed games yet. Baseline Elo is 700.</p>
+              : <div className="profile-game-strip" role="region" aria-label={`Recent games for ${profile.name}`} tabIndex={0}>
+                  {profile.recentGames.slice(0, 10).map((game) => (
+                    <GameCard key={game.id} game={profileGameToGameCard(profile, game)} management={false} />
+                  ))}
                 </div>
-              </div>}
+            }
+          </section>
+          <section className="player-card-section player-card-history">
+            <h3>Elo history</h3>
+            {profile.ratingHistory.length === 0
+              ? <p>No Elo history is available.</p>
+              : <div className="rating-history">
+                  <Sparkline events={profile.ratingHistory} name={profile.name} />
+                  <div className="rating-history-table-wrap">
+                    <table aria-label={`Elo history for ${profile.name}`}>
+                      <thead><tr><th>Date</th><th>Reason</th><th>Change</th><th>Elo</th></tr></thead>
+                      <tbody>{[...profile.ratingHistory].reverse().map((event) => (
+                        <tr key={event.id}>
+                          <td><time dateTime={event.recordedAt}>{new Date(event.recordedAt).toLocaleDateString()}</time></td>
+                          <td>{ratingReason(event.reason)}{event.gameId ? ` #${event.gameId}` : ''}</td>
+                          <td className={event.delta > 0 ? 'positive' : event.delta < 0 ? 'negative' : ''}>
+                            {event.delta > 0 ? '+' : ''}{event.delta}
+                          </td>
+                          <td>{event.rating}</td>
+                        </tr>
+                      ))}</tbody>
+                    </table>
+                  </div>
+                </div>}
+          </section>
         </>}
         <div className="player-delete-zone">
           {!confirmDelete
             ? <div className="player-card-actions">
-                <button type="button" className="danger" onClick={() => setConfirmDelete(true)}>Delete player</button>
-                <button type="submit" form={`player-name-form-${player.id}`} disabled={busy}>Save name</button>
+                <button type="button" className="danger" onClick={() => setConfirmDelete(true)}>
+                  <span aria-hidden="true">🗑</span> Delete player
+                </button>
               </div>
             : <>
                 <p><strong>Delete {profile?.name ?? player.name}?</strong> Only players with no game references and baseline-only rating history can be deleted.</p>
                 <div className="player-card-actions">
-                  <button type="button" className="danger" disabled={busy} onClick={() => void remove()}>Confirm delete</button>
+                  <button type="button" className="danger" disabled={busy || savingName}
+                    onClick={() => void remove()}>Confirm delete</button>
                   <button type="button" className="secondary" onClick={() => setConfirmDelete(false)}>Cancel delete</button>
                 </div>
               </>}
