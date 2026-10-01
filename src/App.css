@@ -317,6 +317,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .leaderboard { min-height: 0; height: 100%; padding: 18px; overflow: auto; scrollbar-gutter: stable; }
 .leaderboard h2, .profile-dialog h2, .profile-dialog h3, .producer h2, .section-heading h2 { margin: 0; font-family: Georgia, serif; }
 .leaderboard h2 { font-size: 1.65rem; }
+.leaderboard-heading { align-items: flex-start; }
 .leaderboard-intro { margin: 4px 0 0; color: var(--muted); font-size: .78rem; }
 .leaderboard-table-wrap { margin-top: 12px; overflow-x: auto; }
 .leaderboard-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: .82rem; }
@@ -346,6 +347,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .modal-close { position: absolute; z-index: 2; right: 14px; top: 10px; padding: 3px 12px; font-size: 1.7rem; }
 .modal-dialog > h2 { margin: 0 52px 24px 0; font-family: Georgia, serif; }
 .profile-dialog { width: min(880px, 100%); }
+.add-player-dialog { width: min(440px, 100%); }
 .profile-summary { font-size: 1.05rem; }
 
 .producer { min-height: 0; padding: 14px; overflow-y: auto; scrollbar-gutter: stable; }
@@ -558,8 +560,9 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 @media print {
   @page { margin: .5in; }
   body { background: #fff !important; }
-  .dashboard > :not(.main-column), .brand-header, .leaderboard, .producer-form, .producer-actions, .empty-card, .modal-backdrop, .camera-interaction-layer, .players-panel, .dashboard-tabs, .camera-debug-strip, .camera-action-notice, .check-in-notice { display: none !important; }
+  .dashboard > :not(.main-column), .brand-header, .leaderboard, .producer-form, .producer-actions, .empty-card, .camera-interaction-layer, .players-panel, .dashboard-tabs, .camera-debug-strip, .camera-action-notice, .check-in-notice, .modal-close { display: none !important; }
   .shell, .dashboard, .main-column, .tabbed-workspace, .dashboard-tab-panel, .players-layout, .producer, .qr-card-wrap { display: block !important; width: 100%; height: auto; margin: 0; padding: 0; border: 0; box-shadow: none; background: #fff; overflow: visible; }
+  .modal-backdrop, .modal-dialog { position: static; display: block; width: 100%; max-height: none; margin: 0; padding: 0; border: 0; box-shadow: none; background: #fff; overflow: visible; }
   .qr-card-wrap { display: block; }
   .qr-card { width: 2in; margin: 0 auto; padding: 0; break-inside: avoid; }
   .marker-substrate, .qr-card img { width: 2in; height: 2in; }

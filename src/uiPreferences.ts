@@ -1,7 +1,7 @@
 export const UI_PREFERENCES_KEY = 'sunset-chess:preferences'
 export const UI_PREFERENCES_VERSION = 1
 
-export type DashboardTab = 'leaderboard' | 'recent-games' | 'players'
+export type DashboardTab = 'leaderboard' | 'recent-games'
 export type MarkerShape = 'square' | 'round'
 
 export interface UiPreferences {
@@ -23,16 +23,18 @@ export function parseUiPreferences(raw: string | null): UiPreferences {
   const parsed: unknown = JSON.parse(raw)
   if (!parsed || typeof parsed !== 'object') throw new Error('Settings are not an object.')
   const value = parsed as Partial<UiPreferences>
+  const selectedTab = (parsed as { selectedTab?: unknown }).selectedTab
   if (value.version !== UI_PREFERENCES_VERSION
     || typeof value.showDebugTools !== 'boolean'
-    || !['leaderboard', 'recent-games', 'players'].includes(value.selectedTab ?? '')
+    || typeof selectedTab !== 'string'
+    || !['leaderboard', 'recent-games', 'players'].includes(selectedTab)
     || !['square', 'round'].includes(value.markerShape ?? '')) {
     throw new Error('Settings use an unsupported or invalid format.')
   }
   return {
     version: UI_PREFERENCES_VERSION,
     showDebugTools: value.showDebugTools,
-    selectedTab: value.selectedTab,
+    selectedTab: selectedTab === 'players' ? 'leaderboard' : selectedTab,
     markerShape: value.markerShape,
   } as UiPreferences
 }

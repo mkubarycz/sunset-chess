@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { PlayerCardDialog, type LeaderboardEntry } from './PlayerCardDialog'
 
-export function Leaderboard({ refreshKey, variant = 'default' }: {
+export function Leaderboard({ refreshKey, variant = 'default', onAddPlayer, printSticker }: {
   refreshKey: number
   variant?: 'default' | 'rail'
+  onAddPlayer?: () => void
+  printSticker?: (player: LeaderboardEntry) => Promise<void>
 }) {
   const [entries, setEntries] = useState<LeaderboardEntry[]>([])
   const [loading, setLoading] = useState(true)
@@ -40,10 +42,13 @@ export function Leaderboard({ refreshKey, variant = 'default' }: {
   return (
     <>
       <section className={`leaderboard leaderboard-${variant}`} aria-labelledby="leaderboard-heading" aria-busy={loading}>
-        <div>
-          <p className="eyebrow">Ratings</p>
-          <h2 id="leaderboard-heading">Elo Leaderboard</h2>
-          <p className="leaderboard-intro">Current club standings</p>
+        <div className="section-heading leaderboard-heading">
+          <div>
+            <p className="eyebrow">Ratings</p>
+            <h2 id="leaderboard-heading">Elo Leaderboard</h2>
+            <p className="leaderboard-intro">Current club standings</p>
+          </div>
+          {onAddPlayer && <button type="button" onClick={onAddPlayer}>Add player</button>}
         </div>
         <div aria-live="polite">
           {loading && entries.length === 0 && <p>Loading leaderboard…</p>}
@@ -83,7 +88,8 @@ export function Leaderboard({ refreshKey, variant = 'default' }: {
           </div>
         )}
       </section>
-      {selected && <PlayerCardDialog key={selected.id} player={selected} onClose={close} onMutate={() => refresh()} />}
+      {selected && <PlayerCardDialog key={selected.id} player={selected} onClose={close}
+        onMutate={() => refresh()} printSticker={printSticker} />}
     </>
   )
 }

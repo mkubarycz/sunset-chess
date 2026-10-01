@@ -26,4 +26,11 @@ describe('versioned UI preferences', () => {
       legacyOffsetPercent: 5,
     }))).toEqual(defaultUiPreferences())
   })
+
+  it('moves the removed Players tab preference to Leaderboard', () => {
+    expect(parseUiPreferences(JSON.stringify({
+      ...defaultUiPreferences(),
+      selectedTab: 'players',
+    })).selectedTab).toBe('leaderboard')
+  })
 })

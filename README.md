@@ -4,14 +4,13 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
 
 ## Features
 
-- A full-height dashboard with an accessible Leaderboard / Recent Games / Players
+- A full-height dashboard with an accessible Leaderboard / Recent Games
   tabbed primary workspace and one persistent, independently scrolling Ongoing
-  Games rail. The Players tab pairs Add New Player with a responsive roster.
-  Player names in both the roster and leaderboard open the same reusable,
+  Games rail. The Leaderboard provides Add player in a shared modal alongside
+  the ranked roster. Leaderboard rows open a reusable,
   focus-trapped player card with an auto-saving name field, compact ID/Elo
   identity, guarded deletion, ongoing table assignments, and recent game cards.
-  Each roster row's keyboard-operable gear menu also provides Edit and one-inch
-  round-sticker printing.
+  Every player card also provides one-inch round-sticker printing.
 - Compact Start/Stop Camera and Settings controls share the responsive header,
   leaving the primary tab workspace at full height. Camera state and recovery
   detail remain available to assistive technology, with compact notices shown
@@ -605,11 +604,13 @@ The bounded limit is 1–200. `GET /api/players/:id/profile?recentLimit=10`
 returns record/rank, the player's ongoing games, newest-first non-cancelled
 completed games (maximum 50), and full chronological Elo history. Malformed
 bounds return 400 and missing players 404.
-The Elo Leaderboard occupies its dashboard tab. Rows are native keyboard
-buttons and open the shared player card used by the Players tab. The ARIA modal
+The Elo Leaderboard occupies its dashboard tab, with player creation available
+from its Add player modal. Rows are native keyboard buttons and open the shared
+player card. The ARIA modal
 supports focus entry/return, Escape/close/backdrop dismissal, player editing,
 guarded deletion, ongoing game cards, and up to ten horizontally scrolling
-recent game cards. A chronological Elo ledger appears below the game cards.
+recent game cards. It also prints a one-inch round player sticker. A
+chronological Elo ledger appears below the game cards.
 Name edits save on blur or before the modal
 closes, and the footer retains a text-only Delete player action.
 

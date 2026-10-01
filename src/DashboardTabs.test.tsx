@@ -10,7 +10,6 @@ function Harness() {
   return <DashboardTabs selected={selected} onSelect={setSelected}>{{
     leaderboard: <p>Ranks</p>,
     'recent-games': <p>History</p>,
-    players: <p>Roster</p>,
   }}</DashboardTabs>
 }
 
@@ -22,7 +21,7 @@ describe('DashboardTabs', () => {
     fireEvent.keyDown(leaderboard, { key: 'ArrowRight' })
     expect(screen.getByRole('tab', { name: 'Recent Games' })).toHaveAttribute('aria-selected', 'true')
     fireEvent.keyDown(document.activeElement as Element, { key: 'End' })
-    expect(screen.getByRole('tab', { name: 'Players' })).toHaveFocus()
+    expect(screen.getByRole('tab', { name: 'Recent Games' })).toHaveFocus()
     fireEvent.keyDown(document.activeElement as Element, { key: 'Home' })
     expect(leaderboard).toHaveFocus()
   })

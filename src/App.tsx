@@ -136,7 +136,7 @@ import { encodeQrDataUrl } from './qrArtwork'
 import { Leaderboard } from './Leaderboard'
 import { SunsetChessLogo } from './SunsetChessLogo'
 import { DashboardTabs } from './DashboardTabs'
-import { PlayersPanel } from './PlayersPanel'
+import { ModalDialog } from './ModalDialog'
 import { SettingsMenu } from './SettingsMenu'
 import {
   loadUiPreferences,
@@ -354,6 +354,7 @@ export default function App({
   const [producerError, setProducerError] = useState('')
   const [player, setPlayer] = useState<PlayerPayload | null>(null)
   const [qrDataUrl, setQrDataUrl] = useState('')
+  const [addPlayerOpen, setAddPlayerOpen] = useState(false)
   const [, setResolverRevision] = useState(0)
   const [games, setGames] = useState<OngoingGame[]>([])
   const [recentGames, setRecentGames] = useState<OngoingGame[]>([])
@@ -463,6 +464,8 @@ export default function App({
   const diagnosticSessionRef = useRef<DiagnosticSession | null>(null)
   const diagnosticRecorderRef = useRef<MediaRecorder | null>(null)
   const diagnosticStreamRef = useRef<MediaStream | null>(null)
+  const addPlayerInputRef = useRef<HTMLInputElement>(null)
+  const addPlayerReturnFocusRef = useRef<HTMLElement | null>(null)
   const diagnosticChunksRef = useRef<Blob[]>([])
   const diagnosticUrlsRef = useRef(new DiagnosticUrls())
   const finalizeDiagnosticRef = useRef<(() => void) | null>(null)
@@ -2457,14 +2460,17 @@ export default function App({
     </section>
   )
 
-  const playerCreator = (
+  const playerCreator = addPlayerOpen && (
+    <ModalDialog className=" add-player-dialog"
+      ariaLabel="Add player" initialFocusRef={addPlayerInputRef}
+      returnFocusRef={addPlayerReturnFocusRef} onClose={() => setAddPlayerOpen(false)}>
     <section className="producer" aria-labelledby="producer-heading">
       <div className="producer-form">
         <p className="eyebrow">Player QR</p>
         <h2 id="producer-heading">Add New Player</h2>
         <p>Create a local QR identity.</p>
         <label htmlFor="player-name">Player name</label>
-        <input id="player-name" value={name} maxLength={81}
+        <input id="player-name" ref={addPlayerInputRef} value={name} maxLength={81}
           onChange={(event) => setName(event.target.value)}
           onKeyDown={(event) => { if (event.key === 'Enter') void generatePlayerQr() }} />
         <fieldset className="marker-shape">
@@ -2500,6 +2506,7 @@ export default function App({
         </> : <p className="empty-card">Generated card appears here.</p>}
       </div>
     </section>
+    </ModalDialog>
   )
 
   return (
@@ -2592,17 +2599,14 @@ export default function App({
             selected={preferences.selectedTab}
             onSelect={(selectedTab) => updatePreferences({ selectedTab })}
           >{{
-            leaderboard: <Leaderboard refreshKey={leaderboardRefresh} variant="rail" />,
+            leaderboard: <Leaderboard refreshKey={leaderboardRefresh} variant="rail"
+              onAddPlayer={() => {
+                addPlayerReturnFocusRef.current = document.activeElement as HTMLElement | null
+                setAddPlayerOpen(true)
+              }} />,
             'recent-games': recentGamesPanel,
-            players: <div className="players-layout">
-              <PlayersPanel refreshKey={leaderboardRefresh} onMutate={() => {
-                playerCacheRef.current.clear()
-                setLeaderboardRefresh((value) => value + 1)
-                void refreshGames(true)
-              }} />
-              {playerCreator}
-            </div>,
           }}</DashboardTabs>
+          {playerCreator}
         </section>
 
         <aside className="game-column ongoing-column" aria-labelledby="ongoing-games-heading">

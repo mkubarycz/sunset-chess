@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { GameCard, type OngoingGame } from './GameCard'
 import { ModalDialog } from './ModalDialog'
+import { printRoundPlayerSticker } from './playerSticker'
 import { normalizePlayerName } from './qrPayload'
 
 export interface LeaderboardEntry {
@@ -80,11 +81,13 @@ export function PlayerCardDialog({
   onClose,
   onMutate,
   confirmDeleteInitially = false,
+  printSticker = printRoundPlayerSticker,
 }: {
   player: LeaderboardEntry
   onClose: () => void
   onMutate: () => void | Promise<void>
   confirmDeleteInitially?: boolean
+  printSticker?: (player: LeaderboardEntry) => Promise<void>
 }) {
   const [profile, setProfile] = useState<PlayerProfile | null>(null)
   const [profileError, setProfileError] = useState('')
@@ -184,6 +187,19 @@ export function PlayerCardDialog({
     }
   }
 
+  const print = async () => {
+    setBusy(true)
+    setProfileError('')
+    try {
+      if (!await saveName()) return
+      await printSticker({ ...player, name: savedNameRef.current })
+    } catch (reason) {
+      setProfileError(reason instanceof Error ? reason.message : 'Could not generate the round sticker.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <ModalDialog className=" profile-dialog player-edit-dialog"
       ariaLabel={`Player card for ${profile?.name ?? player.name}`}
@@ -254,6 +270,10 @@ export function PlayerCardDialog({
         <div className="player-delete-zone">
           {!confirmDelete
             ? <div className="player-card-actions">
+                <button type="button" className="secondary" disabled={busy || savingName}
+                  onClick={() => void print()}>
+                  Print sticker
+                </button>
                 <button type="button" className="danger" onClick={() => setConfirmDelete(true)}>
                   Delete player
                 </button>

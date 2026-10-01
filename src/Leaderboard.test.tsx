@@ -7,6 +7,8 @@ afterEach(() => vi.unstubAllGlobals())
 
 describe('Leaderboard', () => {
   it('renders rankings and opens an accessible history profile that closes with Escape', async () => {
+    const onAddPlayer = vi.fn()
+    const printSticker = vi.fn().mockResolvedValue(undefined)
     const responses = [
       {
         leaderboard: [
@@ -40,7 +42,9 @@ describe('Leaderboard', () => {
       ok: true,
       json: () => Promise.resolve(responses.shift()),
     })))
-    render(<Leaderboard refreshKey={0} />)
+    render(<Leaderboard refreshKey={0} onAddPlayer={onAddPlayer} printSticker={printSticker} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Add player' }))
+    expect(onAddPlayer).toHaveBeenCalledOnce()
     expect(await screen.findByRole('table', { name: 'Elo rankings' })).toBeInTheDocument()
     expect(screen.getAllByRole('columnheader').map((header) => header.textContent))
       .toEqual(['Rank', 'Player', 'Elo', 'Record'])
@@ -65,10 +69,14 @@ describe('Leaderboard', () => {
     expect(screen.getByRole('article', {
       name: 'Table 1: Alice plays black, Bob plays white',
     })).toBeVisible()
-    expect(screen.getByRole('img', { name: 'Bob Elo history from 700 to 716' })).toBeVisible()
     expect(screen.getByRole('table', { name: 'Elo history for Bob' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Print sticker' }))
+    await waitFor(() => expect(printSticker).toHaveBeenCalledWith(expect.objectContaining({
+      id: 1001,
+      name: 'Bob',
+    })))
     fireEvent.keyDown(dialog, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-    expect(bob).toHaveFocus()
+    await waitFor(() => expect(bob).toHaveFocus())
   })
 })

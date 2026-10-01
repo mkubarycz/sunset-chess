@@ -4,7 +4,6 @@ import type { DashboardTab } from './uiPreferences'
 const tabs: Array<{ id: DashboardTab; label: string }> = [
   { id: 'leaderboard', label: 'Leaderboard' },
   { id: 'recent-games', label: 'Recent Games' },
-  { id: 'players', label: 'Players' },
 ]
 
 export function DashboardTabs({

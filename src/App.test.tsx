@@ -1695,7 +1695,7 @@ describe('scanner and player producer', () => {
       qrEncoder={qrEncoder}
       createPlayer={createPlayer}
     />)
-    await userEvent.click(screen.getByRole('tab', { name: 'Players' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Add player' }))
     await userEvent.click(screen.getByRole('button', { name: 'Generate' }))
     expect(screen.getByText('Enter a player name.')).toHaveAttribute('role', 'alert')
     await userEvent.type(screen.getByLabelText('Player name'), ' Ada ')
@@ -1736,7 +1736,7 @@ describe('scanner and player producer', () => {
       qrEncoder={qrEncoder}
       fetchGames={vi.fn().mockResolvedValue([])}
     />)
-    await userEvent.click(screen.getByRole('tab', { name: 'Players' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Add player' }))
     await userEvent.type(screen.getByLabelText('Player name'), 'Ada')
     await userEvent.click(screen.getByRole('button', { name: 'Generate' }))
     expect(await screen.findByText('Database unavailable.')).toHaveAttribute('role', 'alert')
@@ -1755,7 +1755,7 @@ describe('scanner and player producer', () => {
       qrEncoder={vi.fn().mockRejectedValue(new Error('QR encoder failed.'))}
       fetchGames={vi.fn().mockResolvedValue([])}
     />)
-    await userEvent.click(screen.getByRole('tab', { name: 'Players' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Add player' }))
     await userEvent.type(screen.getByLabelText('Player name'), 'Ada')
     await userEvent.click(screen.getByRole('button', { name: 'Generate' }))
     expect(await screen.findByText('QR encoder failed.')).toHaveAttribute('role', 'alert')
@@ -1773,7 +1773,7 @@ describe('scanner and player producer', () => {
       qrEncoder={vi.fn().mockRejectedValue(new Error('QR encoder failed.'))}
       fetchGames={vi.fn().mockResolvedValue([])}
     />)
-    await userEvent.click(screen.getByRole('tab', { name: 'Players' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Add player' }))
     await userEvent.type(screen.getByLabelText('Player name'), 'Ada')
     await userEvent.click(screen.getByRole('button', { name: 'Generate' }))
     expect(await screen.findByText(
@@ -1796,7 +1796,7 @@ describe('scanner and player producer', () => {
       createPlayer={createPlayer}
       deletePlayer={deletePlayer}
     />)
-    await userEvent.click(screen.getByRole('tab', { name: 'Players' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Add player' }))
     const input = screen.getByLabelText('Player name')
     await userEvent.type(input, 'First')
     await userEvent.click(screen.getByRole('button', { name: 'Generate' }))
@@ -1977,7 +1977,7 @@ describe('ongoing games', () => {
     expect(ongoingColumn).toContainElement(liveGames)
     expect(within(liveGames!).getByRole('heading', { level: 2 })).toHaveTextContent('Ongoing Games')
     expect(screen.getAllByRole('tab').map((tab) => tab.textContent))
-      .toEqual(['Leaderboard', 'Recent Games', 'Players'])
+      .toEqual(['Leaderboard', 'Recent Games'])
     expect(main?.nextElementSibling).toBe(ongoingColumn)
     expect(document.querySelector('.brand-header')!.compareDocumentPosition(leaderboard!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(within(liveGames!).getByRole('region', { name: 'Ongoing games' })).toBe(ongoingList)
