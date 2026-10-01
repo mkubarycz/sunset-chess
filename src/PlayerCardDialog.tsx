@@ -76,6 +76,15 @@ function ratingReason(reason: RatingEvent['reason']) {
   return 'Starting rating'
 }
 
+function ordinal(value: number) {
+  const remainder = value % 100
+  if (remainder >= 11 && remainder <= 13) return `${value}th`
+  if (value % 10 === 1) return `${value}st`
+  if (value % 10 === 2) return `${value}nd`
+  if (value % 10 === 3) return `${value}rd`
+  return `${value}th`
+}
+
 export function PlayerCardDialog({
   player,
   onClose,
@@ -214,15 +223,19 @@ export function PlayerCardDialog({
           </form>
           <p className="player-card-meta">
             <span>#{player.id}</span>
-            <strong>{profile?.currentRating ?? player.currentRating} Elo</strong>
           </p>
         </div>
         {savingName && <p className="player-save-status" role="status">Saving name…</p>}
         {profileError && <p className="games-message error" role="alert">{profileError}</p>}
         {!profile && !profileError && <p role="status">Loading player profile…</p>}
         {profile && <>
-          <p className="profile-summary">Rank #{profile.rank} ·
-            {' '}{profile.wins}-{profile.losses}-{profile.draws} ({profile.gamesPlayed} games)</p>
+          <p className="profile-summary">
+            <strong>{profile.currentRating} Elo</strong>
+            <span aria-hidden="true"> · </span>
+            Class Rank {ordinal(profile.rank)}
+            <span aria-hidden="true"> · </span>
+            All Time Record {profile.wins}-{profile.losses}-{profile.draws} ({profile.gamesPlayed} Games)
+          </p>
           {profile.ongoingGames.length > 0 && <>
             <section className="player-card-section">
               <h3>Ongoing games</h3>

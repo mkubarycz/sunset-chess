@@ -53,7 +53,6 @@ describe('PlayersPanel', () => {
     expect(dialog).toContainElement(screen.getByLabelText('Player name'))
     expect(within(dialog).queryByRole('heading', { name: /Edit Alice/ })).not.toBeInTheDocument()
     expect(within(dialog).getByText('#1000')).toBeVisible()
-    expect(within(dialog).getByText('716 Elo', { selector: '.player-card-meta strong' })).toBeVisible()
     const ongoingGames = screen.getByRole('region', { name: 'Ongoing games for Alice' })
     expect(ongoingGames.querySelectorAll('.game-card')).toHaveLength(1)
     expect(within(ongoingGames).getByRole('article', {
@@ -74,6 +73,9 @@ describe('PlayersPanel', () => {
     expect(within(recentGames).queryByRole('button')).not.toBeInTheDocument()
     expect(screen.queryByRole('img', { name: /Elo history/ })).not.toBeInTheDocument()
     expect(screen.getByRole('table', { name: 'Elo history for Alice' })).toBeVisible()
+    expect(dialog.querySelector('.profile-summary')).toHaveTextContent(
+      '716 Elo · Class Rank 1st · All Time Record 1-0-0 (1 Games)',
+    )
     expect(screen.queryByRole('button', { name: 'Save name' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Delete player' })).toHaveTextContent(/^Delete player$/)
     expect(screen.getByRole('button', { name: 'Close player card' })).toHaveTextContent('×')

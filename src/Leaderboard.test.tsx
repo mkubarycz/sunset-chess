@@ -58,6 +58,9 @@ describe('Leaderboard', () => {
     expect(dialog).toHaveAccessibleName('Player card for Bob')
     expect(dialog).toHaveClass('player-edit-dialog')
     expect(screen.getByLabelText('Player name')).toHaveValue('Bob')
+    expect(dialog.querySelector('.profile-summary')).toHaveTextContent(
+      '716 Elo · Class Rank 1st · All Time Record 1-0-0 (1 Games)',
+    )
     expect(screen.queryByRole('heading', { name: /Edit Bob/ })).not.toBeInTheDocument()
     const ongoingGames = screen.getByRole('region', { name: 'Ongoing games for Bob' })
     expect(ongoingGames.querySelectorAll('.game-card')).toHaveLength(1)

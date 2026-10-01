@@ -348,7 +348,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .modal-dialog > h2 { margin: 0 52px 24px 0; font-family: Georgia, serif; }
 .profile-dialog { width: min(880px, 100%); }
 .add-player-dialog { width: min(440px, 100%); }
-.profile-summary { font-size: 1.05rem; }
+.profile-summary { margin-top: 8px; font-size: 1.05rem; font-variant-numeric: tabular-nums; }
 
 .producer { min-height: 0; padding: 14px; overflow-y: auto; scrollbar-gutter: stable; }
 .producer h2 { font-size: 1.25rem; }
@@ -483,9 +483,8 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .player-card-identity { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 16px; padding-right: 54px; }
 .player-edit-form { min-width: 0; margin: 0; }
 .player-edit-form input { width: 100%; min-width: 0; border: 1px solid #65717c; border-radius: var(--radius-sm); padding: 11px 12px; color: var(--ivory); background: var(--ink-950); font-size: 1.05rem; font-weight: 750; }
-.player-card-meta { display: flex; align-items: baseline; gap: 10px; margin: 0; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.player-card-meta { margin: 0; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .player-card-meta span { color: var(--muted); font-size: .78rem; font-weight: 800; }
-.player-card-meta strong { font-size: 1rem; }
 .player-save-status { min-height: 1em; margin: 5px 0 0; color: var(--muted); font-size: .68rem; }
 .player-card-section { margin-top: 22px; }
 .player-card-section > h3 { margin: 0 0 10px; }
@@ -543,7 +542,6 @@ button:disabled { cursor: not-allowed; opacity: .5; }
   .profile-dialog { max-height: calc(100dvh - 16px); padding: 22px 16px; }
   .modal-backdrop { padding: 8px; }
   .player-card-identity { grid-template-columns: minmax(0, 1fr); gap: 8px; padding-right: 48px; }
-  .player-card-meta { justify-content: flex-start; }
   .profile-game-strip > .game-card { flex-basis: calc(100vw - 58px); }
   .ongoing-column { grid-column: 1; grid-row: auto; }
   .game-column { min-height: 400px; max-height: 70dvh; }
