@@ -609,8 +609,8 @@ The Elo Leaderboard occupies its dashboard tab. Rows are native keyboard
 buttons and open the shared player card used by the Players tab. The ARIA modal
 supports focus entry/return, Escape/close/backdrop dismissal, player editing,
 guarded deletion, ongoing game cards, and up to ten horizontally scrolling
-recent game cards. An accessible Elo-history chart and chronological rating
-ledger appear below the game cards. Name edits save on blur or before the modal
+recent game cards. A chronological Elo ledger appears below the game cards.
+Name edits save on blur or before the modal
 closes, and the footer retains a text-only Delete player action.
 
 Player cards, seat assignment, and game cancellation use one shared modal

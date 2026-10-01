@@ -68,24 +68,6 @@ function profileGameToGameCard(
   }
 }
 
-function Sparkline({ events, name }: { events: RatingEvent[]; name: string }) {
-  const values = events.map((event) => event.rating)
-  if (values.length === 0) return null
-  const minimum = Math.min(...values)
-  const maximum = Math.max(...values)
-  const points = values.map((rating, index) => {
-    const x = values.length === 1 ? 50 : (index / (values.length - 1)) * 100
-    const y = maximum === minimum ? 20 : 38 - ((rating - minimum) / (maximum - minimum)) * 36
-    return `${x},${y}`
-  }).join(' ')
-  return (
-    <svg className="rating-sparkline" viewBox="0 0 100 40" role="img"
-      aria-label={`${name} Elo history from ${values[0]} to ${values.at(-1)}`}>
-      <polyline points={points} fill="none" stroke="currentColor" strokeWidth="2" vectorEffect="non-scaling-stroke" />
-    </svg>
-  )
-}
-
 function ratingReason(reason: RatingEvent['reason']) {
   if (reason === 'game') return 'Game result'
   if (reason === 'compensation') return 'Cancelled game'
@@ -251,7 +233,6 @@ export function PlayerCardDialog({
             {profile.ratingHistory.length === 0
               ? <p>No Elo history is available.</p>
               : <div className="rating-history">
-                  <Sparkline events={profile.ratingHistory} name={profile.name} />
                   <div className="rating-history-table-wrap">
                     <table aria-label={`Elo history for ${profile.name}`}>
                       <thead><tr><th>Date</th><th>Reason</th><th>Change</th><th>Elo</th></tr></thead>

@@ -72,7 +72,7 @@ describe('PlayersPanel', () => {
     expect(within(recentGames).getByText('W +16')).toBeVisible()
     expect(within(recentGames).getByText('L -16')).toBeVisible()
     expect(within(recentGames).queryByRole('button')).not.toBeInTheDocument()
-    expect(screen.getByRole('img', { name: 'Alice Elo history from 700 to 716' })).toBeVisible()
+    expect(screen.queryByRole('img', { name: /Elo history/ })).not.toBeInTheDocument()
     expect(screen.getByRole('table', { name: 'Elo history for Alice' })).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Save name' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Delete player' })).toHaveTextContent(/^Delete player$/)
