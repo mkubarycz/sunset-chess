@@ -68,6 +68,31 @@ function profileGameToGameCard(
   }
 }
 
+function Sparkline({ events, name }: { events: RatingEvent[]; name: string }) {
+  const values = events.map((event) => event.rating)
+  if (values.length === 0) return null
+  const minimum = Math.min(...values)
+  const maximum = Math.max(...values)
+  const points = values.map((rating, index) => {
+    const x = values.length === 1 ? 50 : (index / (values.length - 1)) * 100
+    const y = maximum === minimum ? 20 : 38 - ((rating - minimum) / (maximum - minimum)) * 36
+    return `${x},${y}`
+  }).join(' ')
+  return (
+    <svg className="rating-sparkline" viewBox="0 0 100 40" role="img"
+      aria-label={`${name} Elo history from ${values[0]} to ${values.at(-1)}`}>
+      <polyline points={points} fill="none" stroke="currentColor" strokeWidth="2" vectorEffect="non-scaling-stroke" />
+    </svg>
+  )
+}
+
+function ratingReason(reason: RatingEvent['reason']) {
+  if (reason === 'game') return 'Game result'
+  if (reason === 'compensation') return 'Cancelled game'
+  if (reason === 'migration') return 'Imported rating'
+  return 'Starting rating'
+}
+
 export function PlayerCardDialog({
   player,
   onClose,
@@ -182,13 +207,11 @@ export function PlayerCardDialog({
         <button type="button" className="profile-close" onClick={onClose} aria-label="Close player card">×</button>
         <p className="eyebrow">Player #{player.id}</p>
         <h2 id="player-card-title">Edit {profile?.name ?? player.name}</h2>
-        <form className="player-edit-form" onSubmit={(event) => { event.preventDefault(); void rename() }}>
+        <form id={`player-name-form-${player.id}`} className="player-edit-form"
+          onSubmit={(event) => { event.preventDefault(); void rename() }}>
           <label htmlFor="edit-player-name">Player name</label>
-          <div>
-            <input id="edit-player-name" ref={nameInputRef} maxLength={80} value={editName}
-              onChange={(event) => setEditName(event.target.value)} />
-            <button type="submit" disabled={busy}>Save name</button>
-          </div>
+          <input id="edit-player-name" ref={nameInputRef} maxLength={80} value={editName}
+            onChange={(event) => setEditName(event.target.value)} />
         </form>
         {profileError && <p className="games-message error" role="alert">{profileError}</p>}
         {!profile && !profileError && <p role="status">Loading player profile…</p>}
@@ -211,14 +234,40 @@ export function PlayerCardDialog({
                   <GameCard key={game.id} game={profileGameToGameCard(profile, game)} management={false} />
                 ))}
               </div>}
+          <h3>Elo history</h3>
+          {profile.ratingHistory.length === 0
+            ? <p>No Elo history is available.</p>
+            : <div className="rating-history">
+                <Sparkline events={profile.ratingHistory} name={profile.name} />
+                <div className="rating-history-table-wrap">
+                  <table aria-label={`Elo history for ${profile.name}`}>
+                    <thead><tr><th>Date</th><th>Reason</th><th>Change</th><th>Elo</th></tr></thead>
+                    <tbody>{[...profile.ratingHistory].reverse().map((event) => (
+                      <tr key={event.id}>
+                        <td><time dateTime={event.recordedAt}>{new Date(event.recordedAt).toLocaleDateString()}</time></td>
+                        <td>{ratingReason(event.reason)}{event.gameId ? ` #${event.gameId}` : ''}</td>
+                        <td className={event.delta > 0 ? 'positive' : event.delta < 0 ? 'negative' : ''}>
+                          {event.delta > 0 ? '+' : ''}{event.delta}
+                        </td>
+                        <td>{event.rating}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              </div>}
         </>}
         <div className="player-delete-zone">
           {!confirmDelete
-            ? <button type="button" className="danger" onClick={() => setConfirmDelete(true)}>Delete player</button>
+            ? <div className="player-card-actions">
+                <button type="button" className="danger" onClick={() => setConfirmDelete(true)}>Delete player</button>
+                <button type="submit" form={`player-name-form-${player.id}`} disabled={busy}>Save name</button>
+              </div>
             : <>
                 <p><strong>Delete {profile?.name ?? player.name}?</strong> Only players with no game references and baseline-only rating history can be deleted.</p>
-                <button type="button" className="danger" disabled={busy} onClick={() => void remove()}>Confirm delete</button>
-                <button type="button" className="secondary" onClick={() => setConfirmDelete(false)}>Cancel delete</button>
+                <div className="player-card-actions">
+                  <button type="button" className="danger" disabled={busy} onClick={() => void remove()}>Confirm delete</button>
+                  <button type="button" className="secondary" onClick={() => setConfirmDelete(false)}>Cancel delete</button>
+                </div>
               </>}
         </div>
       </div>

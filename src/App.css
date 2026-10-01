@@ -371,10 +371,12 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .games-message { margin: 18px 0 0; color: var(--muted); font-size: .78rem; }
 .games-list { min-width: 0; min-height: 0; display: flex; flex: 1 1 auto; flex-direction: column; gap: 9px; margin-top: 10px; padding-right: 3px; overflow-x: hidden; overflow-y: auto; scrollbar-gutter: stable; }
 .game-card { width: 100%; min-width: 0; flex: 0 0 auto; overflow: visible; border: 1px solid #4a5560; border-radius: var(--radius-sm); background: #0d1015; transition: border-color 180ms ease, box-shadow 180ms ease; }
-.game-card h3 { margin: 0; padding: 7px 9px; font-family: Georgia, serif; font-size: .9rem; font-weight: 600; }
-.game-card-header { position: relative; display: flex; align-items: center; justify-content: space-between; min-width: 0; }
 .game-card-gear, .seat-edit-button { min-width: 36px; min-height: 36px; padding: 4px; border: 0; background: transparent; color: var(--paper); }
-.game-card-menu { position: relative; margin-right: 3px; }
+.mini-board-wrap { position: relative; }
+.game-table-badge { position: absolute; z-index: 2; top: 5px; left: 5px; border: 1px solid rgba(255,255,255,.72); border-radius: 4px; padding: 3px 6px; color: #fff; background: rgba(4,6,9,.92); box-shadow: 0 2px 8px rgba(0,0,0,.65); font-size: .63rem; font-weight: 900; letter-spacing: .03em; }
+.game-card-menu { position: absolute; z-index: 3; top: 3px; right: 3px; }
+.game-card-gear { border: 1px solid rgba(255,255,255,.72); border-radius: 4px; color: #fff; background: rgba(4,6,9,.92); box-shadow: 0 2px 8px rgba(0,0,0,.65); }
+.game-card-gear:hover, .game-card-gear:focus-visible { background: #202833; }
 .game-card-menu-popover { position: absolute; z-index: 20; top: calc(100% + 2px); right: 0; width: max-content; max-width: min(220px, calc(100vw - 24px)); padding: 5px; border: 1px solid var(--line); border-radius: 8px; background: var(--ink-900); box-shadow: 0 12px 30px rgba(0,0,0,.5); }
 .game-card-menu-popover button { width: 100%; }
 .player-side { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 7px; align-items: center; min-height: 47px; padding: 7px 8px; overflow: hidden; }
@@ -400,13 +402,8 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .black-rank .mini-square { color: #160f1a; }
 .white-rank .mini-square { color: #fff8e9; text-shadow: 0 1px 1px rgba(0,0,0,.7); }
 .player-side.winner { box-shadow: inset 4px 0 var(--amber); }
-.player-side.winner strong::after { content: " winner"; color: #8d5700; font-size: .61rem; text-transform: uppercase; }
-.black-side.winner strong::after { color: var(--amber-bright); }
 .player-side.draw { opacity: .9; }
-.game-result { display: flex; justify-content: space-between; gap: 8px; margin: -3px 9px 6px; color: #d7dfe4; font-size: .68rem; font-weight: 800; }
-.game-result span { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-.cancelled-status { margin: -2px 9px 5px; color: #f0bd73; font-weight: 900; }
-.cancelled-result { opacity: .58; text-decoration: line-through; }
+.cancelled-status { margin: 7px 9px; color: #f0bd73; font-weight: 900; }
 .cancelled-at { margin: 7px 9px; color: #aeb8bf; font-size: .68rem; }
 .game-management-dialog { width: min(460px, calc(100vw - 28px)); max-height: calc(100dvh - 28px); overflow: auto; padding: 22px; border: 1px solid var(--line); border-radius: 12px; background: var(--ink-900); color: var(--paper); }
 .seat-management-dialog { width: min(680px, calc(100vw - 28px)); min-height: min(560px, calc(100dvh - 28px)); }
@@ -483,14 +480,22 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .player-edit-dialog { width: min(920px, 100%); overflow-x: hidden; }
 .player-edit-form { margin: 16px 0; }
 .player-edit-form label { display: block; margin-bottom: 5px; font-weight: 750; }
-.player-edit-form > div { display: flex; gap: 8px; }
-.player-edit-form input { min-width: 0; flex: 1 1 auto; border: 1px solid #65717c; border-radius: var(--radius-sm); padding: 9px 10px; color: var(--ivory); background: var(--ink-950); }
+.player-edit-form input { width: 100%; min-width: 0; border: 1px solid #65717c; border-radius: var(--radius-sm); padding: 9px 10px; color: var(--ivory); background: var(--ink-950); }
 .profile-game-strip { display: flex; width: 100%; max-width: 100%; gap: 12px; padding: 4px 2px 13px; overflow-x: auto; overscroll-behavior-inline: contain; scroll-snap-type: x proximity; scrollbar-gutter: stable; }
 .profile-game-strip:focus-visible { outline: 3px solid var(--amber-bright); outline-offset: 2px; }
 .profile-game-strip > .game-card { width: min(260px, calc(100vw - 72px)); min-width: min(260px, calc(100vw - 72px)); max-width: 290px; flex: 0 0 260px; scroll-snap-align: start; }
+.rating-history { display: grid; gap: 10px; }
+.rating-sparkline { width: 100%; height: 100px; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--amber); background: var(--ink-950); }
+.rating-history-table-wrap { max-height: 230px; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.rating-history table { width: 100%; border-collapse: collapse; font-size: .78rem; font-variant-numeric: tabular-nums; }
+.rating-history th, .rating-history td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; }
+.rating-history th { position: sticky; top: 0; color: var(--muted); background: var(--ink-850); font-size: .62rem; letter-spacing: .06em; text-transform: uppercase; }
+.rating-history tbody tr:last-child td { border-bottom: 0; }
+.rating-history .positive { color: var(--success); font-weight: 800; }
+.rating-history .negative { color: var(--error); font-weight: 800; }
 .player-delete-zone { margin-top: 22px; padding-top: 14px; border-top: 1px solid var(--line); }
 .player-delete-zone p { max-width: 620px; }
-.player-delete-zone button + button { margin-left: 8px; }
+.player-card-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .danger { border-color: var(--error); color: var(--ivory); background: #712937; }
 .danger:hover { background: #8c3545; }
 .recent-games-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-top: 12px; }

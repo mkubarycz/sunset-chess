@@ -64,6 +64,8 @@ describe('Leaderboard', () => {
     expect(screen.getByRole('article', {
       name: 'Table 1: Alice plays black, Bob plays white',
     })).toBeVisible()
+    expect(screen.getByRole('img', { name: 'Bob Elo history from 700 to 716' })).toBeVisible()
+    expect(screen.getByRole('table', { name: 'Elo history for Bob' })).toBeVisible()
     fireEvent.keyDown(dialog, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(bob).toHaveFocus()

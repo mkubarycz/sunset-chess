@@ -84,8 +84,12 @@ describe('GameCard', () => {
       blackRatingDelta: -12,
       whiteRatingDelta: 12,
     }} />)
-    expect(screen.getByText('-12')).toHaveClass('negative')
-    expect(screen.getByText('+12')).toHaveClass('positive')
+    expect(screen.getByText('L -12')).toHaveClass('negative')
+    expect(screen.getByText('W +12')).toHaveClass('positive')
+    expect(screen.queryByText(/wins/i)).not.toBeInTheDocument()
+    expect(screen.queryByText('1-0')).not.toBeInTheDocument()
+    expect(screen.queryByText(/winner/i)).not.toBeInTheDocument()
+    expect(screen.getByText('Table 2')).toHaveClass('game-table-badge')
     expect(screen.queryByText(/White player|Black player/)).not.toBeInTheDocument()
   })
 
@@ -99,7 +103,8 @@ describe('GameCard', () => {
       whiteRatingDelta: 0,
     }} />)
     expect(screen.getByText('Cancelled')).toBeVisible()
-    expect(screen.getByText('Draw')).toHaveClass('cancelled-result')
+    expect(screen.queryByText('Draw')).not.toBeInTheDocument()
+    expect(screen.queryByText('1/2-1/2')).not.toBeInTheDocument()
     expect(screen.queryByText('+0')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Manage Table 2' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Edit|Assign/ })).not.toBeInTheDocument()

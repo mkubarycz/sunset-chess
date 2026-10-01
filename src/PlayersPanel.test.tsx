@@ -24,7 +24,12 @@ const profile = {
     finishedAt: '2026-01-02T12:00:00.000Z',
     ratingBefore: 700, ratingAfter: 716, delta: 16,
   }],
-  ratingHistory: [],
+  ratingHistory: [
+    { id: 1, gameId: null, previousRating: 700, rating: 700, delta: 0,
+      recordedAt: '2026-01-01T12:00:00.000Z', reason: 'baseline' as const },
+    { id: 2, gameId: 9, previousRating: 700, rating: 716, delta: 16,
+      recordedAt: '2026-01-02T12:00:00.000Z', reason: 'game' as const },
+  ],
 }
 
 describe('PlayersPanel', () => {
@@ -61,9 +66,14 @@ describe('PlayersPanel', () => {
     expect(within(recentGames).getByText('Table 2')).toBeVisible()
     expect(within(recentGames).getByText('716 Elo')).toBeVisible()
     expect(within(recentGames).getByText('684 Elo')).toBeVisible()
-    expect(within(recentGames).getByText('+16')).toBeVisible()
-    expect(within(recentGames).getByText('-16')).toBeVisible()
+    expect(within(recentGames).getByText('W +16')).toBeVisible()
+    expect(within(recentGames).getByText('L -16')).toBeVisible()
     expect(within(recentGames).queryByRole('button')).not.toBeInTheDocument()
+    expect(screen.getByRole('img', { name: 'Alice Elo history from 700 to 716' })).toBeVisible()
+    expect(screen.getByRole('table', { name: 'Elo history for Alice' })).toBeVisible()
+    const saveButton = screen.getByRole('button', { name: 'Save name' })
+    expect(saveButton.closest('.player-delete-zone')).toBeInTheDocument()
+    expect(saveButton.parentElement).toContainElement(screen.getByRole('button', { name: 'Delete player' }))
     fireEvent.keyDown(dialog, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     await waitFor(() => expect(nameButton).toHaveFocus())

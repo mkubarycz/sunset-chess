@@ -1927,12 +1927,16 @@ describe('ongoing games', () => {
       ...game,
       result: '1-0' as const,
       finishedAt: '2026-01-03T00:00:00.000Z',
+      blackRatingDelta: -16,
+      whiteRatingDelta: 16,
     }
     const draw = {
       ...game,
       id: 10,
       result: '1/2-1/2' as const,
       finishedAt: '2026-01-04T00:00:00.000Z',
+      blackRatingDelta: 0,
+      whiteRatingDelta: 0,
     }
     render(<App
       fetchGames={vi.fn().mockResolvedValue({ games: [], recentGames: [draw, whiteWin] })}
@@ -1940,9 +1944,11 @@ describe('ongoing games', () => {
     />)
     await userEvent.click(screen.getByRole('tab', { name: 'Recent Games' }))
     const recent = await screen.findByRole('region', { name: 'Recent finished games' })
-    expect(within(recent).getByText('White wins')).toBeInTheDocument()
-    expect(within(recent).getByText('Draw')).toBeInTheDocument()
-    expect(within(recent).getByText('1/2-1/2')).toBeInTheDocument()
+    expect(within(recent).getByText('W +16')).toBeInTheDocument()
+    expect(within(recent).getByText('L -16')).toBeInTheDocument()
+    expect(within(recent).getAllByText('D 0')).toHaveLength(2)
+    expect(within(recent).queryByText('White wins')).not.toBeInTheDocument()
+    expect(within(recent).queryByText('1/2-1/2')).not.toBeInTheDocument()
     expect(within(recent).getAllByText('Blanca')[1].closest('.player-side')).toHaveClass('winner')
     expect(within(recent).getByRole('article', { name: 'Table 2: 1/2-1/2' }))
       .toHaveClass('drawn-game')
@@ -1995,11 +2001,11 @@ describe('ongoing games', () => {
     await act(async () => vi.advanceTimersByTimeAsync(6000))
     expect(fetchGames).toHaveBeenCalledTimes(2)
     await act(async () => resolvePending?.([game]))
-    expect(screen.getByRole('heading', { name: 'Table 2' })).toBeInTheDocument()
+    expect(screen.getByText('Table 2')).toHaveClass('game-table-badge')
 
     await act(async () => vi.advanceTimersByTimeAsync(2000))
     await act(async () => resolvePending?.([]))
-    expect(screen.queryByRole('heading', { name: 'Table 2' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Table 2')).not.toBeInTheDocument()
 
     await act(async () => vi.advanceTimersByTimeAsync(2000))
     expect(signals.at(-1)?.aborted).toBe(false)

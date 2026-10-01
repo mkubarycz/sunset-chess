@@ -62,6 +62,7 @@ function PlayerSide({
 }) {
   const isWinner = (side === 'black' && result === '0-1') || (side === 'white' && result === '1-0')
   const isDraw = result === '1/2-1/2'
+  const outcome = result ? isDraw ? 'D' : isWinner ? 'W' : 'L' : null
   const label = side === 'black' ? 'Black' : 'White'
   return (
     <div
@@ -72,7 +73,7 @@ function PlayerSide({
       {player && <span className="player-rating">{player.rating} Elo</span>}
       {player && result && !cancelled && ratingDelta != null && (
         <span className={`rating-delta ${ratingDelta > 0 ? 'positive' : ratingDelta < 0 ? 'negative' : 'neutral'}`}>
-          {ratingDelta > 0 ? '+' : ''}{ratingDelta}
+          {outcome} {ratingDelta > 0 ? '+' : ''}{ratingDelta}
         </span>
       )}
       {!result && onEdit && (
@@ -285,8 +286,14 @@ export function GameCard({
         game.blackPlayer ? `${game.blackPlayer.name} plays black` : 'waiting for Black'
       }, ${game.whitePlayer ? `${game.whitePlayer.name} plays white` : 'waiting for White'}`}
     >
-      <div className="game-card-header">
-        <h3>Table {game.tableNumber}</h3>
+      {cancelled && <p className="cancelled-status">Cancelled</p>}
+      <PlayerSide side="black" player={game.blackPlayer} result={game.result}
+        ratingDelta={game.blackRatingDelta} cancelled={cancelled}
+        tableNumber={game.tableNumber}
+        onEdit={management && !cancelled && !game.result ? () => editSide('black') : undefined} />
+      <div className="mini-board-wrap">
+        <MiniBoard />
+        <span className="game-table-badge">Table {game.tableNumber}</span>
         {management && !cancelled && <div className="game-card-menu" ref={menuRef}>
           <button type="button" className="game-card-gear" aria-label={`Manage Table ${game.tableNumber}`}
             aria-haspopup="menu" aria-expanded={menuOpen} ref={gearRef}
@@ -298,18 +305,6 @@ export function GameCard({
           </div>}
         </div>}
       </div>
-      {cancelled && <p className="cancelled-status">Cancelled</p>}
-      {game.result && (
-        <p className={`game-result${cancelled ? ' cancelled-result' : ''}`}>
-          {game.result === '1/2-1/2' ? 'Draw' : game.result === '1-0' ? 'White wins' : 'Black wins'}
-          <span>{game.result}</span>
-        </p>
-      )}
-      <PlayerSide side="black" player={game.blackPlayer} result={game.result}
-        ratingDelta={game.blackRatingDelta} cancelled={cancelled}
-        tableNumber={game.tableNumber}
-        onEdit={management && !cancelled && !game.result ? () => editSide('black') : undefined} />
-      <MiniBoard />
       <PlayerSide side="white" player={game.whitePlayer} result={game.result}
         ratingDelta={game.whiteRatingDelta} cancelled={cancelled}
         tableNumber={game.tableNumber}

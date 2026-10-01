@@ -74,10 +74,11 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
 - Friendly player labels while retaining support for arbitrary QR strings
 - Persistent players and chess games through a local MCP endpoint
 - Responsive, horizontally scrollable ongoing-game thumbnail rail with a compact
-  two-rank board showing both standard back ranks between Black and White player details, and
-  automatic refresh about every two seconds
-- Twenty most recently completed games with canonical PGN results, winner/draw
-  treatment, and current player Elo
+  two-rank board showing both standard back ranks between Black and White player
+  details, a high-contrast table badge over the board, and automatic refresh
+  about every two seconds
+- Twenty most recently completed games with compact W/L/D plus signed Elo
+  changes and current player Elo
 - Successful QR check-ins optimistically promote the assigned table to the
   rail's left edge, then animate a decorative identity token from the detected
   QR label (reduced-motion users receive only a stationary highlight)
@@ -607,7 +608,9 @@ The Elo Leaderboard occupies its dashboard tab. Rows are native keyboard
 buttons and open the shared player card used by the Players tab. The ARIA modal
 supports focus entry/return, Escape/close/backdrop dismissal, player editing,
 guarded deletion, ongoing game cards, and up to ten horizontally scrolling
-recent game cards.
+recent game cards. An accessible Elo-history chart and chronological rating
+ledger appear below the game cards, while Save and Delete share the modal
+footer.
 
 Each table card has a keyboard-accessible gear menu and custom confirmation
 dialog. Active empty seats have an accessible add action for assignment, while
