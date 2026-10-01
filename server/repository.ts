@@ -55,6 +55,7 @@ export interface RatingEvent {
 }
 
 export interface PlayerProfile extends LeaderboardEntry {
+  ongoingGames: JoinedChessGame[];
   recentGames: Array<{
     id: number;
     tableNumber: number;
@@ -702,6 +703,8 @@ export class ChessRepository {
       return {
         ...entry,
         name: player.name,
+        ongoingGames: this.listJoinedGames('ongoing')
+          .filter((game) => game.blackPlayerId === id || game.whitePlayerId === id),
         recentGames: recentRows.map((game) => {
           const color = game.whitePlayerId === id ? 'white' as const : 'black' as const;
           const outcome = game.result === '1/2-1/2'

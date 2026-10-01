@@ -18,6 +18,11 @@ describe('Leaderboard', () => {
         profile: {
           rank: 1, id: 1001, name: 'Bob', currentRating: 716,
           gamesPlayed: 1, wins: 1, losses: 0, draws: 0, lastPlayedAt: '2026-01-02T12:00:00.000Z',
+          ongoingGames: [{
+            id: 2, tableNumber: 3, createdAt: '2026-01-03T12:00:00.000Z',
+            blackPlayerId: 1001, whitePlayerId: null, finishedAt: null, result: null,
+            blackPlayer: { id: 1001, name: 'Bob', rating: 716 }, whitePlayer: null,
+          }],
           recentGames: [{
             id: 1, tableNumber: 1, opponent: { id: 1000, name: 'Alice', rating: 684, delta: -16 },
             color: 'white', result: '1-0', outcome: 'W',
@@ -49,6 +54,11 @@ describe('Leaderboard', () => {
     expect(dialog).toHaveAccessibleName('Edit Bob')
     expect(dialog).toHaveClass('player-edit-dialog')
     expect(screen.getByLabelText('Player name')).toHaveValue('Bob')
+    const ongoingGames = screen.getByRole('region', { name: 'Ongoing games for Bob' })
+    expect(ongoingGames.querySelectorAll('.game-card')).toHaveLength(1)
+    expect(screen.getByRole('article', {
+      name: 'Table 3: Bob plays black, waiting for White',
+    })).toBeVisible()
     const recentGames = screen.getByRole('region', { name: 'Recent games for Bob' })
     expect(recentGames.querySelectorAll('.game-card')).toHaveLength(1)
     expect(screen.getByRole('article', {

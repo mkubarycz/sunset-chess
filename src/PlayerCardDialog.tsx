@@ -26,6 +26,7 @@ export interface RatingEvent {
 }
 
 export interface PlayerProfile extends LeaderboardEntry {
+  ongoingGames: OngoingGame[]
   recentGames: Array<{
     id: number
     tableNumber: number
@@ -194,6 +195,14 @@ export function PlayerCardDialog({
         {profile && <>
           <p className="profile-summary"><strong>{profile.currentRating} Elo</strong> · Rank #{profile.rank} ·
             {' '}{profile.wins}-{profile.losses}-{profile.draws} ({profile.gamesPlayed} games)</p>
+          {profile.ongoingGames.length > 0 && <>
+            <h3>Ongoing games</h3>
+            <div className="profile-game-strip" role="region" aria-label={`Ongoing games for ${profile.name}`} tabIndex={0}>
+              {profile.ongoingGames.map((game) => (
+                <GameCard key={game.id} game={game} management={false} />
+              ))}
+            </div>
+          </>}
           <h3>Recent games</h3>
           {profile.recentGames.length === 0
             ? <p>No completed games yet. Baseline Elo is 700.</p>

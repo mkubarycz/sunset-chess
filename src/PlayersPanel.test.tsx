@@ -12,6 +12,12 @@ const player = {
 }
 const profile = {
   ...player,
+  ongoingGames: [{
+    id: 8, tableNumber: 4, createdAt: '2026-01-03T12:00:00.000Z',
+    blackPlayerId: 1000, whitePlayerId: 1001, finishedAt: null, result: null,
+    blackPlayer: { id: 1000, name: 'Alice', rating: 716 },
+    whitePlayer: { id: 1001, name: 'Bob', rating: 684 },
+  }],
   recentGames: [{
     id: 9, tableNumber: 2, opponent: { id: 1001, name: 'Bob', rating: 684, delta: -16 },
     color: 'white' as const, result: '1-0', outcome: 'W' as const,
@@ -40,6 +46,11 @@ describe('PlayersPanel', () => {
     await userEvent.click(nameButton)
     const dialog = await screen.findByRole('dialog', { name: 'Edit Alice' })
     expect(dialog).toContainElement(screen.getByLabelText('Player name'))
+    const ongoingGames = screen.getByRole('region', { name: 'Ongoing games for Alice' })
+    expect(ongoingGames.querySelectorAll('.game-card')).toHaveLength(1)
+    expect(within(ongoingGames).getByRole('article', {
+      name: 'Table 4: Alice plays black, Bob plays white',
+    })).toBeVisible()
     const recentGames = screen.getByRole('region', { name: 'Recent games for Alice' })
     expect(recentGames).toHaveClass('profile-game-strip')
     expect(recentGames).toHaveAttribute('tabindex', '0')

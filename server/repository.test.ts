@@ -75,6 +75,7 @@ describe('ChessRepository', () => {
     repository.upsertPlayer(1002, 'Carol');
     const game = repository.createGame(1000, 1001);
     repository.finalizeGame(game.id, '1-0', () => '2027-01-02T12:00:00.000Z');
+    const ongoingGame = repository.createGame(1001, 1002);
     expect(repository.listLeaderboard()).toEqual([
       expect.objectContaining({ rank: 1, id: 1001, currentRating: 716, wins: 1, gamesPlayed: 1 }),
       expect.objectContaining({ rank: 2, id: 1002, currentRating: 700, gamesPlayed: 0 }),
@@ -83,6 +84,11 @@ describe('ChessRepository', () => {
     expect(repository.getPlayerProfile(1001)).toMatchObject({
       rank: 1,
       currentRating: 716,
+      ongoingGames: [{
+        id: ongoingGame.id,
+        blackPlayerId: 1001,
+        whitePlayerId: 1002,
+      }],
       recentGames: [{
         id: game.id,
         opponent: { id: 1000, name: 'Alice', rating: 684, delta: -16 },
