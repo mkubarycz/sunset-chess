@@ -474,14 +474,8 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .player-edit-form > div { display: flex; gap: 8px; }
 .player-edit-form input { min-width: 0; flex: 1 1 auto; border: 1px solid #65717c; border-radius: var(--radius-sm); padding: 9px 10px; color: var(--ivory); background: var(--ink-950); }
 .profile-game-strip { display: flex; width: 100%; max-width: 100%; gap: 12px; padding: 4px 2px 13px; overflow-x: auto; overscroll-behavior-inline: contain; scroll-snap-type: x proximity; scrollbar-gutter: stable; }
-.profile-game-card { min-width: min(260px, calc(100vw - 72px)); max-width: 290px; flex: 0 0 260px; overflow: hidden; border: 1px solid #4a5560; border-radius: var(--radius-sm); background: #0d1015; scroll-snap-align: start; }
-.profile-game-card:focus-visible { outline: 3px solid var(--amber-bright); outline-offset: 2px; }
-.profile-game-card-heading { display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px; font-family: Georgia, serif; }
-.profile-game-card-heading span { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-.profile-game-card.outcome-w { border-color: var(--success); }
-.profile-game-card.outcome-l { border-color: var(--error); }
-.profile-game-meta { display: grid; gap: 4px; padding: 9px 10px; color: #d7dfe4; font-size: .72rem; font-variant-numeric: tabular-nums; }
-.profile-game-meta time { color: var(--muted); }
+.profile-game-strip:focus-visible { outline: 3px solid var(--amber-bright); outline-offset: 2px; }
+.profile-game-strip > .game-card { width: min(260px, calc(100vw - 72px)); min-width: min(260px, calc(100vw - 72px)); max-width: 290px; flex: 0 0 260px; scroll-snap-align: start; }
 .player-delete-zone { margin-top: 22px; padding-top: 14px; border-top: 1px solid var(--line); }
 .player-delete-zone p { max-width: 620px; }
 .player-delete-zone button + button { margin-left: 8px; }
@@ -512,7 +506,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
   .profile-backdrop { padding: 8px; }
   .player-edit-form > div { align-items: stretch; flex-direction: column; }
   .player-edit-form button { width: 100%; }
-  .profile-game-card { flex-basis: calc(100vw - 58px); }
+  .profile-game-strip > .game-card { flex-basis: calc(100vw - 58px); }
   .ongoing-column { grid-column: 1; grid-row: auto; }
   .game-column { min-height: 400px; max-height: 70dvh; }
   .controls { align-items: stretch; flex-direction: column; }

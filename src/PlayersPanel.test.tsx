@@ -13,7 +13,7 @@ const player = {
 const profile = {
   ...player,
   recentGames: [{
-    id: 9, tableNumber: 2, opponent: { id: 1001, name: 'Bob' },
+    id: 9, tableNumber: 2, opponent: { id: 1001, name: 'Bob', rating: 684, delta: -16 },
     color: 'white' as const, result: '1-0', outcome: 'W' as const,
     finishedAt: '2026-01-02T12:00:00.000Z',
     ratingBefore: 700, ratingAfter: 716, delta: 16,
@@ -40,12 +40,43 @@ describe('PlayersPanel', () => {
     await userEvent.click(nameButton)
     const dialog = await screen.findByRole('dialog', { name: 'Edit Alice' })
     expect(dialog).toContainElement(screen.getByLabelText('Player name'))
-    expect(screen.getByRole('region', { name: 'Recent games for Alice' })).toHaveClass('profile-game-strip')
-    expect(screen.getByRole('article', { name: 'Win against Bob' })).toHaveAttribute('tabindex', '0')
-    expect(screen.getByText('700 → 716 (+16)')).toBeInTheDocument()
+    const recentGames = screen.getByRole('region', { name: 'Recent games for Alice' })
+    expect(recentGames).toHaveClass('profile-game-strip')
+    expect(recentGames).toHaveAttribute('tabindex', '0')
+    expect(recentGames.querySelectorAll('.game-card')).toHaveLength(1)
+    expect(within(recentGames).getByRole('article', {
+      name: 'Table 2: Bob plays black, Alice plays white',
+    })).toBeVisible()
+    expect(within(recentGames).getByText('Table 2')).toBeVisible()
+    expect(within(recentGames).getByText('716 Elo')).toBeVisible()
+    expect(within(recentGames).getByText('684 Elo')).toBeVisible()
+    expect(within(recentGames).getByText('+16')).toBeVisible()
+    expect(within(recentGames).getByText('-16')).toBeVisible()
+    expect(within(recentGames).queryByRole('button')).not.toBeInTheDocument()
     fireEvent.keyDown(dialog, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     await waitFor(() => expect(nameButton).toHaveFocus())
+  })
+
+  it('renders at most ten established game cards in one horizontal profile strip', async () => {
+    const recentGames = Array.from({ length: 12 }, (_, index) => ({
+      ...profile.recentGames[0],
+      id: 100 + index,
+      tableNumber: index + 1,
+    }))
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ players: [player] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ profile: { ...profile, recentGames } }) }))
+    render(<PlayersPanel refreshKey={0} onMutate={vi.fn()} />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Alice' }))
+
+    const strip = await screen.findByRole('region', { name: 'Recent games for Alice' })
+    expect(strip.querySelectorAll(':scope > .game-card')).toHaveLength(10)
+    expect(strip).toHaveClass('profile-game-strip')
+    expect(strip).toHaveAttribute('tabindex', '0')
+    expect(within(strip).queryByRole('button', { name: /Manage|Edit/ })).not.toBeInTheDocument()
+    expect(within(strip).getByText('Table 10')).toBeVisible()
+    expect(within(strip).queryByText('Table 11')).not.toBeInTheDocument()
   })
 
   it('supports keyboard gear-menu navigation, dismissal, printing, and focus restoration', async () => {

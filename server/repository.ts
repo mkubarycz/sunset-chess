@@ -58,7 +58,7 @@ export interface PlayerProfile extends LeaderboardEntry {
   recentGames: Array<{
     id: number;
     tableNumber: number;
-    opponent: { id: number; name: string };
+    opponent: { id: number; name: string; rating: number; delta: number };
     color: 'black' | 'white';
     result: GameResult;
     outcome: 'W' | 'L' | 'D';
@@ -683,10 +683,13 @@ export class ChessRepository {
       const recentRows = this.db.prepare(`
         SELECT g.id, g.tableNumber, g.whitePlayerId, g.blackPlayerId, g.result, g.finishedAt,
           opponent.id AS opponentId, opponent.name AS opponentName,
-          event.previousRating AS ratingBefore, event.rating AS ratingAfter, event.delta
+          event.previousRating AS ratingBefore, event.rating AS ratingAfter, event.delta,
+          opponentEvent.rating AS opponentRating, opponentEvent.delta AS opponentDelta
         FROM ChessGame g
         JOIN PlayerRatingEvent event ON event.gameId = g.id AND event.playerId = ?
         JOIN Player opponent ON opponent.id = event.opponentId
+        JOIN PlayerRatingEvent opponentEvent ON opponentEvent.gameId = g.id
+          AND opponentEvent.playerId = opponent.id AND opponentEvent.reason = 'game'
         WHERE g.result IS NOT NULL AND g.cancelledAt IS NULL AND event.reason = 'game'
         ORDER BY g.finishedAt DESC, g.id DESC
         LIMIT ?
@@ -694,6 +697,7 @@ export class ChessRepository {
         id: number; tableNumber: number; whitePlayerId: number; blackPlayerId: number;
         result: GameResult; finishedAt: string; opponentId: number; opponentName: string;
         ratingBefore: number; ratingAfter: number; delta: number;
+        opponentRating: number; opponentDelta: number;
       }>;
       return {
         ...entry,
@@ -707,7 +711,12 @@ export class ChessRepository {
           return {
             id: game.id,
             tableNumber: game.tableNumber,
-            opponent: { id: game.opponentId, name: game.opponentName },
+            opponent: {
+              id: game.opponentId,
+              name: game.opponentName,
+              rating: game.opponentRating,
+              delta: game.opponentDelta,
+            },
             color,
             result: game.result,
             outcome,

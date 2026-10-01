@@ -85,7 +85,7 @@ describe('ChessRepository', () => {
       currentRating: 716,
       recentGames: [{
         id: game.id,
-        opponent: { id: 1000, name: 'Alice' },
+        opponent: { id: 1000, name: 'Alice', rating: 684, delta: -16 },
         color: 'white',
         outcome: 'W',
         ratingBefore: 700,

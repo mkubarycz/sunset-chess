@@ -27,9 +27,9 @@ export interface PlayerProfile extends LeaderboardEntry {
   recentGames: Array<{
     id: number
     tableNumber: number
-    opponent: { id: number; name: string }
+    opponent: { id: number; name: string; rating: number; delta: number }
     color: 'black' | 'white'
-    result: string
+    result: '1-0' | '0-1' | '1/2-1/2'
     outcome: 'W' | 'L' | 'D'
     finishedAt: string
     ratingBefore: number

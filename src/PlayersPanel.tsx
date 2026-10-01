@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { normalizePlayerName } from './qrPayload'
 import { printRoundPlayerSticker } from './playerSticker'
 import type { LeaderboardEntry, PlayerProfile } from './Leaderboard'
+import { GameCard, type OngoingGame } from './GameCard'
 
 async function responseBody(response: Response) {
   return response.json() as Promise<{
@@ -13,27 +14,26 @@ async function responseBody(response: Response) {
   }>
 }
 
-function ProfileGameCard({ game }: { game: PlayerProfile['recentGames'][number] }) {
-  const delta = `${game.delta >= 0 ? '+' : ''}${game.delta}`
-  return (
-    <article className={`profile-game-card outcome-${game.outcome.toLowerCase()}`} tabIndex={0}
-      aria-label={`${game.outcome === 'W' ? 'Win' : game.outcome === 'L' ? 'Loss' : 'Draw'} against ${game.opponent.name}`}>
-      <div className="profile-game-card-heading">
-        <strong>{game.outcome === 'W' ? 'Win' : game.outcome === 'L' ? 'Loss' : 'Draw'}</strong>
-        <span>{game.result}</span>
-      </div>
-      <div className={`player-side ${game.color}-side`}>
-        <span className="side-label">{game.color}</span>
-        <strong>{game.opponent.name}</strong>
-        <span className="player-rating">Opponent · #{game.opponent.id}</span>
-      </div>
-      <div className="profile-game-meta">
-        <span>Table {game.tableNumber}</span>
-        <span>{game.ratingBefore} → {game.ratingAfter} ({delta})</span>
-        <time dateTime={game.finishedAt}>{new Date(game.finishedAt).toLocaleString()}</time>
-      </div>
-    </article>
-  )
+function profileGameToGameCard(
+  profile: PlayerProfile,
+  game: PlayerProfile['recentGames'][number],
+): OngoingGame {
+  const player = { id: profile.id, name: profile.name, rating: game.ratingAfter }
+  const opponent = { id: game.opponent.id, name: game.opponent.name, rating: game.opponent.rating }
+  const playerIsBlack = game.color === 'black'
+  return {
+    id: game.id,
+    tableNumber: game.tableNumber,
+    createdAt: game.finishedAt,
+    finishedAt: game.finishedAt,
+    result: game.result,
+    blackPlayerId: playerIsBlack ? player.id : opponent.id,
+    whitePlayerId: playerIsBlack ? opponent.id : player.id,
+    blackPlayer: playerIsBlack ? player : opponent,
+    whitePlayer: playerIsBlack ? opponent : player,
+    blackRatingDelta: playerIsBlack ? game.delta : game.opponent.delta,
+    whiteRatingDelta: playerIsBlack ? game.opponent.delta : game.delta,
+  }
 }
 
 export function PlayersPanel({
@@ -324,7 +324,9 @@ export function PlayersPanel({
               {profile.recentGames.length === 0
                 ? <p>No completed games yet. Baseline Elo is 700.</p>
                 : <div className="profile-game-strip" role="region" aria-label={`Recent games for ${profile.name}`} tabIndex={0}>
-                    {profile.recentGames.map((game) => <ProfileGameCard key={game.id} game={game} />)}
+                    {profile.recentGames.slice(0, 10).map((game) => (
+                      <GameCard key={game.id} game={profileGameToGameCard(profile, game)} management={false} />
+                    ))}
                   </div>}
             </>}
             <div className="player-delete-zone">
