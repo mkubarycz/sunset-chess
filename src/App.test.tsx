@@ -174,6 +174,20 @@ describe('scanner and player producer', () => {
     expect(camera.track.stop).toHaveBeenCalledOnce()
   })
 
+  it('ignores obsolete camera setup storage without opening the camera overlay', async () => {
+    const legacyKey = 'sunset-chess:retired-camera-settings'
+    localStorage.setItem(legacyKey, '{obsolete')
+    setupCamera()
+    const view = render(<App />)
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Scanning for a QR code'))
+    await userEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(within(screen.getByRole('menu')).queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem')).not.toBeInTheDocument()
+    expect(screen.getByTestId('camera-interaction-layer')).toHaveClass('is-hidden')
+    view.unmount()
+    localStorage.removeItem(legacyKey)
+  })
+
   it('forces the hidden camera layer visible during an explicit diagnostic recording', async () => {
     setupCamera()
     render(<App />)

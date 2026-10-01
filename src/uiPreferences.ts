@@ -29,7 +29,12 @@ export function parseUiPreferences(raw: string | null): UiPreferences {
     || !['square', 'round'].includes(value.markerShape ?? '')) {
     throw new Error('Settings use an unsupported or invalid format.')
   }
-  return value as UiPreferences
+  return {
+    version: UI_PREFERENCES_VERSION,
+    showDebugTools: value.showDebugTools,
+    selectedTab: value.selectedTab,
+    markerShape: value.markerShape,
+  } as UiPreferences
 }
 
 export function loadUiPreferences(storage: Pick<Storage, 'getItem'> = localStorage): {

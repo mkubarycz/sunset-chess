@@ -138,13 +138,6 @@ import { SunsetChessLogo } from './SunsetChessLogo'
 import { DashboardTabs } from './DashboardTabs'
 import { PlayersPanel } from './PlayersPanel'
 import { SettingsMenu } from './SettingsMenu'
-import { CalibrationDialog } from './CalibrationDialog'
-import {
-  calibratedRect,
-  loadCalibration,
-  saveCalibration,
-  type CameraCalibration,
-} from './calibration'
 import {
   loadUiPreferences,
   saveUiPreferences,
@@ -354,13 +347,8 @@ export default function App({
     window.isSecureContext === false ? 'insecure' : 'initial',
   )
   const initialPreferences = useMemo(() => loadUiPreferences(), [])
-  const initialCalibration = useMemo(() => loadCalibration(), [])
   const [preferences, setPreferences] = useState<UiPreferences>(initialPreferences.preferences)
-  const [settingsError, setSettingsError] = useState(
-    [initialPreferences.error, initialCalibration.error].filter(Boolean).join(' '),
-  )
-  const [calibration, setCalibration] = useState<CameraCalibration>(initialCalibration.calibration)
-  const [calibrationOpen, setCalibrationOpen] = useState(false)
+  const [settingsError, setSettingsError] = useState(initialPreferences.error)
   const [remembered, setRemembered] = useState<RememberedDetection | null>(null)
   const [name, setName] = useState('')
   const [producerError, setProducerError] = useState('')
@@ -530,16 +518,6 @@ export default function App({
       }
       return next
     })
-  }, [])
-
-  const updateCalibration = useCallback((next: CameraCalibration) => {
-    setCalibration(next)
-    try {
-      saveCalibration(next)
-      setSettingsError('')
-    } catch {
-      setSettingsError('Camera calibration could not be saved in this browser.')
-    }
   }, [])
 
   useEffect(() => {
@@ -1228,7 +1206,6 @@ export default function App({
         blockedPlayerIds,
         resetKey: String(cameraGenerationRef.current),
         freshPlayerIds: holdQualifiedPlayerIds,
-        transformRect: (rect) => calibratedRect(rect, { width, height }, calibration),
       },
     )
     checkInStateRef.current = checkInUpdate.state
@@ -1270,7 +1247,6 @@ export default function App({
         width,
         height,
         resultAssignmentRef.current,
-        (rect) => calibratedRect(rect, { width, height }, calibration),
       )
       const bothFresh = matchedGame.opponent !== null
         && freshPlayerIds.has(matchedGame.anchor.playerId)
@@ -1301,13 +1277,11 @@ export default function App({
             hold,
             evaluation,
             !bothFresh,
-            (rect) => calibratedRect(rect, { width, height }, calibration),
           )
         : createDisabledResultZones(
             matchedGame,
             width,
             height,
-            (rect) => calibratedRect(rect, { width, height }, calibration),
           )
       if (hold.completedNow && bothFresh && assignment && matchedGame.opponent) {
         submitResult(
@@ -1452,7 +1426,6 @@ export default function App({
     }
     cadenceRef.current.paints += visible.length > 0 ? 1 : 0
   }, [
-    calibration,
     clearResultMode,
     preferences.showDebugTools,
     requestPlayerResolution,
@@ -2362,7 +2335,7 @@ export default function App({
     : parsedRaw
   const diagnosticRecording = diagnosticUi.phase === 'recording'
   const interactionVisible = cameraState === 'active'
-    && (piecePresent || diagnosticRecording || calibrationOpen)
+    && (piecePresent || diagnosticRecording)
   const cameraUnavailable = cameraState === 'insecure' || cameraState === 'unavailable'
   const cameraButtonLabel = cameraState === 'active'
     ? 'Stop Camera'
@@ -2551,7 +2524,6 @@ export default function App({
               <SettingsMenu
                 showDebugTools={preferences.showDebugTools}
                 onDebugChange={(showDebugTools) => updatePreferences({ showDebugTools })}
-                onCalibrate={() => setCalibrationOpen(true)}
                 error={settingsError}
               />
             </div>
@@ -2751,18 +2723,6 @@ export default function App({
         )}
         {interactionVisible && !gameContext?.resultReady && <div className="scan-corners" aria-hidden="true" />}
       </section>
-      {calibrationOpen && (
-        <CalibrationDialog
-          calibration={calibration}
-          videoSize={{
-            width: videoRef.current?.videoWidth ?? 0,
-            height: videoRef.current?.videoHeight ?? 0,
-          }}
-          playerMarkerPresent={piecePresent}
-          onChange={updateCalibration}
-          onClose={() => setCalibrationOpen(false)}
-        />
-      )}
     </main>
   )
 }

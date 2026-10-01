@@ -459,15 +459,6 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .danger { border-color: var(--error); color: var(--ivory); background: #712937; }
 .danger:hover { background: #8c3545; }
 .recent-games-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-top: 12px; }
-.calibration-backdrop { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 16px; background: rgba(3,5,8,.88); }
-.calibration-dialog { position: relative; width: min(600px, 100%); padding: 26px; border: 1px solid var(--amber-bright); border-radius: var(--radius-md); background: var(--ink-900); }
-.calibration-dialog h2 { font-family: Georgia, serif; }
-.calibration-dialog label { display: grid; gap: 5px; margin: 14px 0; }
-.calibration-dialog input[type="range"] { width: 100%; }
-.calibration-quality { padding: 10px; border-left: 4px solid var(--amber); background: var(--ink-800); }
-.calibration-quality.pass { border-color: var(--success); }
-.calibration-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
-
 @media (max-width: 1100px) {
   .shell { height: auto; min-height: 100dvh; overflow: visible; }
   .dashboard { grid-template-columns: minmax(0, 1fr) 280px; height: 850px; }

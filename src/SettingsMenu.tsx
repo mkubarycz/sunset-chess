@@ -3,12 +3,10 @@ import { useEffect, useRef, useState } from 'react'
 export function SettingsMenu({
   showDebugTools,
   onDebugChange,
-  onCalibrate,
   error,
 }: {
   showDebugTools: boolean
   onDebugChange: (value: boolean) => void
-  onCalibrate: () => void
   error: string
 }) {
   const [open, setOpen] = useState(false)
@@ -54,12 +52,6 @@ export function SettingsMenu({
             />
             Show diagnostics/debug tools
           </label>
-          <button type="button" role="menuitem" className="secondary" onClick={() => {
-            setOpen(false)
-            onCalibrate()
-          }}>
-            Calibrate camera
-          </button>
           {error && <p role="alert">{error}</p>}
         </div>
       )}

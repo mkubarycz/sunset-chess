@@ -17,9 +17,9 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
 - A versioned local settings menu beside the camera control. Diagnostics are off
   by default; corrupt preferences reset visibly. The menu supports Escape,
   outside-click dismissal, and narrow viewports.
-- A three-step live camera calibration flow for usable framing, representative
-  marker evidence, and ActionZone alignment. Versioned inset/offset/scale values
-  are clamped to the preview and can be reset.
+- Fixed responsive ActionZone geometry adapts to the full-viewport camera
+  coordinate space without user setup, preserving mirrored camera mapping on
+  desktop and mobile.
 - Presence-driven camera presentation: capture and decoding continue while the
   fixed, full-viewport mirrored interaction overlay is visually hidden; a valid
   tracked player piece fades it over the unchanged dashboard, and the existing

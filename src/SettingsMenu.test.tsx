@@ -5,20 +5,18 @@ import { describe, expect, it, vi } from 'vitest'
 import { SettingsMenu } from './SettingsMenu'
 
 describe('SettingsMenu', () => {
-  it('toggles diagnostics, starts calibration, and dismisses with Escape', async () => {
+  it('toggles diagnostics, contains no camera setup action, and dismisses with Escape', async () => {
     const onDebugChange = vi.fn()
-    const onCalibrate = vi.fn()
     render(<SettingsMenu showDebugTools={false} onDebugChange={onDebugChange}
-      onCalibrate={onCalibrate} error="" />)
+      error="" />)
     const trigger = screen.getByRole('button', { name: 'Settings' })
     await userEvent.click(trigger)
     await userEvent.click(screen.getByRole('checkbox', { name: /Show diagnostics/ }))
     expect(onDebugChange).toHaveBeenCalledWith(true)
+    expect(screen.queryByRole('menuitem')).not.toBeInTheDocument()
+    expect(screen.queryByText(/camera setup/i)).not.toBeInTheDocument()
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(trigger).toHaveFocus()
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
-    await userEvent.click(trigger)
-    await userEvent.click(screen.getByRole('menuitem', { name: 'Calibrate camera' }))
-    expect(onCalibrate).toHaveBeenCalledOnce()
   })
 })

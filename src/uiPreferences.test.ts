@@ -18,4 +18,12 @@ describe('versioned UI preferences', () => {
       ...defaultUiPreferences(), selectedTab: 'unknown',
     }))).toThrow()
   })
+
+  it('loads valid 1.0 preferences while ignoring obsolete extra fields', () => {
+    expect(parseUiPreferences(JSON.stringify({
+      ...defaultUiPreferences(),
+      cameraSetup: { insetPercent: 12 },
+      legacyOffsetPercent: 5,
+    }))).toEqual(defaultUiPreferences())
+  })
 })

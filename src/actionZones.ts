@@ -399,7 +399,6 @@ export function updateCheckInZones(
     holdDurationMs?: number
     resetKey?: string
     freshPlayerIds?: ReadonlySet<number>
-    transformRect?: (rect: Rect) => Rect
   } = {},
 ): CheckInUpdate {
   const {
@@ -408,13 +407,12 @@ export function updateCheckInZones(
     holdDurationMs = ACTION_HOLD_MS,
     resetKey = '',
     freshPlayerIds,
-    transformRect = (rect) => rect,
   } = options
   if (!enabled) return { state: emptyCheckInState(), zones: [], completed: [] }
   const lanes = ['left', 'right'] as const
   const rects = Object.fromEntries(lanes.map((lane) => [
     lane,
-    transformRect(checkInZoneRect(width, height, lane)),
+    checkInZoneRect(width, height, lane),
   ])) as Record<ActionZoneLane, Rect>
   const uniqueCandidates = new Map<string, {
     player: PlayerDetection
@@ -615,7 +613,6 @@ export function createResultZones(
   hold: HoldUpdate,
   evaluation: ResultChoiceEvaluation,
   paused = false,
-  transformRect: (rect: Rect) => Rect = (rect) => rect,
 ): ActionZone[] {
   const lanePlayers: Array<[ActionZoneLane, PlayerDetection]> = [
     [context.anchorLane, context.anchor],
@@ -630,7 +627,7 @@ export function createResultZones(
         id,
         action,
         lane,
-        rect: transformRect(resultZoneRect(lane, action, width, height)),
+        rect: resultZoneRect(lane, action, width, height),
         label: action === 'winner' ? 'Win' : action === 'draw' ? 'Draw' : 'Lose',
         instructions: paused && selected
           ? `${player.name}: hold paused`
@@ -657,7 +654,6 @@ export function createDisabledResultZones(
   context: GameContext,
   width: number,
   height: number,
-  transformRect: (rect: Rect) => Rect = (rect) => rect,
 ): ActionZone[] {
   const opponentName = context.game.blackPlayerId === context.anchor.playerId
     ? context.game.whitePlayer?.name
@@ -673,7 +669,7 @@ export function createDisabledResultZones(
       id: `${action}-${lane}`,
       action,
       lane,
-      rect: transformRect(resultZoneRect(lane, action, width, height)),
+      rect: resultZoneRect(lane, action, width, height),
       label: action === 'winner' ? 'Win' : action === 'draw' ? 'Draw' : 'Lose',
       instructions: `Waiting for both players`,
       occupant: null,
@@ -696,7 +692,6 @@ export function evaluateResultChoices(
   width: number,
   height: number,
   previousAssignment: ResultAssignment | null = null,
-  transformRect: (rect: Rect) => Rect = (rect) => rect,
 ): ResultChoiceEvaluation {
   const incomplete = (): ResultChoiceEvaluation => ({
     status: 'incomplete',
@@ -714,7 +709,7 @@ export function evaluateResultChoices(
     const center = detectionCenter(player.detection)
     const previousChoice = previousAssignment?.choices[player.playerId]
     const action = (['winner', 'draw', 'loser'] as const).find((choice) => {
-      const rect = transformRect(resultZoneRect(lane, choice, width, height))
+      const rect = resultZoneRect(lane, choice, width, height)
       return pointInRect(
         center,
         previousChoice === choice
