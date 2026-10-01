@@ -1,19 +1,24 @@
-# Sunset Chess Scanner v2
+# Sunset Chess 1.0
 
 A local-first QR camera scanner with a SQLite/MCP control plane.
 
 ## Features
 
-- A full-height dashboard with three independent desktop columns: a substantially
-  larger primary column for the brand, ranked Elo table, player-card creator, and
-  compact scanner controls; plus separate, independently scrolling Ongoing Games
-  and Recent Games columns
+- A full-height dashboard with an accessible Leaderboard / Recent Games / Players
+  tabbed primary workspace and one persistent, independently scrolling Ongoing
+  Games rail. The Players tab pairs the roster with Add New Player.
+- A versioned local settings menu beside the title. Diagnostics are off by
+  default; corrupt preferences reset visibly. The menu supports Escape,
+  outside-click dismissal, and narrow viewports.
+- A three-step live camera calibration flow for usable framing, representative
+  marker evidence, and ActionZone alignment. Versioned inset/offset/scale values
+  are clamped to the preview and can be reset.
 - Presence-driven camera presentation: capture and decoding continue while the
   fixed, full-viewport mirrored interaction overlay is visually hidden; a valid
   tracked player piece fades it over the unchanged dashboard, and the existing
   bounded tracking expiry fades it out rather than reacting to individual missed
   decode frames. The camera is never a dashboard column or idle placeholder.
-- Diagnostic recording explicitly forces the camera layer visible for its
+- When enabled in Settings, diagnostic recording explicitly forces the camera layer visible for its
   10-second run. Permission, error, inactive, and restart controls remain
   available while the mirror is hidden.
 - A locally bundled inline-vector Sunset Chess scene places professional queen,
@@ -22,10 +27,8 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
 - A high-contrast ink/ivory/amber palette, restrained 3–6px surface corners,
   visible keyboard focus, tabular standings numerals, and distinct
   success/error/draw colors
-- Responsive reflow: desktop uses primary/ongoing/recent columns, tablet places
-  the full-width primary workspace above side-by-side game feeds, and mobile
-  orders brand → scanner status → leaderboard → player-card creator → ongoing →
-  recent without horizontal overflow
+- Responsive reflow keeps the tabbed workspace and Ongoing Games usable without
+  horizontal page overflow on desktop and mobile.
 - Smooth camera capture using `requestVideoFrameCallback` (with RAF fallback), an ideal
   1920×1080/60 FPS request, and a non-exclusive 3840×2160 ceiling
 - Automatic camera startup on mount, with manual retry when permission or hardware is unavailable
@@ -37,11 +40,25 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
   is the current accepted tracked object
 - Identity-bound visual QR object tracking between decodes, with explicit
   decoded/visual/coasting/lost state, confidence, anchor age, and stale expiry
-- On-screen negotiated camera settings, optional-control state, camera/decode/paint
+
+  Tracking continuity is deliberately separated from irreversible evidence:
+
+  - qualified visual gaps now coast for **320ms** (formerly 180ms), reducing
+    1.5-second hold resets during intermittent decoder/tracker gaps;
+  - geometry may remain visible for **700ms**, decoded identity authority is
+    bounded to **1,600ms**, and result action authority is capped at **900ms**;
+  - check-in accumulated progress retains for 650ms and results for 450ms, but
+    result completion still requires both distinct players with fresh,
+    non-ambiguous evidence;
+  - the full-screen overlay appears immediately, delays hide for **650ms**, cancels
+    that hide on reacquisition, and clears hold/ActionZone state after true
+    removal. Reduced-motion users receive no fade transitions.
+- Debug-only on-screen negotiated camera settings, optional-control state, camera/decode/paint
   cadence, fresh/present state, and compact per-track source/confidence/age diagnostics
 - Explicit 10-second local tracking diagnostic capture with a composited WebM
   (when supported) and synchronized bounded JSON telemetry
-- Persisted player QR producer with 2-inch card and 0.9-inch sticker print modes
+- Persisted player QR producer with a 2-inch card plus exact 1×1-inch square and
+  1-inch-diameter round-substrate sticker print modes
 - Reusable ActionZones for top-corner check-in and lane-aware per-player
   Win/Draw/Lose choices, with motion-tolerant accumulated 1.5-second holds and
   bounded DOM-only progress updates
@@ -58,6 +75,23 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
 
 Camera frames remain in the browser and are never transmitted. Decoder
 orchestration is complementary rather than an exclusive fallback chain:
+
+### Marker format decision
+
+Sunset Chess retains standards-compliant **QR Version 1 / error correction H**
+for identity markers. Standard QR has the strongest maintained browser pipeline
+here (`BarcodeDetector`, ZXing-C++ WASM, and jsQR), permissive library licensing,
+multi-detector redundancy, and ample capacity for compact `SC1:` base-36 IDs
+through 10,000. Micro QR is smaller but is not supported across the existing
+three-decoder pipeline. Data Matrix has good density but would require replacing
+QR-specific tracking/decoding assumptions. AprilTag and ArUco offer excellent
+pose tracking, but require a new maintained detector/WASM and their square
+fiducial dictionaries provide no useful benefit for this identity workflow.
+No speculative dependency was added.
+
+“Round sticker” therefore means a circular one-inch substrate containing an
+uncropped square QR and its complete four-module quiet zone—not rounded modules,
+cropping, or a non-standard code. Square stickers remain exactly 1×1 inch.
 
 1. native `BarcodeDetector` receives the original `HTMLVideoElement` at its
    negotiated source resolution every eligible 50 ms cycle;
@@ -491,7 +525,8 @@ rating receives a 700 baseline and real game events. A mismatch receives one
 pre-ledger history is fabricated. Startup is transactional and idempotent.
 
 MCP is published at <http://localhost:4175/mcp>. Tools are `player-list`,
-`player-get`, `player-create`, `player-upsert`, `player-check-in`, `player-delete`,
+`player-get`, `player-create`, `player-upsert`, `player-name-update`,
+`player-check-in`, `player-delete`,
 `game-list`, `game-get`, `game-create`, `game-result-set`, and `game-delete`.
 Read tools also include `leaderboard-list` and `player-profile-get` for ranked
 records, recent games, and chronological rating history.
@@ -519,7 +554,10 @@ JSON 404 responses. Process and database
 health are available at:
 
 `POST /api/players` accepts only `{ "name": "Ada" }`, allocates and persists a
-player, and returns HTTP 201 before compact QR generation. `GET
+player, and returns HTTP 201 before compact QR generation. `GET /api/players`
+lists the complete ranked roster with Elo and W/L/D. `PATCH
+/api/players/:id` accepts only `{ "name": "New name" }` and preserves identity,
+games, and rating history. `GET
 /api/players/:id` safely resolves compact references and returns 404 when the
 player does not exist. `DELETE /api/players/:id` is the narrow rollback endpoint
 for an unreferenced, baseline-only player and returns 409 once games or rating
@@ -539,8 +577,7 @@ descending, games played descending, case-insensitive name ascending, then ID.
 The bounded limit is 1–200. `GET /api/players/:id/profile?recentLimit=10`
 returns record/rank, newest-first completed games (maximum 50), and full
 chronological Elo history. Malformed bounds return 400 and missing players 404.
-The Elo Leaderboard appears below the viewport dashboard, immediately before
-the player-card creator. Rows are native keyboard buttons. The profile is an
+The Elo Leaderboard occupies its dashboard tab. Rows are native keyboard buttons. The profile is an
 ARIA modal with focus entry/return, Escape/close/backdrop dismissal, a textual
 recent-game/history table, and an accessible SVG sparkline.
 

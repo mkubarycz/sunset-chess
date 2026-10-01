@@ -62,6 +62,12 @@ export function createMcpServer(repository: ChessRepository): McpServer {
     inputSchema: { name: z.string().trim().min(1).max(80) },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   }, async ({ name }) => domainResult(() => ({ player: repository.createPlayer(name) })));
+  server.registerTool('player-name-update', {
+    description: 'Rename an existing player without changing their identity or rating history.',
+    inputSchema: { id: playerId, name: z.string().trim().min(1).max(80) },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ id, name }) =>
+    domainResult(() => ({ player: repository.updatePlayerName(id, name) })));
   server.registerTool('player-check-in', {
     description: 'Check in a player by known QR player ID and name. Atomically updates the player and returns their existing game, pairs them into the oldest waiting game, or creates a waiting game at the lowest available table.',
     inputSchema: { playerId, name: z.string().trim().min(1).max(80) },

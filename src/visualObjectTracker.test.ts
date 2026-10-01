@@ -63,7 +63,7 @@ describe('identity-preserving visual object tracking', () => {
     const tracker = new VisualObjectTracker()
     tracker.anchor([detection('player-a', 12)], patternedFrame([{ x: 12, seed: 3 }], 0), 0)
     let tracked
-    for (let now = 100; now <= 600; now += 100) {
+    for (let now = 100; now <= VISUAL_ACTION_ANCHOR_AGE_MS; now += 100) {
       ;[tracked] = tracker.update(patternedFrame([{ x: 14, seed: 3 }], now), now)
     }
     ;[tracked] = tracker.update(

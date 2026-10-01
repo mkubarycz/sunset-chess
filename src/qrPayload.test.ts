@@ -53,6 +53,7 @@ describe('player QR payloads', () => {
     expect(encodePlayerReference(1000)).toBe('SC1:RS')
     expect(encodePlayerReference(1234)).toBe('SC1:YA')
     expect(encodePlayerReference(2000)).toBe('SC1:1JK')
+    expect(encodePlayerReference(10000)).toBe('SC1:7PS')
     expect(parseQrPayload('SC1:YA')).toEqual({
       kind: 'player-reference',
       reference: { v: 1, kind: 'player-reference', playerId: 1234 },
@@ -67,7 +68,7 @@ describe('player QR payloads', () => {
     'SC1:',
     'SC1:Y-',
     'SC1:RR',
-    'SC1:1JL',
+    'SC1:7PT',
   ])('rejects malformed, noncanonical, or out-of-range compact references: %s', (value) => {
     expect(parseQrPayload(value)).toEqual({ kind: 'raw', value, label: value })
   })
@@ -94,7 +95,7 @@ describe('player QR payloads', () => {
   })
 
   it('fits the compact payload in a Version 1-H matrix with a 29-module symbol', () => {
-    for (const playerId of [1000, 1234, 2000]) {
+    for (const playerId of [1000, 1234, 2000, 10000]) {
       const qr = QRCode.create(encodePlayerReference(playerId), { errorCorrectionLevel: 'H' })
       expect(qr.modules.size).toBe(21)
       expect(qr.modules.size + 4 * 2).toBe(29)

@@ -14,6 +14,7 @@ const mimeTypes: Record<string, string> = {
   '.js': 'text/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
+  '.wasm': 'application/wasm',
 };
 
 const loopbackHosts = new Set(['localhost', '127.0.0.1', '[::1]']);
@@ -161,6 +162,9 @@ export function createSunsetServer(
         }
       }
       if (url.pathname === '/api/players') {
+        if (req.method === 'GET') {
+          return sendJson(res, 200, { players: repository.listLeaderboard(200) });
+        }
         if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed.' });
         if (req.headers['content-type']?.split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
           return sendJson(res, 400, { error: 'Content-Type must be application/json.' });
@@ -217,10 +221,33 @@ export function createSunsetServer(
       }
       const playerMatch = url.pathname.match(/^\/api\/players\/(\d+)$/);
       if (playerMatch) {
-        if (req.method !== 'GET' && req.method !== 'DELETE') {
+        if (req.method !== 'GET' && req.method !== 'DELETE' && req.method !== 'PATCH') {
           return sendJson(res, 405, { error: 'Method not allowed.' });
         }
         try {
+          if (req.method === 'PATCH') {
+            if (req.headers['content-type']?.split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
+              return sendJson(res, 400, { error: 'Content-Type must be application/json.' });
+            }
+            let body: unknown;
+            try {
+              body = await parseJson(req, 4096);
+            } catch (error) {
+              return sendJson(res, 400, {
+                error: error instanceof Error ? error.message : 'Invalid JSON body.',
+              });
+            }
+            if (!body || typeof body !== 'object' || Array.isArray(body)
+              || Object.keys(body).length !== 1 || typeof (body as { name?: unknown }).name !== 'string') {
+              return sendJson(res, 400, { error: 'Body must contain only a string name.' });
+            }
+            return sendJson(res, 200, {
+              player: repository.updatePlayerName(
+                Number(playerMatch[1]),
+                (body as { name: string }).name,
+              ),
+            });
+          }
           return sendJson(res, 200, {
             player: req.method === 'DELETE'
               ? repository.deletePlayer(Number(playerMatch[1]))

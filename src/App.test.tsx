@@ -121,6 +121,12 @@ function setupCamera() {
 
 describe('scanner and player producer', () => {
   beforeEach(() => {
+    localStorage.setItem('sunset-chess:preferences', JSON.stringify({
+      version: 1,
+      showDebugTools: true,
+      selectedTab: 'leaderboard',
+      markerShape: 'square',
+    }))
     resizeCallbacks = []
     vi.stubGlobal('ResizeObserver', class {
       observe = vi.fn()
@@ -883,7 +889,7 @@ describe('scanner and player producer', () => {
     expect(screen.getAllByText('Move QR away, then re-enter to check in')).toHaveLength(1)
 
     detections = []
-    for (let index = 0; index < 12; index += 1) {
+    for (let index = 0; index < 20; index += 1) {
       now += 100
       await act(async () => camera.callbacks.shift()?.(now))
     }
@@ -1026,7 +1032,7 @@ describe('scanner and player producer', () => {
     expect(screen.queryByRole('group', { name: 'Player check-in action zones' })).not.toBeInTheDocument()
 
     detections = detections.slice(0, 2)
-    for (let index = 0; index < 7; index += 1) {
+    for (let index = 0; index < 9; index += 1) {
       now += 100
       await act(async () => camera.callbacks.shift()?.(now))
     }
@@ -1467,7 +1473,7 @@ describe('scanner and player producer', () => {
     expect(screen.getByTestId('camera-interaction-layer')).toHaveClass('is-visible')
     expect(animate).not.toHaveBeenCalled()
     vi.mocked(nativeDetector.detect).mockResolvedValue([])
-    for (let elapsed = 2_400; elapsed <= 4_300; elapsed += 100) {
+    for (let elapsed = 2_400; elapsed <= 5_000; elapsed += 100) {
       now = 1_000 + elapsed
       await act(async () => camera.callbacks.shift()?.(now))
     }
@@ -1545,7 +1551,7 @@ describe('scanner and player producer', () => {
     expect(await screen.findByText('Waiting for an opponent at Table 1')).toBeInTheDocument()
     expect(list.scrollTop).toBe(120)
     vi.mocked(nativeDetector.detect).mockResolvedValue([])
-    for (let elapsed = 2_400; elapsed <= 4_300; elapsed += 100) {
+    for (let elapsed = 2_400; elapsed <= 5_000; elapsed += 100) {
       now = 1_000 + elapsed
       await act(async () => camera.callbacks.shift()?.(now))
     }
@@ -1612,6 +1618,7 @@ describe('scanner and player producer', () => {
       qrEncoder={qrEncoder}
       createPlayer={createPlayer}
     />)
+    await userEvent.click(screen.getByRole('tab', { name: 'Players' }))
     await userEvent.click(screen.getByRole('button', { name: 'Generate' }))
     expect(screen.getByText('Enter a player name.')).toHaveAttribute('role', 'alert')
     await userEvent.type(screen.getByLabelText('Player name'), ' Ada ')
@@ -1622,7 +1629,7 @@ describe('scanner and player producer', () => {
     expect(screen.queryByRole('button', { name: 'Download PNG' })).not.toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Print card' }))
     expect(document.body.dataset.printMode).toBe('card')
-    await userEvent.click(screen.getByRole('button', { name: 'Print sticker' }))
+    await userEvent.click(screen.getByRole('button', { name: /Print .*sticker/ }))
     expect(document.body.dataset.printMode).toBe('sticker')
     expect(print).toHaveBeenCalledTimes(2)
   })
@@ -1652,6 +1659,7 @@ describe('scanner and player producer', () => {
       qrEncoder={qrEncoder}
       fetchGames={vi.fn().mockResolvedValue([])}
     />)
+    await userEvent.click(screen.getByRole('tab', { name: 'Players' }))
     await userEvent.type(screen.getByLabelText('Player name'), 'Ada')
     await userEvent.click(screen.getByRole('button', { name: 'Generate' }))
     expect(await screen.findByText('Database unavailable.')).toHaveAttribute('role', 'alert')
@@ -1670,6 +1678,7 @@ describe('scanner and player producer', () => {
       qrEncoder={vi.fn().mockRejectedValue(new Error('QR encoder failed.'))}
       fetchGames={vi.fn().mockResolvedValue([])}
     />)
+    await userEvent.click(screen.getByRole('tab', { name: 'Players' }))
     await userEvent.type(screen.getByLabelText('Player name'), 'Ada')
     await userEvent.click(screen.getByRole('button', { name: 'Generate' }))
     expect(await screen.findByText('QR encoder failed.')).toHaveAttribute('role', 'alert')
@@ -1687,6 +1696,7 @@ describe('scanner and player producer', () => {
       qrEncoder={vi.fn().mockRejectedValue(new Error('QR encoder failed.'))}
       fetchGames={vi.fn().mockResolvedValue([])}
     />)
+    await userEvent.click(screen.getByRole('tab', { name: 'Players' }))
     await userEvent.type(screen.getByLabelText('Player name'), 'Ada')
     await userEvent.click(screen.getByRole('button', { name: 'Generate' }))
     expect(await screen.findByText(
@@ -1709,6 +1719,7 @@ describe('scanner and player producer', () => {
       createPlayer={createPlayer}
       deletePlayer={deletePlayer}
     />)
+    await userEvent.click(screen.getByRole('tab', { name: 'Players' }))
     const input = screen.getByLabelText('Player name')
     await userEvent.type(input, 'First')
     await userEvent.click(screen.getByRole('button', { name: 'Generate' }))
@@ -1850,6 +1861,7 @@ describe('ongoing games', () => {
       fetchGames={vi.fn().mockResolvedValue({ games: [], recentGames: [draw, whiteWin] })}
       gamesPollIntervalMs={60_000}
     />)
+    await userEvent.click(screen.getByRole('tab', { name: 'Recent Games' }))
     const recent = await screen.findByRole('region', { name: 'Recent finished games' })
     expect(within(recent).getByText('White wins')).toBeInTheDocument()
     expect(within(recent).getByText('Draw')).toBeInTheDocument()
@@ -1859,8 +1871,9 @@ describe('ongoing games', () => {
       .toHaveClass('drawn-game')
   })
 
-  it('renders exactly three base columns with the camera overlay outside the dashboard', async () => {
+  it('renders a tabbed primary workspace and one persistent Ongoing Games rail', async () => {
     render(<App fetchGames={vi.fn().mockResolvedValue([game])} gamesPollIntervalMs={60_000} />)
+    await userEvent.click(screen.getByRole('tab', { name: 'Leaderboard' }))
     const ongoingList = await screen.findByRole('region', { name: 'Ongoing games' })
     expect(screen.getByRole('heading', { level: 1, name: 'Sunset Chess' })).toHaveClass('visually-hidden')
     expect(screen.queryByText('Scan the position')).not.toBeInTheDocument()
@@ -1870,28 +1883,21 @@ describe('ongoing games', () => {
     const main = document.querySelector<HTMLElement>('.main-column')
     const scanner = document.querySelector<HTMLElement>('.scanner-panel')
     const liveGames = document.querySelector<HTMLElement>('.live-games')
-    const recentGames = document.querySelector<HTMLElement>('.recent-games')
-    const producer = document.querySelector<HTMLElement>('.producer')
     const ongoingColumn = document.querySelector<HTMLElement>('.ongoing-column')
-    const recentColumn = document.querySelector<HTMLElement>('.recent-column')
     const overlay = screen.getByTestId('camera-interaction-layer')
-    expect([...dashboard!.children]).toEqual([main, ongoingColumn, recentColumn])
+    expect([...dashboard!.children]).toEqual([main, ongoingColumn])
     expect(dashboard).not.toContainElement(overlay)
     expect(document.querySelector('.scanner-card, .center-stage, .right-rail')).not.toBeInTheDocument()
     const leaderboard = document.querySelector<HTMLElement>('.leaderboard')
     expect(main).toContainElement(document.querySelector('.brand-header'))
     expect(main).toContainElement(scanner)
     expect(main).toContainElement(leaderboard)
-    expect(main).toContainElement(producer)
     expect(ongoingColumn).toContainElement(liveGames)
-    expect(recentColumn).toContainElement(recentGames)
-    expect([liveGames, recentGames].map((section) =>
-      within(section!).getByRole('heading', { level: 2 }).textContent))
-      .toEqual(['Ongoing Games', 'Recent Games'])
+    expect(within(liveGames!).getByRole('heading', { level: 2 })).toHaveTextContent('Ongoing Games')
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent))
+      .toEqual(['Leaderboard', 'Recent Games', 'Players'])
     expect(main?.nextElementSibling).toBe(ongoingColumn)
-    expect(ongoingColumn?.nextElementSibling).toBe(recentColumn)
     expect(scanner!.compareDocumentPosition(leaderboard!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(leaderboard!.compareDocumentPosition(producer!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(within(liveGames!).getByRole('region', { name: 'Ongoing games' })).toBe(ongoingList)
     expect(ongoingList).toHaveClass('games-list')
   })

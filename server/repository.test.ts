@@ -23,6 +23,17 @@ afterEach(() => {
 });
 
 describe('ChessRepository', () => {
+  it('renames a player without changing ID, Elo, or baseline deletion eligibility', () => {
+    const { repository } = fixture();
+    const created = repository.upsertPlayer(1000, 'Alice');
+    expect(repository.updatePlayerName(1000, '  Alicia  ')).toEqual({
+      ...created,
+      name: 'Alicia',
+    });
+    expect(repository.listPlayers()).toEqual([{ id: 1000, name: 'Alicia', rating: 700 }]);
+    expect(repository.deletePlayer(1000).name).toBe('Alicia');
+    expect(() => repository.updatePlayerName(1000, 'Nobody')).toThrow('was not found');
+  });
   it('backfills honest rating history and preserves inconsistent cached ratings', () => {
     const { db, path } = fixture();
     db.exec(`

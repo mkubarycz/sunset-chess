@@ -21,7 +21,7 @@ const detection = (x: number): QrDetection => ({
 })
 
 describe('QR visual tracking', () => {
-  it('smooths registered observations without predicting between evidence frames', () => {
+  it('raises qualified-gap continuity from 180ms to 320ms without predicting geometry', () => {
     let state = observeDetection(emptyTrackingState(), detection(0), 100)
     state = observeVisualDetection(state, detection(0), 100, .9, true)
     state = observeVisualDetection(state, detection(20), 200, .9, true)
@@ -31,7 +31,7 @@ describe('QR visual tracking', () => {
     expect(first.detection!.location.topLeftCorner.x).toBeGreaterThan(0)
     expect(second.detection!.location.topLeftCorner.x)
       .toBe(first.detection!.location.topLeftCorner.x)
-    const coast = sampleTracking(second.state, 500)
+    const coast = sampleTracking(second.state, 550)
     expect(coast.phase).toBe('coasting')
     expect(coast.detection!.location.topLeftCorner.x).toBeLessThan(50)
   })
@@ -157,7 +157,7 @@ describe('QR visual tracking', () => {
     })
   })
 
-  it('bridges past 900ms on fresh visual evidence but expires authority and the hard TTL', () => {
+  it('keeps identity for 1600ms while action authority remains capped at 900ms', () => {
     let state = observeDetection(emptyTrackingState(), detection(10), 100)
     for (let now = 200; now <= 1_100; now += 100) {
       state = observeVisualDetection(state, detection(10 + now / 100), now, .9, true)

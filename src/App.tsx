@@ -135,6 +135,26 @@ import {
 import { encodeQrDataUrl } from './qrArtwork'
 import { Leaderboard } from './Leaderboard'
 import { SunsetChessLogo } from './SunsetChessLogo'
+import { DashboardTabs } from './DashboardTabs'
+import { PlayersPanel } from './PlayersPanel'
+import { SettingsMenu } from './SettingsMenu'
+import { CalibrationDialog } from './CalibrationDialog'
+import {
+  calibratedRect,
+  loadCalibration,
+  saveCalibration,
+  type CameraCalibration,
+} from './calibration'
+import {
+  loadUiPreferences,
+  saveUiPreferences,
+  type UiPreferences,
+} from './uiPreferences'
+import {
+  emptyPresenceState,
+  updatePresenceHysteresis,
+  type PresenceHysteresisState,
+} from './presenceHysteresis'
 import './App.css'
 
 type CameraState = 'initial' | 'requesting' | 'active' | 'inactive' | 'denied' | 'unavailable' | 'insecure' | 'error'
@@ -333,6 +353,14 @@ export default function App({
   const [cameraState, setCameraState] = useState<CameraState>(
     window.isSecureContext === false ? 'insecure' : 'initial',
   )
+  const initialPreferences = useMemo(() => loadUiPreferences(), [])
+  const initialCalibration = useMemo(() => loadCalibration(), [])
+  const [preferences, setPreferences] = useState<UiPreferences>(initialPreferences.preferences)
+  const [settingsError, setSettingsError] = useState(
+    [initialPreferences.error, initialCalibration.error].filter(Boolean).join(' '),
+  )
+  const [calibration, setCalibration] = useState<CameraCalibration>(initialCalibration.calibration)
+  const [calibrationOpen, setCalibrationOpen] = useState(false)
   const [remembered, setRemembered] = useState<RememberedDetection | null>(null)
   const [name, setName] = useState('')
   const [producerError, setProducerError] = useState('')
@@ -391,6 +419,7 @@ export default function App({
   const trackingDiagnosticsRef = useRef('0 active')
   const presenceStateRef = useRef('0 fresh / 0 present')
   const piecePresentRef = useRef(false)
+  const presenceHysteresisRef = useRef<PresenceHysteresisState>(emptyPresenceState())
   const cameraDiagnosticsRef = useRef<CameraDiagnostics | null>(null)
   const diagnosticsRef = useRef<HTMLSpanElement>(null)
   const cadenceRef = useRef<CadenceState>({
@@ -488,6 +517,29 @@ export default function App({
     () => featuredFirst(games, featuredGame),
     [featuredGame, games],
   )
+
+  const updatePreferences = useCallback((patch: Partial<UiPreferences>) => {
+    setPreferences((current) => {
+      const next = { ...current, ...patch }
+      try {
+        saveUiPreferences(next)
+        setSettingsError('')
+      } catch {
+        setSettingsError('Settings could not be saved in this browser.')
+      }
+      return next
+    })
+  }, [])
+
+  const updateCalibration = useCallback((next: CameraCalibration) => {
+    setCalibration(next)
+    try {
+      saveCalibration(next)
+      setSettingsError('')
+    } catch {
+      setSettingsError('Camera calibration could not be saved in this browser.')
+    }
+  }, [])
 
   useEffect(() => {
     gamesRef.current = games
@@ -763,6 +815,7 @@ export default function App({
     timerFallbackRef.current = false
     cameraDiagnosticsRef.current = null
     piecePresentRef.current = false
+    presenceHysteresisRef.current = emptyPresenceState()
     setPiecePresent(false)
     const stream = streamRef.current
     streamRef.current = null
@@ -984,7 +1037,9 @@ export default function App({
           .reduce((total, point) => ({ x: total.x + point.x / 4, y: total.y + point.y / 4 }), { x: 0, y: 0 })
         const displaced = !trackedCenter
           || Math.hypot(anchorCenter.x - trackedCenter.x, anchorCenter.y - trackedCenter.y) >= 4
-        if (displaced) drawPolygon(decodedAnchor, 'rgba(255, 181, 71, .72)', 2, [7, 5])
+        if (displaced && (preferences.showDebugTools || diagnosticSessionRef.current)) {
+          drawPolygon(decodedAnchor, 'rgba(255, 181, 71, .72)', 2, [7, 5])
+        }
       }
       if (!mapped) {
         anchorOnlyDiagnostics.push(`decoded anchor ${Math.round(sample.ageMs)}ms (object absent)`)
@@ -1019,7 +1074,7 @@ export default function App({
         lastTrailAtRef.current = now
       }
       const trail = trailForIdentity(trailRef.current, mapped.data, now)
-      if (trail.length > 1) {
+      if (trail.length > 1 && (preferences.showDebugTools || diagnosticSessionRef.current)) {
         context.beginPath()
         trail.forEach((item, index) => {
           const trailCenter = Object.values(item.detection.location).reduce(
@@ -1036,11 +1091,13 @@ export default function App({
           : model === 'affine' ? 'rgba(100,230,223,.65)' : 'rgba(255,199,125,.55)'
         context.stroke()
       }
-      drawPolygon(
-        mapped,
-        sample.phase === 'tracking' ? '#64e6df' : 'rgba(100,230,223,.48)',
-        4,
-      )
+      if (preferences.showDebugTools || diagnosticSessionRef.current) {
+        drawPolygon(
+          mapped,
+          sample.phase === 'tracking' ? '#64e6df' : 'rgba(100,230,223,.48)',
+          4,
+        )
+      }
     }
     trailRef.current = updateTrail(trailRef.current, null, now)
     trackingPhaseRef.current = visible.length === 0
@@ -1089,10 +1146,23 @@ export default function App({
     }))
     const presentPlayerIds = new Set(presentPlayerDetections.map(({ playerId }) => playerId))
     const freshPlayerIds = new Set(freshPlayerDetections.map(({ playerId }) => playerId))
-    const nextPiecePresent = visible.some(({ detection }) => isPlayerPiece(detection.data))
-    if (piecePresentRef.current !== nextPiecePresent) {
-      piecePresentRef.current = nextPiecePresent
-      setPiecePresent(nextPiecePresent)
+    const detectedPiece = visible.some(({ detection }) => isPlayerPiece(detection.data))
+    const presence = updatePresenceHysteresis(
+      presenceHysteresisRef.current,
+      detectedPiece,
+      now,
+    )
+    presenceHysteresisRef.current = presence.state
+    if (piecePresentRef.current !== presence.state.visible) {
+      piecePresentRef.current = presence.state.visible
+      setPiecePresent(presence.state.visible)
+    }
+    if (presence.removed) {
+      checkInStateRef.current = emptyCheckInState()
+      resultHoldRef.current = emptyHoldState()
+      resultAssignmentRef.current = null
+      actionZonesRef.current = []
+      setActionZones([])
     }
     presenceStateRef.current =
       `${freshPlayerIds.size} fresh / ${presentPlayerIds.size} present`
@@ -1150,6 +1220,7 @@ export default function App({
         blockedPlayerIds,
         resetKey: String(cameraGenerationRef.current),
         freshPlayerIds: holdQualifiedPlayerIds,
+        transformRect: (rect) => calibratedRect(rect, { width, height }, calibration),
       },
     )
     checkInStateRef.current = checkInUpdate.state
@@ -1191,6 +1262,7 @@ export default function App({
         width,
         height,
         resultAssignmentRef.current,
+        (rect) => calibratedRect(rect, { width, height }, calibration),
       )
       const bothFresh = matchedGame.opponent !== null
         && freshPlayerIds.has(matchedGame.anchor.playerId)
@@ -1214,8 +1286,21 @@ export default function App({
           ? 'Result conflict — choose Win + Lose or Draw + Draw'
           : '')
       nextZones = matchedGame.resultReady
-        ? createResultZones(matchedGame, width, height, hold, evaluation, !bothFresh)
-        : createDisabledResultZones(matchedGame, width, height)
+        ? createResultZones(
+            matchedGame,
+            width,
+            height,
+            hold,
+            evaluation,
+            !bothFresh,
+            (rect) => calibratedRect(rect, { width, height }, calibration),
+          )
+        : createDisabledResultZones(
+            matchedGame,
+            width,
+            height,
+            (rect) => calibratedRect(rect, { width, height }, calibration),
+          )
       if (hold.completedNow && bothFresh && assignment && matchedGame.opponent) {
         submitResult(
           matchedGame.game.id,
@@ -1358,7 +1443,15 @@ export default function App({
       }
     }
     cadenceRef.current.paints += visible.length > 0 ? 1 : 0
-  }, [clearResultMode, requestPlayerResolution, submitCheckIn, submitResult, updateOverlayMessage])
+  }, [
+    calibration,
+    clearResultMode,
+    preferences.showDebugTools,
+    requestPlayerResolution,
+    submitCheckIn,
+    submitResult,
+    updateOverlayMessage,
+  ])
 
   const captureTrackingFrame = useCallback((
     source: CanvasImageSource,
@@ -1468,6 +1561,11 @@ export default function App({
     }
     if (!piecePresentRef.current
       && detections.some(({ detection }) => isPlayerPiece(detection.data))) {
+      presenceHysteresisRef.current = {
+        visible: true,
+        missingSince: null,
+        lastSeenAt: now,
+      }
       piecePresentRef.current = true
       setPiecePresent(true)
     }
@@ -2218,6 +2316,7 @@ export default function App({
       playerCacheRef.current.set(next.playerId, next)
       setPlayer(next)
       setQrDataUrl(url)
+      setLeaderboardRefresh((value) => value + 1)
     } catch (error) {
       if (controller.signal.aborted || request !== qrRequestRef.current) return
       setPlayer(null)
@@ -2253,7 +2352,8 @@ export default function App({
     : parsedRaw
   const canStart = cameraState !== 'requesting' && cameraState !== 'insecure'
   const diagnosticRecording = diagnosticUi.phase === 'recording'
-  const interactionVisible = cameraState === 'active' && (piecePresent || diagnosticRecording)
+  const interactionVisible = cameraState === 'active'
+    && (piecePresent || diagnosticRecording || calibrationOpen)
 
   useLayoutEffect(() => {
     const checkInTransition = checkInTransitions[0]
@@ -2327,6 +2427,72 @@ export default function App({
     transitionCleanupRef.current.clear()
   }, [])
 
+  const recentGamesPanel = (
+    <section className="recent-games-tab" aria-labelledby="recent-games-heading">
+      <div className="section-heading"><div>
+        <p className="eyebrow">Completed tables</p>
+        <h2 id="recent-games-heading">Recent Games</h2>
+      </div></div>
+      {recentGames.length === 0
+        ? <p className="games-message">No finished games yet.</p>
+        : <div className="recent-games-grid" role="region" aria-label="Recent finished games">
+            {recentGames.map((game) => (
+              <GameCard
+                className={` finished-game${game.result === '1/2-1/2' ? ' drawn-game' : ''}`}
+                key={gameIdentityKey(game)}
+                game={game}
+                ariaLabel={`Table ${game.tableNumber}: ${game.result}`}
+              />
+            ))}
+          </div>}
+    </section>
+  )
+
+  const playerCreator = (
+    <section className="producer" aria-labelledby="producer-heading">
+      <div className="producer-form">
+        <p className="eyebrow">Player QR</p>
+        <h2 id="producer-heading">Add New Player</h2>
+        <p>Create a local QR identity.</p>
+        <label htmlFor="player-name">Player name</label>
+        <input id="player-name" value={name} maxLength={81}
+          onChange={(event) => setName(event.target.value)}
+          onKeyDown={(event) => { if (event.key === 'Enter') void generatePlayerQr() }} />
+        <fieldset className="marker-shape">
+          <legend>Print shape</legend>
+          {(['square', 'round'] as const).map((shape) => (
+            <label key={shape}><input type="radio" name="marker-shape" value={shape}
+              checked={preferences.markerShape === shape}
+              onChange={() => updatePreferences({ markerShape: shape })} />
+              {shape === 'square' ? 'Square' : 'Round sticker'}</label>
+          ))}
+        </fieldset>
+        {producerError && <p className="form-error" role="alert">{producerError}</p>}
+        <button type="button" onClick={() => void generatePlayerQr()}>Generate</button>
+      </div>
+      <div className="qr-card-wrap">
+        {player && qrDataUrl ? <>
+          <article className={`qr-card marker-${preferences.markerShape}`} aria-label="Generated player QR card">
+            <div className="marker-substrate">
+              <img src={qrDataUrl} alt={`QR code for ${player.name}, player ${player.playerId}`} />
+            </div>
+            <h3>{player.name}</h3><p>Player #{player.playerId}</p>
+          </article>
+          <div className="producer-actions">
+            <button type="button" className="secondary" onClick={() => {
+              document.body.dataset.printMode = 'card'; window.print()
+            }}>Print card</button>
+            <button type="button" className="secondary" onClick={() => {
+              document.body.dataset.printMode = 'sticker'
+              document.body.dataset.markerShape = preferences.markerShape
+              window.print()
+            }}>Print {preferences.markerShape === 'round' ? '1 inch round sticker' : '1×1 inch sticker'}</button>
+          </div>
+        </> : <p className="empty-card">Generated card appears here.</p>}
+      </div>
+    </section>
+  )
+
   return (
     <main className="shell">
       <h1 className="visually-hidden">Sunset Chess</h1>
@@ -2339,10 +2505,15 @@ export default function App({
           <header className="brand-header">
             <SunsetChessLogo compact />
             <div><p className="eyebrow">Club play</p><p className="brand-name">Sunset Chess</p></div>
+            <SettingsMenu
+              showDebugTools={preferences.showDebugTools}
+              onDebugChange={(showDebugTools) => updatePreferences({ showDebugTools })}
+              onCalibrate={() => setCalibrationOpen(true)}
+              error={settingsError}
+            />
           </header>
 
-          <div className="primary-workspace">
-            <section className="scanner-panel" aria-labelledby="scanner-heading">
+          <section className="scanner-panel" aria-labelledby="scanner-heading">
               <div className="controls">
                 <div className="status" role="status" aria-live="polite">
                   <span className={`status-dot ${cameraState}`} />
@@ -2363,10 +2534,10 @@ export default function App({
                   ? 'Piece detected — camera interaction shown'
                   : cameraState === 'active' ? 'No piece detected — camera interaction hidden' : ''}
               </p>
-              <p className="scanner-diagnostics" aria-label="Scanner diagnostics">
+              {preferences.showDebugTools && <p className="scanner-diagnostics" aria-label="Scanner diagnostics">
                 <span ref={diagnosticsRef}>Measuring camera / decode / paint cadence…</span>
-              </p>
-              <div className="tracking-diagnostic-controls">
+              </p>}
+              {preferences.showDebugTools && <div className="tracking-diagnostic-controls">
                 <button
                   type="button"
                   className="secondary"
@@ -2392,7 +2563,7 @@ export default function App({
                     Download {diagnosticUi.id}.json
                   </a>
                 )}
-              </div>
+              </div>}
               {checkInNotice && (
                 <p
                   className={`check-in-notice${checkInError ? ' error' : ''}`}
@@ -2402,49 +2573,21 @@ export default function App({
                   {checkInNotice}
                 </p>
               )}
-            </section>
-
-            <Leaderboard refreshKey={leaderboardRefresh} variant="rail" />
-
-            <section className="producer" aria-labelledby="producer-heading">
-              <div className="producer-form">
-                <p className="eyebrow">Player QR</p>
-                <h2 id="producer-heading">Make a player card</h2>
-                <p>Create a local QR identity.</p>
-                <label htmlFor="player-name">Player name</label>
-                <input
-                  id="player-name"
-                  value={name}
-                  maxLength={81}
-                  onChange={(event) => setName(event.target.value)}
-                  onKeyDown={(event) => { if (event.key === 'Enter') void generatePlayerQr() }}
-                />
-                {producerError && <p className="form-error" role="alert">{producerError}</p>}
-                <button type="button" onClick={() => void generatePlayerQr()}>Generate</button>
-              </div>
-              <div className="qr-card-wrap">
-                {player && qrDataUrl ? (
-                  <>
-                    <article className="qr-card" aria-label="Generated player QR card">
-                      <img src={qrDataUrl} alt={`QR code for ${player.name}, player ${player.playerId}`} />
-                      <h3>{player.name}</h3>
-                      <p>Player #{player.playerId}</p>
-                    </article>
-                    <div className="producer-actions">
-                      <button type="button" className="secondary" onClick={() => {
-                        document.body.dataset.printMode = 'card'
-                        window.print()
-                      }}>Print card</button>
-                      <button type="button" className="secondary" onClick={() => {
-                        document.body.dataset.printMode = 'sticker'
-                        window.print()
-                      }}>Print sticker</button>
-                    </div>
-                  </>
-                ) : <p className="empty-card">Generated card appears here.</p>}
-              </div>
-            </section>
-          </div>
+          </section>
+          <DashboardTabs
+            selected={preferences.selectedTab}
+            onSelect={(selectedTab) => updatePreferences({ selectedTab })}
+          >{{
+            leaderboard: <Leaderboard refreshKey={leaderboardRefresh} variant="rail" />,
+            'recent-games': recentGamesPanel,
+            players: <div className="players-layout">
+              <PlayersPanel refreshKey={leaderboardRefresh} onMutate={() => {
+                playerCacheRef.current.clear()
+                setLeaderboardRefresh((value) => value + 1)
+              }} />
+              {playerCreator}
+            </div>,
+          }}</DashboardTabs>
         </section>
 
         <aside className="game-column ongoing-column" aria-labelledby="ongoing-games-heading">
@@ -2488,30 +2631,6 @@ export default function App({
           </section>
         </aside>
 
-        <aside className="game-column recent-column" aria-labelledby="recent-games-heading">
-          <section className="ongoing-games recent-games">
-            <div className="section-heading">
-              <div>
-                <p className="eyebrow">Completed tables</p>
-                <h2 id="recent-games-heading">Recent Games</h2>
-              </div>
-            </div>
-            {recentGames.length === 0 ? (
-              <p className="games-message">No finished games yet.</p>
-            ) : (
-              <div className="games-list" role="region" aria-label="Recent finished games">
-                {recentGames.map((game) => (
-                  <GameCard
-                    className={` finished-game${game.result === '1/2-1/2' ? ' drawn-game' : ''}`}
-                    key={gameIdentityKey(game)}
-                    game={game}
-                    ariaLabel={`Table ${game.tableNumber}: ${game.result}`}
-                  />
-                ))}
-              </div>
-            )}
-          </section>
-        </aside>
       </div>
 
       <section
@@ -2530,10 +2649,10 @@ export default function App({
               <span><i className={`status-dot ${cameraState}`} />{diagnosticRecording ? 'Recording diagnostic' : 'Piece detected'}</span>
               <button type="button" className="secondary" onClick={startCamera}>Restart camera</button>
             </div>
-            <div className="tracking-legend" aria-label="Tracking overlay legend">
+            {preferences.showDebugTools && <div className="tracking-legend" aria-label="Tracking overlay legend">
               <span><i className="decoded-anchor-key" />Last decoded QR</span>
               <span><i className="tracked-object-key" />Tracked object</span>
-            </div>
+            </div>}
           </>
         )}
         {interactionVisible && parsed && (
@@ -2592,6 +2711,18 @@ export default function App({
         )}
         {interactionVisible && !gameContext?.resultReady && <div className="scan-corners" aria-hidden="true" />}
       </section>
+      {calibrationOpen && (
+        <CalibrationDialog
+          calibration={calibration}
+          videoSize={{
+            width: videoRef.current?.videoWidth ?? 0,
+            height: videoRef.current?.videoHeight ?? 0,
+          }}
+          playerMarkerPresent={piecePresent}
+          onChange={updateCalibration}
+          onClose={() => setCalibrationOpen(false)}
+        />
+      )}
     </main>
   )
 }

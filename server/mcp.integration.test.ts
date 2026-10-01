@@ -209,7 +209,7 @@ describe('Sunset Chess HTTP and MCP', () => {
   it('creates authoritative players before compact QR display and resolves them by id', async () => {
     const app = await fixture();
     const endpoint = `http://127.0.0.1:${app.port}/api/players`;
-    expect((await fetch(endpoint)).status).toBe(405);
+    expect(await (await fetch(endpoint)).json()).toEqual({ players: [] });
     expect((await fetch(endpoint, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -228,10 +228,24 @@ describe('Sunset Chess HTTP and MCP', () => {
     const lookup = await fetch(`${endpoint}/${created.player.id}`);
     expect(lookup.status).toBe(200);
     expect(await lookup.json()).toEqual({ player: { ...created.player, rating: 700 } });
+    const renamed = await fetch(`${endpoint}/${created.player.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Ada Lovelace' }),
+    });
+    expect(renamed.status).toBe(200);
+    expect(await renamed.json()).toEqual({
+      player: { ...created.player, name: 'Ada Lovelace', rating: 700 },
+    });
+    expect((await fetch(endpoint).then((response) => response.json()))).toMatchObject({
+      players: [{ id: created.player.id, name: 'Ada Lovelace', currentRating: 700 }],
+    });
     expect((await fetch(`${endpoint}/999`)).status).toBe(404);
     const removed = await fetch(`${endpoint}/${created.player.id}`, { method: 'DELETE' });
     expect(removed.status).toBe(200);
-    expect(await removed.json()).toEqual({ player: { ...created.player, rating: 700 } });
+    expect(await removed.json()).toEqual({
+      player: { ...created.player, name: 'Ada Lovelace', rating: 700 },
+    });
     expect((await fetch(`${endpoint}/${created.player.id}`)).status).toBe(404);
 
     const checkedIn = await app.repository.createPlayer('Busy');
@@ -270,7 +284,7 @@ describe('Sunset Chess HTTP and MCP', () => {
     expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
       'game-create', 'game-delete', 'game-get', 'game-list', 'game-result-set',
       'leaderboard-list', 'player-check-in', 'player-create', 'player-delete',
-      'player-get', 'player-list', 'player-profile-get', 'player-upsert',
+      'player-get', 'player-list', 'player-name-update', 'player-profile-get', 'player-upsert',
     ]);
     expect(Object.fromEntries(tools.tools.map((tool) => [tool.name, tool.annotations]))).toMatchObject({
       'player-list': { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },

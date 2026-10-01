@@ -190,6 +190,7 @@ export class ChessRepository {
       if (available.length === 0) {
         throw new ConflictError('No player IDs are available in the 1000–2000 range.');
       }
+
       const index = this.randomIndex(available.length);
       if (!Number.isInteger(index) || index < 0 || index >= available.length) {
         throw new Error('Random index source returned an out-of-range value.');
@@ -203,6 +204,14 @@ export class ChessRepository {
       this.db.exec('ROLLBACK');
       throw error;
     }
+  }
+
+  updatePlayerName(id: number, rawName: string): Player {
+    const name = validatePlayerInput(id, rawName);
+    const player = this.getPlayer(id);
+    if (player.name === name) return player;
+    this.db.prepare('UPDATE Player SET name = ? WHERE id = ?').run(name, id);
+    return { ...player, name };
   }
 
   deletePlayer(id: number): Player {

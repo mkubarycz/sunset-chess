@@ -1,5 +1,5 @@
 export const PLAYER_ID_MIN = 1000
-export const PLAYER_ID_MAX = 2000
+export const PLAYER_ID_MAX = 10000
 export const PLAYER_NAME_MAX_LENGTH = 80
 
 export interface PlayerPayload {
