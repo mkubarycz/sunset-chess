@@ -92,7 +92,9 @@ import { createOpenCvWorker, OpticalFlowTracker } from './opticalFlowTracker'
 import {
   TRACKING_CAPTURE_BUDGET_MS,
   TRACKING_CAPTURE_MAX_INTERVAL_MS,
+  TRACKING_ACTION_ANCHOR_MAX_AGE_MS,
   TRACKING_BRIDGE_MAX_ANCHOR_AGE_MS,
+  TRACKING_COAST_MS,
 } from './trackingPolicy'
 import {
   selectQuality,
@@ -149,6 +151,12 @@ import {
   updatePresenceHysteresis,
   type PresenceHysteresisState,
 } from './presenceHysteresis'
+import {
+  emptyResultAuthorityUpdate,
+  RESULT_AUTHORITY_GRACE_MS,
+  updateResultAuthority,
+  type ResultAuthorityUpdate,
+} from './resultAuthority'
 import './App.css'
 
 type CameraState = 'initial' | 'requesting' | 'active' | 'inactive' | 'denied' | 'unavailable' | 'insecure' | 'error'
@@ -500,6 +508,7 @@ export default function App({
   const gameContextRef = useRef<GameContext | null>(null)
   const resultHoldRef = useRef<HoldState>(emptyHoldState())
   const resultAssignmentRef = useRef<ResultAssignment | null>(null)
+  const resultAuthorityRef = useRef<ResultAuthorityUpdate>(emptyResultAuthorityUpdate())
   const submittedResultRef = useRef<string | null>(null)
   const checkInStateRef = useRef<CheckInState>(emptyCheckInState())
   const actionZonesRef = useRef<ActionZone[]>([])
@@ -537,6 +546,7 @@ export default function App({
     gameContextRef.current = null
     resultHoldRef.current = emptyHoldState()
     resultAssignmentRef.current = null
+    resultAuthorityRef.current = emptyResultAuthorityUpdate()
     submittedResultRef.current = null
     setGameContext(null)
   }, [])
@@ -628,6 +638,7 @@ export default function App({
       submittedResultRef.current = null
       resultHoldRef.current = emptyHoldState()
       resultAssignmentRef.current = null
+      resultAuthorityRef.current = emptyResultAuthorityUpdate()
     }).finally(() => {
       if (resultRequestRef.current === controller) resultRequestRef.current = null
     })
@@ -878,7 +889,9 @@ export default function App({
           actionZoneAuthority: {
             policy: 'evidence-qualified detections only',
             holdQualificationGraceMs: HOLD_QUALIFICATION_GRACE_MS,
-            resultAuthorityUnchanged: true,
+            resultAuthorityGraceMs: RESULT_AUTHORITY_GRACE_MS,
+            resultActionAnchorMaxAgeMs: TRACKING_ACTION_ANCHOR_MAX_AGE_MS,
+            resultGeometryMaxAgeMs: TRACKING_COAST_MS,
           },
         },
         samples: session.samples,
@@ -1154,6 +1167,18 @@ export default function App({
     }))
     const presentPlayerIds = new Set(presentPlayerDetections.map(({ playerId }) => playerId))
     const freshPlayerIds = new Set(freshPlayerDetections.map(({ playerId }) => playerId))
+    const resultGeometryFreshPlayerIds = new Set(visible.flatMap(({
+      detection, evidenceAgeMs,
+    }) => {
+      if (evidenceAgeMs > TRACKING_COAST_MS) return []
+      return resolvedPlayerDetection(detection).map(({ playerId }) => playerId)
+    }))
+    const resultActionAnchorFreshPlayerIds = new Set(visible.flatMap(({
+      detection, ageMs,
+    }) => {
+      if (ageMs > TRACKING_ACTION_ANCHOR_MAX_AGE_MS) return []
+      return resolvedPlayerDetection(detection).map(({ playerId }) => playerId)
+    }))
     const detectedPiece = visible.some(({ detection }) => isPlayerPiece(detection.data))
     const presence = updatePresenceHysteresis(
       presenceHysteresisRef.current,
@@ -1169,6 +1194,7 @@ export default function App({
       checkInStateRef.current = emptyCheckInState()
       resultHoldRef.current = emptyHoldState()
       resultAssignmentRef.current = null
+      resultAuthorityRef.current = emptyResultAuthorityUpdate()
       actionZonesRef.current = []
       setActionZones([])
     }
@@ -1193,6 +1219,7 @@ export default function App({
     if (laneBinding.changed) {
       resultHoldRef.current = emptyHoldState()
       resultAssignmentRef.current = null
+      resultAuthorityRef.current = emptyResultAuthorityUpdate()
     }
     const interactionPlayers = reentryLatchRef.current.blocked || tooManyPlayers
       ? []
@@ -1250,17 +1277,20 @@ export default function App({
     if (tooManyPlayers) {
       resultHoldRef.current = emptyHoldState()
       resultAssignmentRef.current = null
+      resultAuthorityRef.current = emptyResultAuthorityUpdate()
       updateOverlayMessage('Too many player codes — show no more than two')
       if (gameContextRef.current && !resultRequestRef.current) clearResultMode()
     } else if (!matchedGame) {
       resultHoldRef.current = emptyHoldState()
       resultAssignmentRef.current = null
+      resultAuthorityRef.current = emptyResultAuthorityUpdate()
       updateOverlayMessage('')
       if (gameContextRef.current && !resultRequestRef.current) clearResultMode()
     } else {
       if (gameContextRef.current?.key !== matchedGame.key) {
         resultHoldRef.current = emptyHoldState()
         resultAssignmentRef.current = null
+        resultAuthorityRef.current = emptyResultAuthorityUpdate()
         setGameContext(matchedGame)
       }
       gameContextRef.current = matchedGame
@@ -1270,17 +1300,34 @@ export default function App({
         height,
         resultAssignmentRef.current,
       )
-      const bothFresh = matchedGame.opponent !== null
-        && freshPlayerIds.has(matchedGame.anchor.playerId)
-        && freshPlayerIds.has(matchedGame.opponent.playerId)
       const assignment = evaluation.assignment
+      const resultPlayerIds = matchedGame.opponent === null
+        ? [matchedGame.anchor.playerId]
+        : [matchedGame.anchor.playerId, matchedGame.opponent.playerId]
+      const laneKey = resultPlayerIds
+        .map((playerId) => `${playerId}:${laneBinding.state.lanes[playerId] ?? 'none'}`)
+        .sort()
+        .join('|')
+      const authority = updateResultAuthority(resultAuthorityRef.current.state, {
+        now,
+        gameKey: matchedGame.key,
+        laneKey,
+        assignmentKey: assignment?.key ?? null,
+        holdKey: resultHoldRef.current.key,
+        playerIds: resultPlayerIds,
+        directPlayerIds: freshPlayerIds,
+        freshGeometryPlayerIds: resultGeometryFreshPlayerIds,
+        freshActionAnchorPlayerIds: resultActionAnchorFreshPlayerIds,
+        conflict: evaluation.status === 'conflict',
+      })
+      resultAuthorityRef.current = authority
       const hold = updateHold(
         resultHoldRef.current,
         assignment?.key ?? null,
         now,
         undefined,
         {
-          qualified: Boolean(bothFresh && assignment),
+          qualified: authority.qualified,
           retentionMs: RESULT_HOLD_RETENTION_MS,
           reset: evaluation.status === 'conflict',
         },
@@ -1288,7 +1335,7 @@ export default function App({
       resultHoldRef.current = hold.state
       if (assignment) resultAssignmentRef.current = assignment
       else if (hold.state.key === null) resultAssignmentRef.current = null
-      updateOverlayMessage(evaluation.status === 'conflict' && bothFresh
+      updateOverlayMessage(evaluation.status === 'conflict'
           ? 'Result conflict — choose Win + Lose or Draw + Draw'
           : '')
       nextZones = matchedGame.resultReady
@@ -1298,14 +1345,17 @@ export default function App({
             height,
             hold,
             evaluation,
-            !bothFresh,
+            !authority.qualified,
           )
         : createDisabledResultZones(
             matchedGame,
             width,
             height,
           )
-      if (hold.completedNow && bothFresh && assignment && matchedGame.opponent) {
+      if (hold.state.completed
+        && authority.source === 'direct'
+        && assignment
+        && matchedGame.opponent) {
         submitResult(
           matchedGame.game.id,
           assignment.result,
@@ -1379,6 +1429,7 @@ export default function App({
           `selection ${modelDetails.map((item) => item.selectedModelReason ?? 'none').join(' | ') || 'none'}`,
           `stabilizer ${visible.map((item) => `${item.detection.data.slice(0, 10)} ${item.stabilization.motion} Δ${item.stabilization.rawFilteredDeltaPx.toFixed(2)}px speed ${item.stabilization.normalizedSpeed.toFixed(2)}/s cutoff ${item.stabilization.cutoffHz.toFixed(2)}Hz gain ${item.stabilization.gain.toFixed(2)}`).join(' | ') || 'none'}`,
           `qualification ${visible.map((item) => `${item.detection.data.slice(0, 10)} ${item.holdQualificationSource} conf ${(item.confidence * 100).toFixed(0)}% grace ${Math.round(item.holdQualificationGraceRemainingMs)}ms`).join(' | ') || 'none'}`,
+          `result authority ${resultAuthorityRef.current.source} grace ${Math.round(resultAuthorityRef.current.graceRemainingMs)}ms`,
           `ActionZone ${nextZones.map((zone) => `${zone.id}:${zone.occupant?.playerId ?? '-'} ${zone.status} ${Math.round(zone.progress * 100)}%`).join(' | ') || 'none'}`,
           'LEGEND amber dashed=decoded anchor · cyan/green=current planar fit · trail=model confidence',
         ]
@@ -1430,6 +1481,16 @@ export default function App({
             decodedAnchorAgeMs: item.ageMs,
             visualEvidenceAgeMs: item.evidenceAgeMs,
           })),
+          resultAuthority: {
+            qualified: resultAuthorityRef.current.qualified,
+            source: resultAuthorityRef.current.source,
+            graceRemainingMs: resultAuthorityRef.current.graceRemainingMs,
+            gameKey: resultAuthorityRef.current.state.gameKey,
+            laneKey: resultAuthorityRef.current.state.laneKey,
+            assignmentKey: resultAuthorityRef.current.state.assignmentKey,
+            playerIdentityKey: resultAuthorityRef.current.state.playerIdentityKey,
+            directAuthorityAt: resultAuthorityRef.current.state.directAuthorityAt,
+          },
           dimensions: {
             source: scanSize,
             video: { width: video.videoWidth, height: video.videoHeight },

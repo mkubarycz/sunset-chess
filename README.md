@@ -163,7 +163,16 @@ visual observation refreshes a 240 ms qualification grace. During that bounded
 window, a lower-confidence fallback observation may continue a check-in hold only
 while its decoded authority remains fresh and its visual geometry remains within
 the existing 320 ms coast bound. The grace cannot seed qualification, cross an
-identity change, retain stale geometry, or grant final-result action authority.
+identity change or retain stale geometry.
+
+Final-result holds have a separate, stricter 180 ms authority grace. It applies
+only after a direct-authority result hold has started and both already matched
+identities still have geometry within the 320 ms coast bound and decoded anchors
+within the 900 ms result-action bound. The game, identity set, lane binding, and
+non-conflicting assignment key must all remain unchanged, and each player must
+have had direct result authority within the grace window. Grace never seeds a
+hold, crosses a context change, survives a conflict, or submits a result; a
+completed hold waits for a direct-authority frame before submission.
 
 Every decoder result still refreshes identity authority, decode time, and the
 amber dashed decoded anchor. It does not automatically replace cyan geometry.
@@ -363,9 +372,11 @@ positioning improves optical/detection reliability without overlapping the card,
 the opposite lane, or stage bounds, including narrow and very short stages.
 Win + Lose or Lose + Win records a
 decisive result by seat, while Draw + Draw records `1/2-1/2`. Every other pair
-is an explicit conflict. Valid pairs share exactly one accumulated 1.5-second timer with both detections
-strictly authoritative. Missing authority pauses progress for at most 450 ms and
-re-acquisition resumes it, but submission is possible only on a currently authoritative
+is an explicit conflict. Valid pairs share exactly one accumulated 1.5-second timer. Direct authority from
+both detections starts the timer; a qualifying 180 ms result-specific grace may
+continue an already-started timer through a brief confidence dip under the
+constraints above. Other missing authority pauses progress for at most 450 ms and
+re-acquisition resumes it, but submission is possible only on a currently direct-authority
 frame. The displayed preview is
 mirrored, so source coordinates are transformed through the same mirrored
 `object-fit: cover` mapping used by tracking before lane and zone matching.
@@ -386,9 +397,11 @@ Successful finalization refreshes ongoing and recent games, reports explicit
 success, and returns still-visible players to check-in-shaped ActionZones with a
 move-away/re-enter guard. The guard reopens only after zero qualifying active
 detections persist for a short debounce, so a one-frame miss cannot re-arm it.
-Stale pre-finalization tracking therefore cannot start a new hold. Result holds advance only from decoded or high-confidence, recently
-decode-anchored visual detections. Lower-confidence tracking can preserve context
-but cannot be treated as an irreversible choice. Successful check-in still promotes the table and uses the QR-to-table
+Stale pre-finalization tracking therefore cannot start a new hold. Result holds
+start only from decoded or high-confidence, recently decode-anchored visual
+detections. Lower-confidence tracking may continue an existing hold for the
+bounded 180 ms grace but cannot seed or submit an irreversible choice. Successful
+check-in still promotes the table and uses the QR-to-table
 animation (or the reduced-motion highlight); failures remain explicit.
 
 New player QR codes contain only a compact, versioned uppercase alphanumeric
