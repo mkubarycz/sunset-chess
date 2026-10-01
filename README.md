@@ -158,6 +158,12 @@ accumulate on accepted visual evidence at confidence ≥0.78 while its decode id
 anchor remains within the hard 1.6-second bridge. Fresh high-confidence visual
 evidence may preserve display continuity through a hard 1.6-second decode-anchor
 TTL, while evidence itself expires after 450 ms without another accepted flow.
+After qualification, a same-identity authoritative decode or high-confidence
+visual observation refreshes a 240 ms qualification grace. During that bounded
+window, a lower-confidence fallback observation may continue a check-in hold only
+while its decoded authority remains fresh and its visual geometry remains within
+the existing 320 ms coast bound. The grace cannot seed qualification, cross an
+identity change, retain stale geometry, or grant final-result action authority.
 
 Every decoder result still refreshes identity authority, decode time, and the
 amber dashed decoded anchor. It does not automatically replace cyan geometry.
@@ -210,6 +216,8 @@ dimensions/cadence, identity, and rejection reason. It also reports all
 candidate-model errors and the selection reason, decode refresh/suppressed/forced
 reanchor counters and reason, stationary/moving state, raw and filtered
 centers/quads, raw-filter delta, normalized speed, cutoff, and gain.
+Each visible track also records hold-qualification source, tracker confidence,
+remaining qualification grace, decoded-anchor age, and visual-evidence age.
 
 At ten seconds, matching timestamp/session-ID downloads appear:
 

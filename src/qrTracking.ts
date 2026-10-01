@@ -17,6 +17,13 @@ import {
 } from './quadStabilizer'
 
 export type TrackingPhase = 'tracking' | 'coasting' | 'lost'
+export type HoldQualificationSource =
+  | 'high-confidence-visual'
+  | 'decoded-grace'
+  | 'visual-grace'
+  | 'none'
+
+export const HOLD_QUALIFICATION_GRACE_MS = 240
 
 export interface TrackingState {
   decodedAnchor: QrDetection | null
@@ -31,6 +38,8 @@ export interface TrackingState {
   actionable: boolean
   stabilizer: QuadStabilizerState | null
   lastReanchorAt: number
+  holdQualifiedAt: number
+  holdQualificationAuthority: 'decoded' | 'visual'
 }
 
 export interface TrackingSample {
@@ -44,6 +53,8 @@ export interface TrackingSample {
   evidenceAgeMs: number
   actionable: boolean
   holdQualified: boolean
+  holdQualificationSource: HoldQualificationSource
+  holdQualificationGraceRemainingMs: number
   expired: boolean
   stabilization: {
     motion: StabilizerMotion
@@ -71,6 +82,8 @@ export function emptyTrackingState(): TrackingState {
     actionable: false,
     stabilizer: null,
     lastReanchorAt: 0,
+    holdQualifiedAt: Number.NEGATIVE_INFINITY,
+    holdQualificationAuthority: 'visual',
   }
 }
 
@@ -79,11 +92,32 @@ export function observeDetection(
   detection: QrDetection,
   now: number,
 ): TrackingState {
+  const identityChanged = state.decodedAnchor !== null
+    && state.decodedAnchor.data !== detection.data
+  if (identityChanged) {
+    return {
+      ...emptyTrackingState(),
+      decodedAnchor: detection,
+      decodedAt: now,
+    }
+  }
+  const geometryIdentityMatches = state.target?.data === detection.data
+    && state.rendered?.data === detection.data
+  const geometryIsRecent = now - state.visualEvidenceAt <= TRACKING_COAST_MS
+  const qualificationIsContinuous = state.confidence >= .78
+    || now - state.holdQualifiedAt <= HOLD_QUALIFICATION_GRACE_MS
+  const refreshQualification = geometryIdentityMatches
+    && geometryIsRecent
+    && qualificationIsContinuous
   return {
     ...state,
     decodedAnchor: detection,
     decodedAt: now,
     actionable: state.source === 'visual' && state.actionable,
+    holdQualifiedAt: refreshQualification ? now : state.holdQualifiedAt,
+    holdQualificationAuthority: refreshQualification
+      ? 'decoded'
+      : state.holdQualificationAuthority,
   }
 }
 
@@ -95,6 +129,9 @@ export function observeVisualDetection(
   actionable: boolean,
 ): TrackingState {
   const stabilizer = updateQuadStabilizer(state.stabilizer, detection, now)
+  const highConfidenceAuthority = confidence >= .78
+    && state.decodedAnchor?.data === detection.data
+    && now - state.decodedAt <= TRACKING_BRIDGE_MAX_ANCHOR_AGE_MS
   return {
     ...state,
     target: detection,
@@ -106,6 +143,10 @@ export function observeVisualDetection(
     actionable: actionable || confidence >= .78,
     velocity: { x: 0, y: 0 },
     stabilizer,
+    holdQualifiedAt: highConfidenceAuthority ? now : state.holdQualifiedAt,
+    holdQualificationAuthority: highConfidenceAuthority
+      ? 'visual'
+      : state.holdQualificationAuthority,
   }
 }
 
@@ -135,6 +176,8 @@ export function sampleTracking(state: TrackingState, now: number): TrackingSampl
       evidenceAgeMs: Math.max(0, evidenceAge),
       actionable: false,
       holdQualified: false,
+      holdQualificationSource: 'none',
+      holdQualificationGraceRemainingMs: 0,
       expired: true,
       stabilization: stabilizationDiagnostics(state),
     }
@@ -152,11 +195,36 @@ export function sampleTracking(state: TrackingState, now: number): TrackingSampl
       evidenceAgeMs: Number.POSITIVE_INFINITY,
       actionable: false,
       holdQualified: false,
+      holdQualificationSource: 'none',
+      holdQualificationGraceRemainingMs: 0,
       expired: false,
       stabilization: stabilizationDiagnostics(state),
     }
   }
   const rendered = state.stabilizer?.filtered ?? state.rendered
+  const geometryIdentityMatches = state.target.data === state.decodedAnchor.data
+    && rendered.data === state.decodedAnchor.data
+  const geometryIsFresh = evidenceAge <= TRACKING_COAST_MS
+  const highConfidenceVisual = state.source === 'visual' && state.confidence >= .78
+  const qualificationGraceRemainingMs = Math.max(
+    0,
+    HOLD_QUALIFICATION_GRACE_MS - (now - state.holdQualifiedAt),
+  )
+  const graceQualified = !highConfidenceVisual
+    && qualificationGraceRemainingMs > 0
+    && geometryIdentityMatches
+    && geometryIsFresh
+  const holdQualified = geometryIdentityMatches
+    && geometryIsFresh
+    && decodedAge <= TRACKING_BRIDGE_MAX_ANCHOR_AGE_MS
+    && (highConfidenceVisual || graceQualified)
+  const holdQualificationSource: HoldQualificationSource = !holdQualified
+    ? 'none'
+    : highConfidenceVisual
+      ? 'high-confidence-visual'
+      : state.holdQualificationAuthority === 'decoded'
+        ? 'decoded-grace'
+        : 'visual-grace'
   return {
     state: { ...state, rendered },
     detection: evidenceAge <= TRACKING_EVIDENCE_MAX_AGE_MS ? rendered : null,
@@ -171,9 +239,11 @@ export function sampleTracking(state: TrackingState, now: number): TrackingSampl
     actionable: evidenceAge <= TRACKING_COAST_MS
       && decodedAge <= TRACKING_ACTION_ANCHOR_MAX_AGE_MS
       && state.actionable,
-    holdQualified: evidenceAge <= TRACKING_COAST_MS
-      && decodedAge <= TRACKING_BRIDGE_MAX_ANCHOR_AGE_MS
-      && (state.source === 'decoded' || state.confidence >= .78),
+    holdQualified,
+    holdQualificationSource,
+    holdQualificationGraceRemainingMs: graceQualified
+      ? qualificationGraceRemainingMs
+      : 0,
     expired: false,
     stabilization: stabilizationDiagnostics(state),
   }

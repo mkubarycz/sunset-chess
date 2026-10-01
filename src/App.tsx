@@ -39,6 +39,7 @@ import {
 import {
   cadenceRates,
   decideDecodeReanchor,
+  HOLD_QUALIFICATION_GRACE_MS,
   emptyTrackingState,
   observeDetection,
   observeVisualDetection,
@@ -874,7 +875,11 @@ export default function App({
             minInlierRatio: .65,
             modelOrder: ['homography', 'affine', 'similarity'],
           },
-          actionZoneAuthority: 'evidence-qualified detections only',
+          actionZoneAuthority: {
+            policy: 'evidence-qualified detections only',
+            holdQualificationGraceMs: HOLD_QUALIFICATION_GRACE_MS,
+            resultAuthorityUnchanged: true,
+          },
         },
         samples: session.samples,
         events: session.events,
@@ -983,6 +988,8 @@ export default function App({
       evidenceAgeMs: number
       actionable: boolean
       holdQualified: boolean
+      holdQualificationSource: ReturnType<typeof sampleTracking>['holdQualificationSource']
+      holdQualificationGraceRemainingMs: number
       stabilization: ReturnType<typeof sampleTracking>['stabilization']
     }> = []
     const anchorOnlyDiagnostics: string[] = []
@@ -1048,6 +1055,8 @@ export default function App({
         evidenceAgeMs: sample.evidenceAgeMs,
         actionable: sample.actionable,
         holdQualified: sample.holdQualified,
+        holdQualificationSource: sample.holdQualificationSource,
+        holdQualificationGraceRemainingMs: sample.holdQualificationGraceRemainingMs,
         stabilization: sample.stabilization,
       })
       if (sample.source === 'visual') {
@@ -1100,9 +1109,14 @@ export default function App({
     trackingDiagnosticsRef.current = visible.length === 0
       ? anchorOnlyDiagnostics.length > 0 ? anchorOnlyDiagnostics.join(', ') : '0 active'
       : `${visible.length} active · ${visible.map(({
-        source, confidence, ageMs, evidenceAgeMs, stabilization,
+        source, confidence, ageMs, evidenceAgeMs, holdQualificationSource,
+        holdQualificationGraceRemainingMs, stabilization,
       }) => `${source} ${Math.round(confidence * 100)}% anchor ${Math.round(ageMs)}ms`
         + `/evidence ${Math.round(evidenceAgeMs)}ms ${stabilization.motion}`
+        + ` hold ${holdQualificationSource}`
+        + (holdQualificationGraceRemainingMs > 0
+          ? ` ${Math.round(holdQualificationGraceRemainingMs)}ms`
+          : '')
         + ` Δ${stabilization.rawFilteredDeltaPx.toFixed(2)}px`).join(', ')}`
         + `${anchorOnlyDiagnostics.length ? ` · ${anchorOnlyDiagnostics.join(', ')}` : ''}`
 
@@ -1364,6 +1378,7 @@ export default function App({
             : `model none · reject ${opticalRejectionsRef.current.at(-1) ?? 'none'}`,
           `selection ${modelDetails.map((item) => item.selectedModelReason ?? 'none').join(' | ') || 'none'}`,
           `stabilizer ${visible.map((item) => `${item.detection.data.slice(0, 10)} ${item.stabilization.motion} Δ${item.stabilization.rawFilteredDeltaPx.toFixed(2)}px speed ${item.stabilization.normalizedSpeed.toFixed(2)}/s cutoff ${item.stabilization.cutoffHz.toFixed(2)}Hz gain ${item.stabilization.gain.toFixed(2)}`).join(' | ') || 'none'}`,
+          `qualification ${visible.map((item) => `${item.detection.data.slice(0, 10)} ${item.holdQualificationSource} conf ${(item.confidence * 100).toFixed(0)}% grace ${Math.round(item.holdQualificationGraceRemainingMs)}ms`).join(' | ') || 'none'}`,
           `ActionZone ${nextZones.map((zone) => `${zone.id}:${zone.occupant?.playerId ?? '-'} ${zone.status} ${Math.round(zone.progress * 100)}%`).join(' | ') || 'none'}`,
           'LEGEND amber dashed=decoded anchor · cyan/green=current planar fit · trail=model confidence',
         ]
@@ -1405,6 +1420,15 @@ export default function App({
             normalizedSpeed: item.stabilization.normalizedSpeed,
             cutoffHz: item.stabilization.cutoffHz,
             gain: item.stabilization.gain,
+          })),
+          qualification: visible.map((item) => ({
+            identity: item.detection.data,
+            qualified: item.holdQualified,
+            source: item.holdQualificationSource,
+            confidence: item.confidence,
+            graceRemainingMs: item.holdQualificationGraceRemainingMs,
+            decodedAnchorAgeMs: item.ageMs,
+            visualEvidenceAgeMs: item.evidenceAgeMs,
           })),
           dimensions: {
             source: scanSize,

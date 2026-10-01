@@ -6,6 +6,7 @@ import {
   observeVisualDetection,
   rejectVisualDetection,
   sampleTracking,
+  HOLD_QUALIFICATION_GRACE_MS,
   TRACKING_BRIDGE_MAX_ANCHOR_AGE_MS,
 } from './qrTracking'
 import type { QrDetection } from './scanner'
@@ -198,6 +199,68 @@ describe('QR visual tracking', () => {
     expect(sample.decodedAnchor).toEqual(detection(10))
     expect(sample.detection!.location.topLeftCorner.x).toBeGreaterThan(10)
     expect(sample.holdQualified).toBe(true)
+  })
+
+  it('preserves qualification through alternating brief fallback confidence dips and fresh decodes', () => {
+    let state = observeDetection(emptyTrackingState(), detection(10), 100)
+    state = observeVisualDetection(state, detection(11), 100, .9, true)
+
+    for (const [index, [visualAt, decodeAt]] of [
+      [133, 150],
+      [183, 200],
+      [233, 250],
+    ].entries()) {
+      state = observeVisualDetection(state, detection(11), visualAt, .55, false)
+      expect(sampleTracking(state, visualAt + 1)).toMatchObject({
+        actionable: false,
+        holdQualified: true,
+        holdQualificationSource: index === 0 ? 'visual-grace' : 'decoded-grace',
+      })
+      state = observeDetection(state, detection(10), decodeAt)
+      expect(sampleTracking(state, decodeAt + 1)).toMatchObject({
+        actionable: false,
+        holdQualified: true,
+        holdQualificationSource: 'decoded-grace',
+      })
+    }
+  })
+
+  it('expires qualification grace without weakening fresh-geometry bounds', () => {
+    let state = observeDetection(emptyTrackingState(), detection(10), 100)
+    state = observeVisualDetection(state, detection(10), 100, .9, true)
+    state = observeVisualDetection(state, detection(11), 110, .55, false)
+    state = observeDetection(state, detection(10), 120)
+
+    expect(sampleTracking(state, 120 + HOLD_QUALIFICATION_GRACE_MS - 1).holdQualified)
+      .toBe(true)
+    expect(sampleTracking(state, 120 + HOLD_QUALIFICATION_GRACE_MS + 1)).toMatchObject({
+      detection: { data: 'player' },
+      holdQualified: false,
+      holdQualificationSource: 'none',
+      holdQualificationGraceRemainingMs: 0,
+    })
+
+    state = observeDetection(state, detection(10), 500)
+    expect(sampleTracking(state, 500)).toMatchObject({
+      detection: { data: 'player' },
+      holdQualified: false,
+      holdQualificationSource: 'none',
+    })
+  })
+
+  it('never bridges qualification or geometry across an identity change', () => {
+    let state = observeDetection(emptyTrackingState(), detection(10), 100)
+    state = observeVisualDetection(state, detection(10), 100, .9, true)
+    state = observeVisualDetection(state, detection(11), 120, .55, false)
+
+    const other = { ...detection(200), data: 'other-player' }
+    state = observeDetection(state, other, 130)
+    expect(sampleTracking(state, 131)).toMatchObject({
+      decodedAnchor: other,
+      detection: null,
+      holdQualified: false,
+      holdQualificationSource: 'none',
+    })
   })
 
   it('hides a stale current object while retaining its bounded decoded anchor', () => {
