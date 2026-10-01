@@ -24,6 +24,7 @@ export interface ChessGame {
 }
 
 export interface JoinedChessGame extends ChessGame {
+  canCancel: boolean;
   blackPlayer: Player | null;
   whitePlayer: Player | null;
   blackRatingDelta: number | null;
@@ -277,6 +278,22 @@ export class ChessRepository {
         g.id, g.tableNumber, g.createdAt, g.finishedAt, g.result,
         g.cancelledAt, g.cancellationReason,
         g.blackPlayerId, g.whitePlayerId,
+        CASE
+          WHEN g.cancelledAt IS NOT NULL THEN 0
+          WHEN g.result IS NULL THEN 1
+          WHEN NOT EXISTS (
+            SELECT 1 FROM ChessGame AS later
+            WHERE later.cancelledAt IS NULL AND later.result IS NOT NULL
+              AND (later.whitePlayerId = g.whitePlayerId OR later.blackPlayerId = g.whitePlayerId)
+              AND (later.finishedAt > g.finishedAt OR (later.finishedAt = g.finishedAt AND later.id > g.id))
+          ) AND NOT EXISTS (
+            SELECT 1 FROM ChessGame AS later
+            WHERE later.cancelledAt IS NULL AND later.result IS NOT NULL
+              AND (later.whitePlayerId = g.blackPlayerId OR later.blackPlayerId = g.blackPlayerId)
+              AND (later.finishedAt > g.finishedAt OR (later.finishedAt = g.finishedAt AND later.id > g.id))
+          ) THEN 1
+          ELSE 0
+        END AS canCancel,
         black.name AS blackPlayerName, black.rating AS blackPlayerRating,
         white.name AS whitePlayerName, white.rating AS whitePlayerRating,
         blackEvent.delta AS blackRatingDelta,
@@ -300,6 +317,7 @@ export class ChessRepository {
         whitePlayerRating: number | null;
         blackRatingDelta: number | null;
         whiteRatingDelta: number | null;
+        canCancel: number;
       };
       return {
         id: value.id,
@@ -311,6 +329,7 @@ export class ChessRepository {
         result: value.result,
         cancelledAt: value.cancelledAt,
         cancellationReason: value.cancellationReason,
+        canCancel: value.canCancel === 1,
         blackRatingDelta: value.blackRatingDelta,
         whiteRatingDelta: value.whiteRatingDelta,
         blackPlayer: value.blackPlayerId === null

@@ -12,6 +12,7 @@ export interface OngoingGame {
   result: '1-0' | '0-1' | '1/2-1/2' | null
   cancelledAt?: string | null
   cancellationReason?: string | null
+  canCancel?: boolean
   blackRatingDelta?: number | null
   whiteRatingDelta?: number | null
   blackPlayer: { id: number; name: string; rating: number } | null
@@ -126,6 +127,7 @@ export function GameCard({
   const replacementInputRef = useRef<HTMLInputElement>(null)
   const dialogReturnFocusRef = useRef<HTMLElement | null>(null)
   const cancelled = Boolean(game.cancelledAt)
+  const canCancel = game.canCancel !== false
   const closeDialog = () => {
     setDialog(null)
   }
@@ -290,7 +292,7 @@ export function GameCard({
       <div className="mini-board-wrap">
         <MiniBoard />
         <span className="game-table-badge">Table {game.tableNumber}</span>
-        {management && !cancelled && <div className="game-card-menu" ref={menuRef}>
+        {management && !cancelled && canCancel && <div className="game-card-menu" ref={menuRef}>
           <button type="button" className="game-card-gear" aria-label={`Manage Table ${game.tableNumber}`}
             aria-haspopup="menu" aria-expanded={menuOpen} ref={gearRef}
             onClick={() => setMenuOpen((open) => !open)}>⚙</button>
@@ -324,14 +326,14 @@ export function GameCard({
         onClose={closeDialog}>
         {dialog === 'cancel' ? <>
           <p>{game.result
-            ? 'Cancellation is allowed only if this is both players’ latest game. Elo changes will be reversed with auditable compensation events; otherwise an administrator-contact error will explain the block.'
+            ? 'Cancellation is allowed only if this is both players’ latest game. Click “Cancel Game” to proceed.'
             : 'This removes the game from ongoing play and frees its occupied seats. No Elo event will be created.'}</p>
           {error && <p role="alert" className="form-error">{error}</p>}
           <div className="dialog-actions">
             <button type="button" className="secondary" onClick={closeDialog}>Keep game</button>
             <button type="button" disabled={busy} onClick={() => void mutate(`/api/games/${game.id}`, {
               method: 'DELETE', headers: { accept: 'application/json' },
-            })}>{busy ? 'Cancelling…' : 'Cancel game'}</button>
+            })}>{busy ? 'Cancelling…' : 'Cancel Game'}</button>
           </div>
         </> : <>
           <label htmlFor={`seat-player-${game.id}`}>Replacement player</label>

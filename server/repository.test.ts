@@ -600,11 +600,14 @@ describe('ChessRepository', () => {
     repository.finalizeGame(first.id, '1-0', () => '2026-06-01T00:00:00.000Z');
     const aliceLater = repository.createGame(1000, 1002);
     repository.finalizeGame(aliceLater.id, '1/2-1/2', () => '2026-06-01T00:00:00.000Z');
+    expect(repository.listJoinedGames('finished').find(({ id }) => id === first.id)?.canCancel).toBe(false);
+    expect(repository.listJoinedGames('finished').find(({ id }) => id === aliceLater.id)?.canCancel).toBe(true);
     expect(() => repository.cancelGame(first.id)).toThrow(
       'Alice has played other games. Cancelling this game would affect their Elo and other players’ Elo. Contact your administrator.',
     );
     const bobLater = repository.createGame(1001, 1003);
     repository.finalizeGame(bobLater.id, '0-1', () => '2026-06-02T00:00:00.000Z');
+    expect(repository.listJoinedGames('finished').find(({ id }) => id === bobLater.id)?.canCancel).toBe(true);
     expect(() => repository.cancelGame(first.id)).toThrow(/Alice and Bob have played other games/);
     expect(repository.getGame(first.id).cancelledAt).toBeNull();
     expect(db.prepare(`
