@@ -5,6 +5,7 @@ import type { ChessRepository } from './repository.js';
 
 const playerId = z.number().int().min(1000).max(2000);
 const gameId = z.number().int().positive();
+const sessionId = z.number().int().positive();
 const gameResult = z.enum(['1-0', '0-1', '1/2-1/2']);
 
 function result(value: unknown) {
@@ -40,9 +41,41 @@ export function createMcpServer(repository: ChessRepository): McpServer {
   }, async ({ id }) => domainResult(() => ({ player: repository.getPlayer(id) })));
   server.registerTool('leaderboard-list', {
     description: 'List players by authoritative Elo, then games played, case-insensitive name, and id.',
-    inputSchema: { limit: z.number().int().min(1).max(200).optional() },
+    inputSchema: {
+      limit: z.number().int().min(1).max(200).optional(),
+      eventId: sessionId.optional(),
+    },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ limit }) => domainResult(() => ({ leaderboard: repository.listLeaderboard(limit) })));
+  }, async ({ limit, eventId }) =>
+    domainResult(() => ({ leaderboard: repository.listLeaderboard(limit, eventId) })));
+  server.registerTool('club-session-list', {
+    description: 'List Club Sessions with active state and checked-in player and game counts.',
+    inputSchema: {},
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async () => domainResult(() => ({ sessions: repository.listClubSessions() })));
+  server.registerTool('club-session-create', {
+    description: 'Create and activate a Club Session. The server generates a date-based title when none is provided.',
+    inputSchema: { name: z.string().trim().min(1).max(120).optional() },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  }, async ({ name }) => domainResult(() => ({ session: repository.createClubSession(name) })));
+  server.registerTool('club-session-name-update', {
+    description: 'Rename an existing Club Session.',
+    inputSchema: { id: sessionId, name: z.string().trim().min(1).max(120) },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ id, name }) =>
+    domainResult(() => ({ session: repository.updateClubSessionName(id, name) })));
+  server.registerTool('club-session-pairing-mode-update', {
+    description: 'Select the pairing policy for a Club Session.',
+    inputSchema: { id: sessionId, pairingMode: z.literal('club-session-pairing-1') },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ id, pairingMode }) =>
+    domainResult(() => ({ session: repository.updateClubSessionPairingMode(id, pairingMode) })));
+  server.registerTool('club-session-close', {
+    description: 'Close an active Club Session. Draw finalizes fully seated games as draws and cancels incomplete games; cancel removes every unfinished game.',
+    inputSchema: { id: sessionId, resolution: z.enum(['draw', 'cancel']) },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  }, async ({ id, resolution }) =>
+    domainResult(() => ({ session: repository.closeClubSession(id, resolution) })));
   server.registerTool('player-profile-get', {
     description: 'Get a player profile with Elo rank and record, recent completed games, and chronological immutable rating history.',
     inputSchema: {
@@ -69,11 +102,17 @@ export function createMcpServer(repository: ChessRepository): McpServer {
   }, async ({ id, name }) =>
     domainResult(() => ({ player: repository.updatePlayerName(id, name) })));
   server.registerTool('player-check-in', {
-    description: 'Check in a player by known QR player ID and name. Atomically updates the player and returns their existing game, pairs them into the oldest waiting game, or creates a waiting game at the lowest available table.',
+    description: 'Check in a player by known QR player ID and name. Atomically updates the player and returns their existing game, pairs them into the oldest waiting game, uses the lowest-numbered empty table, or creates a waiting game at the lowest available table.',
     inputSchema: { playerId, name: z.string().trim().min(1).max(80) },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ playerId: id, name }) =>
     domainResult(() => repository.checkInPlayer({ id, name })));
+  server.registerTool('waiting-player-move', {
+    description: 'Move a player who is waiting alone to another waiting table in the same event and close the table they vacated.',
+    inputSchema: { playerId, destinationGameId: gameId },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  }, async ({ playerId: id, destinationGameId }) =>
+    domainResult(() => ({ game: repository.moveWaitingPlayer(id, destinationGameId) })));
   server.registerTool('player-delete', {
     description: 'Delete an unreferenced player.',
     inputSchema: { id: playerId },
@@ -114,7 +153,7 @@ export function createMcpServer(repository: ChessRepository): McpServer {
   server.registerTool('game-result-set', {
     description: 'Finalize a fully seated game with a canonical PGN result and atomically update both player Elo ratings exactly once.',
     inputSchema: { id: gameId, result: gameResult },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ id, result: finalResult }) =>
     domainResult(() => ({ game: repository.finalizeGame(id, finalResult) })));
   return server;

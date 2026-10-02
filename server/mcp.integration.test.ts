@@ -142,13 +142,113 @@ describe('Sunset Chess HTTP and MCP', () => {
     expect(missing.headers.get('content-type')).toContain('application/json');
     expect(await (await fetch(`http://127.0.0.1:${app.port}/api/games`)).json())
       .toEqual({ games: [], recentGames: [] });
-    expect((await fetch(`http://127.0.0.1:${app.port}/api/games`, { method: 'POST' })).status).toBe(405);
+    const created = await fetch(`http://127.0.0.1:${app.port}/api/games`, { method: 'POST' });
+    expect(created.status).toBe(201);
+    expect(await created.json()).toMatchObject({
+      game: {
+        tableNumber: 1,
+        blackPlayerId: null,
+        whitePlayerId: null,
+        blackPlayer: null,
+        whitePlayer: null,
+      },
+    });
+    expect((await fetch(`http://127.0.0.1:${app.port}/api/games`, { method: 'PUT' })).status).toBe(405);
     const listJoinedGames = app.repository.listJoinedGames;
     app.repository.listJoinedGames = () => { throw new Error('test database failure'); };
     const failed = await fetch(`http://127.0.0.1:${app.port}/api/games`);
     expect(failed.status).toBe(500);
     expect(await failed.json()).toEqual({ error: 'test database failure' });
     app.repository.listJoinedGames = listJoinedGames;
+    await app.close();
+  });
+
+  it('creates, renames, and scopes club sessions over HTTP', async () => {
+    const app = await fixture();
+    const base = `http://127.0.0.1:${app.port}`;
+    expect(await (await fetch(`${base}/api/sessions`)).json()).toEqual({ sessions: [] });
+
+    const createdResponse = await fetch(`${base}/api/sessions`, { method: 'POST' });
+    expect(createdResponse.status).toBe(201);
+    const created = await createdResponse.json() as {
+      session: { id: number; name: string; active: boolean }
+    };
+    expect(created.session).toMatchObject({ name: expect.stringContaining('Club Session'), active: true });
+    expect(created.session).toMatchObject({ pairingMode: 'club-session-pairing-1' });
+
+    const renamed = await fetch(`${base}/api/sessions/${created.session.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Thursday Club Night' }),
+    });
+    expect(renamed.status).toBe(200);
+    expect(await renamed.json()).toMatchObject({ session: { name: 'Thursday Club Night' } });
+    const pairingMode = await fetch(`${base}/api/sessions/${created.session.id}/pairing-mode`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pairingMode: 'club-session-pairing-1' }),
+    });
+    expect(pairingMode.status).toBe(200);
+    expect(await pairingMode.json()).toMatchObject({
+      session: { pairingMode: 'club-session-pairing-1' },
+    });
+
+    const checkedIn = await (await fetch(`${base}/api/check-ins`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ playerId: 1000, name: 'Alice' }),
+    })).json() as {
+      game: { id: number; blackPlayerId: number | null; whitePlayerId: number | null };
+    };
+    expect(await (await fetch(
+      `${base}/api/leaderboard?eventId=${created.session.id}`,
+    )).json()).toMatchObject({ leaderboard: [{ id: 1000, name: 'Alice' }] });
+    expect(await (await fetch(`${base}/api/games?eventId=${created.session.id}`)).json())
+      .toMatchObject({ games: [{ eventId: created.session.id }] });
+    const emptyTable = await (await fetch(`${base}/api/games?eventId=${created.session.id}`, {
+      method: 'POST',
+    })).json() as { game: { id: number } };
+    app.repository.upsertPlayer(1001, 'Bob');
+    app.repository.upsertPlayer(1002, 'Black King');
+    app.db.prepare(`
+      INSERT INTO ClubEventPlayer(eventId, playerId, checkedInAt) VALUES (?, ?, ?)
+    `).run(created.session.id, 1001, '2026-10-02T12:00:00.000Z');
+    const seated = await fetch(`${base}/api/games/${emptyTable.game.id}/seats/white`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ playerId: 1001 }),
+    });
+    expect(seated.status).toBe(200);
+    expect(await (await fetch(`${base}/api/players?gameId=${checkedIn.game.id}`)).json())
+      .toMatchObject({ players: [expect.objectContaining({ id: 1001, name: 'Bob' })] });
+    expect(JSON.stringify(await (await fetch(
+      `${base}/api/players?gameId=${checkedIn.game.id}`,
+    )).json())).not.toContain('Black King');
+    const openSide = checkedIn.game.blackPlayerId === null ? 'black' : 'white';
+    const moved = await fetch(`${base}/api/games/${checkedIn.game.id}/seats/${openSide}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ playerId: 1001 }),
+    });
+    expect(moved.status).toBe(200);
+    expect(await moved.json()).toMatchObject({
+      game: {
+        id: checkedIn.game.id,
+      },
+    });
+    expect(() => app.repository.getGame(emptyTable.game.id)).toThrow(NotFoundError);
+    expect((await fetch(`${base}/api/games?eventId=bad`)).status).toBe(400);
+    const closed = await fetch(`${base}/api/sessions/${created.session.id}/close`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ resolution: 'cancel' }),
+    });
+    expect(closed.status).toBe(200);
+    expect(await closed.json()).toMatchObject({
+      session: { active: false, activeGameCount: 0, closedAt: expect.any(String) },
+    });
+    expect(await (await fetch(`${base}/api/games?eventId=${created.session.id}`)).json())
+      .toEqual({ games: [], recentGames: [] });
     await app.close();
   });
 
@@ -283,25 +383,34 @@ describe('Sunset Chess HTTP and MCP', () => {
     const app = await fixture();
     const tools = await app.client.listTools();
     expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
+      'club-session-close', 'club-session-create', 'club-session-list', 'club-session-name-update',
+      'club-session-pairing-mode-update',
       'game-cancel', 'game-create', 'game-delete', 'game-get', 'game-list', 'game-result-set',
       'game-seat-update',
       'leaderboard-list', 'player-check-in', 'player-create', 'player-delete',
       'player-get', 'player-list', 'player-name-update', 'player-profile-get', 'player-upsert',
+      'waiting-player-move',
     ]);
     expect(Object.fromEntries(tools.tools.map((tool) => [tool.name, tool.annotations]))).toMatchObject({
       'player-list': { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       'player-get': { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       'leaderboard-list': { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      'club-session-list': { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      'club-session-create': { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      'club-session-close': { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+      'club-session-name-update': { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      'club-session-pairing-mode-update': { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       'player-profile-get': { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       'player-upsert': { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       'player-create': { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       'player-check-in': { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      'waiting-player-move': { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
       'player-delete': { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
       'game-list': { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       'game-get': { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       'game-create': { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       'game-delete': { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-      'game-result-set': { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      'game-result-set': { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     });
     const byName = Object.fromEntries(tools.tools.map((tool) => [tool.name, tool]));
     expect(byName['player-create'].description).toContain('natural-language request');
@@ -327,7 +436,7 @@ describe('Sunset Chess HTTP and MCP', () => {
       .toEqual({ games: [{
         id: game.id, tableNumber: 1, createdAt: expect.any(String),
         blackPlayerId: alice.id, whitePlayerId: 1001,
-        finishedAt: null, result: null, cancelledAt: null, cancellationReason: null,
+        finishedAt: null, result: null, cancelledAt: null, cancellationReason: null, eventId: null,
       }] });
     expect(await (await fetch(`http://127.0.0.1:${app.port}/api/games`)).json()).toEqual({
       games: [{
@@ -338,6 +447,7 @@ describe('Sunset Chess HTTP and MCP', () => {
         result: null,
         cancelledAt: null,
         cancellationReason: null,
+        eventId: null,
         canCancel: true,
         blackPlayerId: alice.id,
         whitePlayerId: 1001,
@@ -367,6 +477,21 @@ describe('Sunset Chess HTTP and MCP', () => {
     })).isError).not.toBe(true);
     expect((await app.client.callTool({ name: 'player-list', arguments: {} })).structuredContent)
       .toEqual({ players: [] });
+    const sessionResult = await app.client.callTool({
+      name: 'club-session-create', arguments: { name: 'Thursday Club Night' },
+    });
+    const session = (sessionResult.structuredContent as { session: { id: number } }).session;
+    expect((await app.client.callTool({
+      name: 'club-session-pairing-mode-update',
+      arguments: { id: session.id, pairingMode: 'club-session-pairing-1' },
+    })).structuredContent).toMatchObject({
+      session: { id: session.id, pairingMode: 'club-session-pairing-1' },
+    });
+    expect((await app.client.callTool({
+      name: 'club-session-close', arguments: { id: session.id, resolution: 'cancel' },
+    })).structuredContent).toMatchObject({
+      session: { id: session.id, active: false, activeGameCount: 0, closedAt: expect.any(String) },
+    });
     await app.close();
   });
 
@@ -393,6 +518,19 @@ describe('Sunset Chess HTTP and MCP', () => {
     });
     expect(app.repository.getPlayer(1000).rating).toBe(700);
     expect(app.repository.getPlayer(1001).rating).toBe(700);
+    const repeated = await fetch(`http://127.0.0.1:${app.port}/api/games/${game.id}/result`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ result: '1/2-1/2' }),
+    });
+    expect(repeated.status).toBe(200);
+    expect(await repeated.json()).toMatchObject({
+      game: {
+        result: '1/2-1/2',
+        blackRatingDelta: 0,
+        whiteRatingDelta: 0,
+      },
+    });
     expect((await fetch(`http://127.0.0.1:${app.port}/api/games/${game.id}/result`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },

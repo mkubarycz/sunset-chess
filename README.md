@@ -85,10 +85,12 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
   the same result-ready game.
 - Friendly player labels while retaining support for arbitrary QR strings
 - Persistent players and chess games through a local MCP endpoint
-- Responsive, horizontally scrollable ongoing-game thumbnail rail with a compact
-  two-rank board showing both standard back ranks between Black and White player
-  details, a high-contrast table badge over the board, and automatic refresh
-  about every two seconds
+- Responsive ongoing-game thumbnail rail with a compact two-rank board showing
+  both standard back ranks between Black and White player details, a
+  high-contrast table badge, and automatic refresh about every two seconds.
+  Selecting a clean thumbnail opens a shared, focus-trapped game detail modal
+  containing seat assignment/replacement and eligible cancellation controls,
+  plus finished/cancelled game audit details.
 - Twenty most recently completed games with compact W/L/D plus signed Elo
   changes and each player's Elo at the beginning of that game
 - Successful QR check-ins optimistically promote the assigned table to the
@@ -577,6 +579,18 @@ rating receives a 700 baseline and real game events. A mismatch receives one
 `migration` event at the preserved cached rating; no delta or unavailable
 pre-ledger history is fabricated. Startup is transactional and idempotent.
 
+Club Sessions persist a pairing mode and a frozen four-cohort Elo snapshot.
+`Club Session Pairing 1` is the default. At session creation, the full club
+roster is sorted by rating descending and player ID ascending, then divided as
+evenly as possible into cohorts A through D, with remainder slots assigned from
+A downward. A player added after session creation joins the cohort matching the
+frozen rating boundaries without moving existing players. Check-in considers
+only waiting opponents in the same cohort who have not already played the
+incoming player during that session. For second and later games, it first
+prefers opponents with the same cumulative session record sign (positive,
+even, or negative), then the longest-waiting eligible opponent. If none is
+eligible, check-in reuses an empty table or creates a new one.
+
 MCP is published at <http://localhost:4175/mcp>. Tools are `player-list`,
 `player-get`, `player-create`, `player-upsert`, `player-name-update`,
 `player-check-in`, `player-delete`,
@@ -584,6 +598,8 @@ MCP is published at <http://localhost:4175/mcp>. Tools are `player-list`,
 `game-seat-update`, and the backward-compatible `game-delete`.
 Read tools also include `leaderboard-list` and `player-profile-get` for ranked
 records, recent games, and chronological rating history.
+Club Session tools create, list, rename, select the pairing mode, and close
+sessions.
 Use `game-result-set` to finalize a fully seated game. It accepts only canonical
 PGN results and atomically applies the rating update; a finalized result cannot
 be changed. Use `player-create` with a name for
@@ -593,8 +609,9 @@ accepts only black and white player IDs and assigns the table. A quick protocol
 smoke can be run with any Streamable HTTP MCP client.
 
 `POST /api/check-ins` accepts a validated player QR identity, updates that player,
-and atomically returns their existing game, fills the oldest waiting game, or
-creates a waiting game with a cryptographically random side. The read-only `GET /api/games` endpoint returns `games` (ongoing, ordered by
+and atomically returns their existing game or applies the active Club Session's
+pairing mode. Outside a session it fills the oldest waiting game or creates a
+waiting game with a cryptographically random side. The read-only `GET /api/games` endpoint returns `games` (ongoing, ordered by
 table) and `recentGames` (the 20 most recently finished). `PATCH
 /api/games/:id/result` with JSON `{ "result": "1-0" }` (or either other
 canonical token) finalizes a fully seated game. `PATCH

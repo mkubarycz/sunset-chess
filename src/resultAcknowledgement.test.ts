@@ -50,9 +50,9 @@ describe('result acknowledgement', () => {
   })
 
   it('formats concise result activity messages', () => {
-    expect(formatResultNotice(completed())).toBe('White Bishop def. Black Knight')
+    expect(formatResultNotice(completed())).toBe('White Bishop DEF Black Knight')
     expect(formatResultNotice(completed('1/2-1/2'))).toBe('White Bishop DRAW Black Knight')
-    expect(formatResultNotice(completed('0-1'))).toBe('Black Knight def. White Bishop')
+    expect(formatResultNotice(completed('0-1'))).toBe('Black Knight DEF White Bishop')
   })
 
   it('preserves player names containing the draw connector text', () => {

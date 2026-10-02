@@ -14,6 +14,13 @@ export interface LeaderboardEntry {
   losses: number
   draws: number
   lastPlayedAt: string | null
+  checkInStatus?: 'not-checked-in' | 'waiting' | 'playing'
+  tableNumber?: number | null
+  opponentName?: string | null
+  sessionGamesPlayed?: number
+  sessionWins?: number
+  sessionLosses?: number
+  sessionDraws?: number
 }
 
 export interface RatingEvent {

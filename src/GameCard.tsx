@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import type { LeaderboardEntry } from './PlayerCardDialog'
 import { ModalDialog } from './ModalDialog'
 
@@ -12,6 +12,7 @@ export interface OngoingGame {
   result: '1-0' | '0-1' | '1/2-1/2' | null
   cancelledAt?: string | null
   cancellationReason?: string | null
+  eventId?: number | null
   canCancel?: boolean
   blackStartingRating?: number | null
   whiteStartingRating?: number | null
@@ -24,6 +25,19 @@ export interface OngoingGame {
 export interface AuthoritativePlayerScan {
   playerId: number
   token: string
+}
+
+export interface SeatScanTarget {
+  gameId: number
+  tableNumber: number
+  side: 'black' | 'white'
+}
+
+export interface SeatScanFeedback extends SeatScanTarget {
+  playerId: number
+  playerName: string
+  status: 'assigning' | 'success' | 'error'
+  message: string
 }
 
 const backRank = ['rook', 'knight', 'bishop', 'queen', 'king', 'bishop', 'knight', 'rook'] as const
@@ -60,8 +74,6 @@ function PlayerSide({
   result,
   ratingDelta,
   cancelled,
-  onEdit,
-  tableNumber,
 }: {
   side: 'black' | 'white'
   player: OngoingGame['blackPlayer']
@@ -69,8 +81,6 @@ function PlayerSide({
   result: OngoingGame['result']
   ratingDelta?: number | null
   cancelled: boolean
-  onEdit?: (trigger: HTMLButtonElement) => void
-  tableNumber?: number
 }) {
   const isWinner = (side === 'black' && result === '0-1') || (side === 'white' && result === '1-0')
   const isDraw = result === '1/2-1/2'
@@ -93,14 +103,41 @@ function PlayerSide({
           {outcome} {ratingDelta > 0 ? '+' : ''}{ratingDelta}
         </span>
       )}
-      {!result && onEdit && (
-        <button type="button" className="seat-edit-button" onClick={(event) => onEdit(event.currentTarget)}
-          aria-label={`${player ? 'Edit' : 'Assign'} ${label} player${tableNumber ? ` on Table ${tableNumber}` : ''}`}>
-          {player ? '✎' : '＋'}
-        </button>
-      )}
     </div>
   )
+}
+
+function GameSummary({ game, detail = false }: { game: OngoingGame; detail?: boolean }) {
+  const cancelled = Boolean(game.cancelledAt)
+  return (
+    <div className={detail ? 'game-detail-summary' : 'game-summary'}>
+      <PlayerSide side="black" player={game.blackPlayer} startingRating={game.blackStartingRating}
+        result={game.result} ratingDelta={game.blackRatingDelta} cancelled={cancelled} />
+      <div className="mini-board-wrap">
+        <MiniBoard />
+        <span className={`game-table-badge${cancelled ? ' cancelled' : ''}`}>
+          Table {game.tableNumber}{cancelled ? ' - Cancelled' : ''}
+        </span>
+      </div>
+      <PlayerSide side="white" player={game.whitePlayer} startingRating={game.whiteStartingRating}
+        result={game.result} ratingDelta={game.whiteRatingDelta} cancelled={cancelled} />
+    </div>
+  )
+}
+
+function formatGameStatus(game: OngoingGame): string {
+  if (game.cancelledAt) return 'Cancelled'
+  if (!game.result) return 'Ongoing'
+  if (game.result === '1/2-1/2') return 'Draw'
+  const whiteRating = game.whiteStartingRating ?? game.whitePlayer?.rating
+  const blackRating = game.blackStartingRating ?? game.blackPlayer?.rating
+  if (!game.whitePlayer || !game.blackPlayer || whiteRating == null || blackRating == null) {
+    throw new Error(`Completed game ${game.id} is missing player or rating details.`)
+  }
+  const [winner, winnerRating, loser, loserRating] = game.result === '1-0'
+    ? [game.whitePlayer, whiteRating, game.blackPlayer, blackRating]
+    : [game.blackPlayer, blackRating, game.whitePlayer, whiteRating]
+  return `${winner.name} (${winnerRating}) DEF ${loser.name} (${loserRating})`
 }
 
 export function GameCard({
@@ -112,8 +149,11 @@ export function GameCard({
   height,
   onMutate,
   management = true,
+  selectable = true,
   unavailablePlayerIds = noUnavailablePlayerIds,
   authoritativePlayerScan = null,
+  onSeatScanTargetChange,
+  onSeatScanFeedback,
 }: {
   game: OngoingGame
   className?: string
@@ -123,54 +163,44 @@ export function GameCard({
   height?: CSSProperties['height']
   onMutate?: (game: OngoingGame) => void | Promise<void>
   management?: boolean
+  selectable?: boolean
   unavailablePlayerIds?: readonly number[]
   authoritativePlayerScan?: AuthoritativePlayerScan | null
+  onSeatScanTargetChange?: (target: SeatScanTarget | null) => void
+  onSeatScanFeedback?: (feedback: SeatScanFeedback) => void
 }) {
-  const [menuOpen, setMenuOpen] = useState(false)
-  const [dialog, setDialog] = useState<'cancel' | 'black' | 'white' | null>(null)
+  const [dialog, setDialog] = useState<'detail' | 'cancel' | null>(null)
+  const [activeSide, setActiveSide] = useState<'black' | 'white' | null>(null)
   const [players, setPlayers] = useState<LeaderboardEntry[]>([])
-  const [replacement, setReplacement] = useState('')
   const [replacementQuery, setReplacementQuery] = useState('')
   const [pickerOpen, setPickerOpen] = useState(false)
   const [activeOption, setActiveOption] = useState(-1)
   const [loadingPlayers, setLoadingPlayers] = useState(false)
   const [playersError, setPlayersError] = useState('')
   const [scanMessage, setScanMessage] = useState('')
+  const [scanMessageError, setScanMessageError] = useState(false)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const pickerId = useId()
   const listboxId = `replacement-listbox-${pickerId}`
-  const menuRef = useRef<HTMLDivElement>(null)
-  const gearRef = useRef<HTMLButtonElement>(null)
-  const replacementInputRef = useRef<HTMLInputElement>(null)
+  const detailTriggerRef = useRef<HTMLButtonElement>(null)
   const dialogReturnFocusRef = useRef<HTMLElement | null>(null)
   const handledScanTokenRef = useRef<string | null>(null)
   const cancelled = Boolean(game.cancelledAt)
   const canCancel = game.canCancel !== false
   const closeDialog = () => {
+    onSeatScanTargetChange?.(null)
     setDialog(null)
   }
 
-  useEffect(() => {
-    if (!menuOpen) return
-    const dismiss = (event: MouseEvent) => {
-      if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false)
-    }
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { setMenuOpen(false); gearRef.current?.focus() }
-    }
-    document.addEventListener('mousedown', dismiss)
-    document.addEventListener('keydown', escape)
-    return () => {
-      document.removeEventListener('mousedown', dismiss)
-      document.removeEventListener('keydown', escape)
-    }
-  }, [menuOpen])
-
-  useEffect(() => {
-    if (!dialog || dialog === 'cancel') return
+  const loadPlayers = () => {
+    if (loadingPlayers || players.length > 0) return
     const controller = new AbortController()
-    void fetch('/api/players', { signal: controller.signal, headers: { accept: 'application/json' } })
+    setLoadingPlayers(true)
+    void fetch(`/api/players?gameId=${game.id}`, {
+      signal: controller.signal,
+      headers: { accept: 'application/json' },
+    })
       .then(async (response) => {
         const body = await response.json() as { players?: LeaderboardEntry[]; error?: string }
         if (!response.ok || !body.players) throw new Error(body.error || 'Could not load players.')
@@ -185,20 +215,17 @@ export function GameCard({
       .finally(() => {
         if (!controller.signal.aborted) setLoadingPlayers(false)
       })
-    return () => controller.abort()
-  }, [dialog])
+  }
 
-  const openDialog = (next: 'cancel' | 'black' | 'white', returnFocus: HTMLElement | null) => {
-    dialogReturnFocusRef.current = returnFocus
+  const openManagementDialog = (next: 'cancel') => {
+    onSeatScanTargetChange?.(null)
     setError('')
-    setReplacement('')
     setReplacementQuery('')
     setPickerOpen(false)
     setActiveOption(-1)
-    setPlayers([])
-    setPlayersError('')
     setScanMessage('')
-    setLoadingPlayers(next !== 'cancel')
+    setScanMessageError(false)
+    setActiveSide(null)
     handledScanTokenRef.current = authoritativePlayerScan?.token ?? null
     setDialog(next)
   }
@@ -216,18 +243,18 @@ export function GameCard({
       setBusy(false)
     }
   }
-  const editSide = (side: 'black' | 'white', returnFocus: HTMLButtonElement) => {
-    setMenuOpen(false)
-    openDialog(side, returnFocus)
-  }
-  const opponent = dialog === 'black' ? game.whitePlayerId : game.blackPlayerId
-  const current = dialog === 'black' ? game.blackPlayerId : game.whitePlayerId
+  const opponent = activeSide === 'black' ? game.whitePlayerId : game.blackPlayerId
+  const current = activeSide === 'black' ? game.blackPlayerId : game.whitePlayerId
+  const activePlayer = activeSide === 'black' ? game.blackPlayer : game.whitePlayer
+  const activePlayerLabel = activePlayer ? `${activePlayer.name} (${activePlayer.rating} Elo)` : ''
   const assigning = current === null
   const unavailablePlayers = useMemo(() => new Set(unavailablePlayerIds), [unavailablePlayerIds])
   const eligiblePlayers = useMemo(() => players.filter((candidate) =>
     candidate.id !== opponent && candidate.id !== current && !unavailablePlayers.has(candidate.id)),
   [current, opponent, players, unavailablePlayers])
-  const normalizedQuery = replacementQuery.trim().toLocaleLowerCase()
+  const normalizedQuery = replacementQuery === activePlayerLabel
+    ? ''
+    : replacementQuery.trim().toLocaleLowerCase()
   const replacementOptions = [
     ...(!assigning && (!normalizedQuery || 'empty'.includes(normalizedQuery))
       ? [{ value: 'empty', label: 'Empty' }]
@@ -237,21 +264,113 @@ export function GameCard({
       .map((candidate) => ({
         value: String(candidate.id),
         label: `${candidate.name} (${candidate.currentRating} Elo)`,
+        player: candidate,
       })),
   ]
   const optionId = (candidate: { value: string }) => `${listboxId}-option-${candidate.value}`
-  const selectReplacement = (candidate: { value: string; label: string }) => {
-    setReplacement(candidate.value)
+  const activateSide = (side: 'black' | 'white') => {
+    const player = side === 'black' ? game.blackPlayer : game.whitePlayer
+    loadPlayers()
+    setActiveSide(side)
+    setReplacementQuery(player ? `${player.name} (${player.rating} Elo)` : '')
+    setPickerOpen(true)
+    setActiveOption(0)
+    setError('')
+    setScanMessage('')
+    setScanMessageError(false)
+    handledScanTokenRef.current = authoritativePlayerScan?.token ?? null
+    onSeatScanTargetChange?.({
+      gameId: game.id,
+      tableNumber: game.tableNumber,
+      side,
+    })
+  }
+  const assignSeat = useCallback(async (
+    candidate: { value: string; label: string },
+    source: 'search' | 'scan' = 'search',
+  ) => {
+    if (!activeSide || busy) return
+    const side = activeSide
+    const seat = side === 'black' ? 'Black' : 'White'
+    const playerId = candidate.value === 'empty' ? null : Number(candidate.value)
+    const playerName = candidate.label.replace(/ \(\d+ Elo\)$/, '')
     setReplacementQuery(candidate.label)
     setPickerOpen(false)
     setActiveOption(-1)
+    setBusy(true)
+    setError('')
     setScanMessage('')
+    setScanMessageError(false)
+    if (source === 'scan' && playerId !== null && onSeatScanFeedback) {
+      onSeatScanFeedback({
+        gameId: game.id,
+        tableNumber: game.tableNumber,
+        side,
+        playerId,
+        playerName,
+        status: 'assigning',
+        message: `Checking ${playerName} into the ${seat} spot on Table ${game.tableNumber}…`,
+      })
+    }
+    try {
+      const response = await fetch(`/api/games/${game.id}/seats/${side}`, {
+        method: 'PATCH',
+        headers: { accept: 'application/json', 'content-type': 'application/json' },
+        body: JSON.stringify({ playerId }),
+      })
+      const body = await response.json() as { game?: OngoingGame; error?: string }
+      if (!response.ok || !body.game) throw new Error(body.error || `Request failed (${response.status}).`)
+      await onMutate?.(body.game)
+      if (source === 'scan' && playerId !== null && onSeatScanFeedback) {
+        onSeatScanFeedback({
+          gameId: game.id,
+          tableNumber: game.tableNumber,
+          side,
+          playerId,
+          playerName,
+          status: 'success',
+          message: `${playerName} checked into the ${seat} spot on Table ${game.tableNumber}.`,
+        })
+      } else {
+        setScanMessage(candidate.value === 'empty'
+          ? `${seat} spot on Table ${game.tableNumber} is now empty.`
+          : `${playerName} is now in the ${seat} spot on Table ${game.tableNumber}.`)
+      }
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause)
+      if (source === 'scan' && playerId !== null && onSeatScanFeedback) {
+        onSeatScanFeedback({
+          gameId: game.id,
+          tableNumber: game.tableNumber,
+          side,
+          playerId,
+          playerName,
+          status: 'error',
+          message,
+        })
+      } else {
+        setScanMessageError(true)
+        setError(message)
+      }
+    } finally {
+      setBusy(false)
+    }
+  }, [
+    activeSide,
+    busy,
+    game.id,
+    game.tableNumber,
+    onMutate,
+    onSeatScanFeedback,
+  ])
+  const selectReplacement = (candidate: { value: string; label: string }) => {
+    void assignSeat(candidate)
   }
 
   useEffect(() => {
     if (
-      !dialog
-      || dialog === 'cancel'
+      dialog !== 'detail'
+      || !activeSide
       || !authoritativePlayerScan
       || handledScanTokenRef.current === authoritativePlayerScan.token
     ) return
@@ -259,48 +378,69 @@ export function GameCard({
     const timer = window.setTimeout(() => {
       const playerId = authoritativePlayerScan.playerId
       const knownPlayer = players.find((candidate) => candidate.id === playerId)
+      const playerName = knownPlayer?.name ?? `Player #${playerId}`
+      const reportScanError = (message: string) => {
+        if (onSeatScanFeedback) {
+          onSeatScanFeedback({
+            gameId: game.id,
+            tableNumber: game.tableNumber,
+            side: activeSide,
+            playerId,
+            playerName,
+            status: 'error',
+            message,
+          })
+        } else {
+          setScanMessage(message)
+          setScanMessageError(true)
+        }
+      }
       if (loadingPlayers) {
-        setScanMessage('The player list is still loading. Scan the piece again when loading is complete.')
+        reportScanError('The player list is still loading. Scan the piece again when loading is complete.')
         return
       }
       if (playersError) {
-        setScanMessage('The scanned player cannot be selected because the player list is unavailable.')
+        reportScanError('The scanned player cannot be selected because the player list is unavailable.')
         return
       }
       if (playerId === current) {
-        setScanMessage(`${knownPlayer?.name ?? `Player #${playerId}`} is already in this seat and cannot be selected.`)
+        reportScanError(`${playerName} is already in this seat and cannot be selected.`)
         return
       }
       if (playerId === opponent) {
-        setScanMessage(`${knownPlayer?.name ?? `Player #${playerId}`} is already in the opposing seat and cannot be selected.`)
+        reportScanError(`${playerName} is already in the opposing seat and cannot be selected.`)
         return
       }
       if (unavailablePlayers.has(playerId)) {
-        setScanMessage(`${knownPlayer?.name ?? `Player #${playerId}`} is seated in another ongoing game and cannot be selected.`)
+        reportScanError(`${playerName} is seated in another ongoing game and cannot be selected.`)
         return
       }
       const eligiblePlayer = eligiblePlayers.find((candidate) => candidate.id === playerId)
       if (!eligiblePlayer) {
-        setScanMessage(`Scanned player #${playerId} is not in the loaded player list.`)
+        reportScanError(`Scanned player #${playerId} is not in the loaded player list.`)
         return
       }
-      setReplacement(String(eligiblePlayer.id))
-      setReplacementQuery(`${eligiblePlayer.name} (${eligiblePlayer.currentRating} Elo)`)
-      setPickerOpen(false)
-      setActiveOption(-1)
-      setScanMessage(`${eligiblePlayer.name} selected from the scanned piece. Confirm to ${assigning ? 'assign' : 'replace'} the player.`)
+      void assignSeat({
+        value: String(eligiblePlayer.id),
+        label: `${eligiblePlayer.name} (${eligiblePlayer.currentRating} Elo)`,
+      }, 'scan')
     }, 0)
     return () => window.clearTimeout(timer)
   }, [
-    assigning,
+    activeSide,
+    assignSeat,
     authoritativePlayerScan,
+    busy,
     current,
     dialog,
     eligiblePlayers,
     loadingPlayers,
     opponent,
+    onSeatScanFeedback,
     players,
     playersError,
+    game.id,
+    game.tableNumber,
     unavailablePlayers,
   ])
 
@@ -362,49 +502,170 @@ export function GameCard({
         game.blackPlayer ? `${game.blackPlayer.name} plays black` : 'waiting for Black'
       }, ${game.whitePlayer ? `${game.whitePlayer.name} plays white` : 'waiting for White'}`}
     >
-      <PlayerSide side="black" player={game.blackPlayer} startingRating={game.blackStartingRating}
-        result={game.result}
-        ratingDelta={game.blackRatingDelta} cancelled={cancelled}
-        tableNumber={game.tableNumber}
-        onEdit={management && !cancelled && !game.result
-          ? (trigger) => editSide('black', trigger)
-          : undefined} />
-      <div className="mini-board-wrap">
-        <MiniBoard />
-        <span className={`game-table-badge${cancelled ? ' cancelled' : ''}`}>
-          Table {game.tableNumber}{cancelled ? ' - Cancelled' : ''}
-        </span>
-        {management && !cancelled && canCancel && <div className="game-card-menu" ref={menuRef}>
-          <button type="button" className="game-card-gear" aria-label={`Manage Table ${game.tableNumber}`}
-            aria-haspopup="menu" aria-expanded={menuOpen} ref={gearRef}
-            onClick={() => setMenuOpen((open) => !open)}>⚙</button>
-          {menuOpen && <div role="menu" className="game-card-menu-popover">
-            <button type="button" role="menuitem" onClick={() => {
-              setMenuOpen(false)
-              openDialog('cancel', gearRef.current)
-            }}>
-              Cancel game
-            </button>
-          </div>}
-        </div>}
-      </div>
-      <PlayerSide side="white" player={game.whitePlayer} startingRating={game.whiteStartingRating}
-        result={game.result}
-        ratingDelta={game.whiteRatingDelta} cancelled={cancelled}
-        tableNumber={game.tableNumber}
-        onEdit={management && !cancelled && !game.result
-          ? (trigger) => editSide('white', trigger)
-          : undefined} />
+      <GameSummary game={game} />
+      {selectable && <button type="button" className="game-card-hit"
+        ref={detailTriggerRef}
+        aria-label={`Open details for Table ${game.tableNumber}`}
+        onClick={() => {
+          dialogReturnFocusRef.current = detailTriggerRef.current
+          setActiveSide(null)
+          setReplacementQuery('')
+          setPickerOpen(false)
+          setActiveOption(-1)
+          setPlayers([])
+          setPlayersError('')
+          setLoadingPlayers(false)
+          setScanMessage('')
+          setScanMessageError(false)
+          handledScanTokenRef.current = authoritativePlayerScan?.token ?? null
+          setDialog('detail')
+        }} />}
       {dialog && <ModalDialog
-        className={` game-management-dialog${dialog !== 'cancel' ? ' seat-management-dialog' : ''}`}
-        title={dialog === 'cancel'
-          ? `Cancel Table ${game.tableNumber}?`
-          : `${assigning ? 'Assign' : 'Edit'} ${dialog === 'black' ? 'Black' : 'White'} player`}
-        closeLabel={dialog === 'cancel' ? 'Close cancellation dialog' : 'Close player assignment'}
-        initialFocusRef={dialog === 'cancel' ? undefined : replacementInputRef}
+        key={dialog}
+        className={` game-management-dialog${dialog === 'detail' ? ' game-detail-dialog' : ''}`}
+        title={dialog === 'detail'
+          ? `Table ${game.tableNumber} game details`
+          : `Cancel Table ${game.tableNumber}?`}
+        closeLabel={dialog === 'detail'
+          ? 'Close game details'
+          : 'Close cancellation dialog'}
         returnFocusRef={dialogReturnFocusRef}
         onClose={closeDialog}>
-        {dialog === 'cancel' ? <>
+        {dialog === 'detail' ? <>
+          <GameSummary game={game} detail />
+          <dl className="game-detail-audit">
+            <div><dt>Status</dt><dd>{formatGameStatus(game)}</dd></div>
+            <div><dt>Started</dt><dd><time dateTime={game.createdAt}>{new Date(game.createdAt).toLocaleString()}</time></dd></div>
+            {game.finishedAt && <div><dt>Finished</dt><dd><time dateTime={game.finishedAt}>{new Date(game.finishedAt).toLocaleString()}</time></dd></div>}
+            {game.cancelledAt && <div><dt>Cancelled</dt><dd><time dateTime={game.cancelledAt}>{new Date(game.cancelledAt).toLocaleString()}</time></dd></div>}
+            {game.cancellationReason && <div><dt>Reason</dt><dd>{game.cancellationReason}</dd></div>}
+          </dl>
+          {management && !cancelled && !game.result && <>
+            <div className="game-detail-seat-editors">
+              {(['black', 'white'] as const).map((side) => {
+                const player = side === 'black' ? game.blackPlayer : game.whitePlayer
+                const isActive = activeSide === side
+                const inputId = `seat-player-${game.id}-${side}`
+                return (
+                  <div className="game-detail-seat-editor" key={side}>
+                    <label htmlFor={inputId}>{side === 'black' ? 'Black' : 'White'} player</label>
+                    <div className="replacement-combobox">
+                      <input
+                        id={inputId}
+                        type="text"
+                        role="combobox"
+                        aria-autocomplete="list"
+                        aria-expanded={isActive && pickerOpen}
+                        aria-controls={isActive ? listboxId : undefined}
+                        aria-activedescendant={isActive && pickerOpen && activeOption >= 0
+                          && replacementOptions[activeOption]
+                          ? optionId(replacementOptions[activeOption])
+                          : undefined}
+                        autoComplete="off"
+                        placeholder={`Search or scan ${side} player`}
+                        value={isActive
+                          ? replacementQuery
+                          : player ? `${player.name} (${player.rating} Elo)` : ''}
+                        onFocus={(event) => {
+                          const input = event.currentTarget
+                          activateSide(side)
+                          window.requestAnimationFrame(() => input.select())
+                        }}
+                        onClick={(event) => {
+                          openPicker()
+                          event.currentTarget.select()
+                        }}
+                        onChange={(event) => {
+                          if (!isActive) setActiveSide(side)
+                          setReplacementQuery(event.target.value)
+                          setScanMessage('')
+                          setScanMessageError(false)
+                          setPickerOpen(true)
+                          setActiveOption(0)
+                        }}
+                        onKeyDown={handlePickerKeyDown}
+                      />
+                      {isActive && pickerOpen && (
+                        <div id={listboxId} role="listbox"
+                          aria-label={`${side === 'black' ? 'Black' : 'White'} player options`}
+                          className="replacement-listbox">
+                          {loadingPlayers ? (
+                            <p role="status" className="replacement-picker-message">Loading players…</p>
+                          ) : playersError ? (
+                            <p role="alert" className="replacement-picker-message">{playersError}</p>
+                          ) : replacementOptions.length === 0 ? (
+                            <p role="status" className="replacement-picker-message">No replacement players found.</p>
+                          ) : replacementOptions.map((candidate, index) => (
+                            <div
+                              id={optionId(candidate)}
+                              key={candidate.value}
+                              role="option"
+                              aria-selected={index === activeOption}
+                              className="replacement-option"
+                              onMouseDown={(event) => event.preventDefault()}
+                              onMouseEnter={() => setActiveOption(index)}
+                              onClick={() => selectReplacement(candidate)}
+                            >
+                              {candidate.label}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+            {game.blackPlayer && game.whitePlayer && (
+              <div className="game-detail-result-actions" role="group" aria-label="Declare game result">
+                <button type="button" className="game-detail-result-action winner"
+                  disabled={busy}
+                  onClick={() => void mutate(`/api/games/${game.id}/result`, {
+                    method: 'PATCH',
+                    headers: { accept: 'application/json', 'content-type': 'application/json' },
+                    body: JSON.stringify({ result: '0-1' }),
+                  })}>
+                  Declare Black Winner
+                </button>
+                <button type="button" className="game-detail-result-action draw"
+                  disabled={busy}
+                  onClick={() => void mutate(`/api/games/${game.id}/result`, {
+                    method: 'PATCH',
+                    headers: { accept: 'application/json', 'content-type': 'application/json' },
+                    body: JSON.stringify({ result: '1/2-1/2' }),
+                  })}>
+                  Draw
+                </button>
+                <button type="button" className="game-detail-result-action winner"
+                  disabled={busy}
+                  onClick={() => void mutate(`/api/games/${game.id}/result`, {
+                    method: 'PATCH',
+                    headers: { accept: 'application/json', 'content-type': 'application/json' },
+                    body: JSON.stringify({ result: '1-0' }),
+                  })}>
+                  Declare White Winner
+                </button>
+              </div>
+            )}
+            {busy && <p role="status" className="seat-scan-message">Updating game…</p>}
+            {scanMessage && (
+              <p role={scanMessageError ? 'alert' : 'status'} aria-live="polite"
+                className={`check-in-notice seat-assignment-notice${scanMessageError ? ' error' : ''}`}>
+                {scanMessage}
+              </p>
+            )}
+            {error && <p role="alert" className="form-error">{error}</p>}
+          </>}
+          <div className="game-detail-actions">
+            {management && !cancelled && canCancel && (
+              <button type="button" className="game-detail-action cancel"
+                onClick={() => openManagementDialog('cancel')}>
+                Cancel Game
+              </button>
+            )}
+            <button type="button" className="game-detail-action close" onClick={closeDialog}>Close</button>
+          </div>
+        </> : dialog === 'cancel' ? <>
           <p>{game.result
             ? 'Cancellation is allowed only if this is both players’ latest game. Click “Cancel Game” to proceed.'
             : 'This permanently removes the unfinished game and frees its occupied seats. No Elo event will be created.'}</p>
@@ -415,71 +676,7 @@ export function GameCard({
               method: 'DELETE', headers: { accept: 'application/json' },
             })}>{busy ? 'Cancelling…' : 'Cancel Game'}</button>
           </div>
-        </> : <>
-          <label htmlFor={`seat-player-${game.id}`}>Replacement player</label>
-          <p className="seat-scan-hint">Scan a player piece, or search the list.</p>
-          <div className="replacement-combobox">
-            <input
-              ref={replacementInputRef}
-              id={`seat-player-${game.id}`}
-              type="text"
-              role="combobox"
-              aria-autocomplete="list"
-              aria-expanded={pickerOpen}
-              aria-controls={listboxId}
-              aria-activedescendant={pickerOpen && activeOption >= 0 && replacementOptions[activeOption]
-                ? optionId(replacementOptions[activeOption])
-                : undefined}
-              autoComplete="off"
-              placeholder="Search replacement player"
-              value={replacementQuery}
-              onFocus={openPicker}
-              onClick={openPicker}
-              onChange={(event) => {
-                setReplacementQuery(event.target.value)
-                setReplacement('')
-                setScanMessage('')
-                setPickerOpen(true)
-                setActiveOption(0)
-              }}
-              onKeyDown={handlePickerKeyDown}
-            />
-            {pickerOpen && (
-              <div id={listboxId} role="listbox" aria-label="Replacement players"
-                className="replacement-listbox">
-                {loadingPlayers ? (
-                  <p role="status" className="replacement-picker-message">Loading players…</p>
-                ) : playersError ? (
-                  <p role="alert" className="replacement-picker-message">{playersError}</p>
-                ) : replacementOptions.length === 0 ? (
-                  <p role="status" className="replacement-picker-message">No replacement players found.</p>
-                ) : replacementOptions.map((candidate, index) => (
-                  <div
-                    id={optionId(candidate)}
-                    key={candidate.value}
-                    role="option"
-                    aria-selected={index === activeOption}
-                    className="replacement-option"
-                    onMouseDown={(event) => event.preventDefault()}
-                    onMouseEnter={() => setActiveOption(index)}
-                    onClick={() => selectReplacement(candidate)}
-                  >
-                    {candidate.label}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-          {scanMessage && <p role="status" aria-live="polite" className="seat-scan-message">{scanMessage}</p>}
-          {error && <p role="alert" className="form-error">{error}</p>}
-          <div className="dialog-actions">
-            <button type="button" disabled={busy || !replacement}
-              onClick={() => void mutate(`/api/games/${game.id}/seats/${dialog}`, {
-                method: 'PATCH', headers: { accept: 'application/json', 'content-type': 'application/json' },
-                body: JSON.stringify({ playerId: replacement === 'empty' ? null : Number(replacement) }),
-              })}>{busy ? 'Saving…' : assigning ? 'Assign player' : 'Replace player'}</button>
-          </div>
-        </>}
+        </> : null}
       </ModalDialog>}
     </article>
   )

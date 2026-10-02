@@ -314,6 +314,73 @@ const migrations = [
       CREATE INDEX PlayerRatingEvent_game ON PlayerRatingEvent(gameId);
     `,
   },
+  {
+    version: 7,
+    sql: `
+      CREATE TABLE ClubEvent (
+        id INTEGER PRIMARY KEY,
+        type TEXT NOT NULL CHECK (type = 'club-session'),
+        name TEXT NOT NULL CHECK (length(trim(name)) BETWEEN 1 AND 120),
+        createdAt TEXT NOT NULL CHECK (
+          length(createdAt) >= 20 AND datetime(createdAt) IS NOT NULL
+        ),
+        active INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0, 1))
+      ) STRICT;
+      CREATE UNIQUE INDEX ClubEvent_one_active_session
+      ON ClubEvent(active) WHERE active = 1;
+
+      CREATE TABLE ClubEventPlayer (
+        eventId INTEGER NOT NULL REFERENCES ClubEvent(id) ON DELETE RESTRICT,
+        playerId INTEGER NOT NULL REFERENCES Player(id) ON DELETE RESTRICT,
+        checkedInAt TEXT NOT NULL CHECK (
+          length(checkedInAt) >= 20 AND datetime(checkedInAt) IS NOT NULL
+        ),
+        PRIMARY KEY (eventId, playerId)
+      ) STRICT, WITHOUT ROWID;
+      CREATE INDEX ClubEventPlayer_player ON ClubEventPlayer(playerId, eventId);
+
+      ALTER TABLE ChessGame ADD COLUMN eventId INTEGER REFERENCES ClubEvent(id) ON DELETE RESTRICT;
+      CREATE INDEX ChessGame_event_status
+      ON ChessGame(eventId, result, cancelledAt, tableNumber);
+    `,
+  },
+  {
+    version: 8,
+    sql: `
+      ALTER TABLE ClubEvent ADD COLUMN closedAt TEXT CHECK (
+        closedAt IS NULL OR (length(closedAt) >= 20 AND datetime(closedAt) IS NOT NULL)
+      );
+    `,
+  },
+  {
+    version: 9,
+    sql: `
+      ALTER TABLE ClubEvent ADD COLUMN pairingMode TEXT NOT NULL
+      DEFAULT 'club-session-pairing-1'
+      CHECK (pairingMode = 'club-session-pairing-1');
+
+      CREATE TABLE ClubEventPairingCohort (
+        eventId INTEGER NOT NULL REFERENCES ClubEvent(id) ON DELETE RESTRICT,
+        playerId INTEGER NOT NULL REFERENCES Player(id) ON DELETE RESTRICT,
+        cohort TEXT NOT NULL CHECK (cohort IN ('A', 'B', 'C', 'D')),
+        snapshotRating INTEGER NOT NULL CHECK (snapshotRating BETWEEN 0 AND 10000),
+        PRIMARY KEY (eventId, playerId)
+      ) STRICT, WITHOUT ROWID;
+      CREATE INDEX ClubEventPairingCohort_lookup
+      ON ClubEventPairingCohort(eventId, cohort, snapshotRating DESC, playerId);
+
+      INSERT INTO ClubEventPairingCohort(eventId, playerId, cohort, snapshotRating)
+      SELECT e.id, ranked.id,
+        CASE ranked.bucket WHEN 1 THEN 'A' WHEN 2 THEN 'B' WHEN 3 THEN 'C' ELSE 'D' END,
+        ranked.rating
+      FROM ClubEvent AS e
+      CROSS JOIN (
+        SELECT id, rating, NTILE(4) OVER (ORDER BY rating DESC, id ASC) AS bucket
+        FROM Player
+      ) AS ranked
+      WHERE e.type = 'club-session';
+    `,
+  },
 ] as const;
 
 function backfillRatingLedger(db: DatabaseSync, recordedAt: string): void {
@@ -377,16 +444,24 @@ function backfillRatingLedger(db: DatabaseSync, recordedAt: string): void {
 }
 
 function assertUniqueGameParticipation(db: DatabaseSync): void {
-  const hasResult = (db.prepare('PRAGMA table_info(ChessGame)').all() as Array<{ name: string }>)
-    .some((column) => column.name === 'result');
+  const columns = new Set(
+    (db.prepare('PRAGMA table_info(ChessGame)').all() as Array<{ name: string }>)
+      .map((column) => column.name),
+  );
+  const activeGamePredicate = [
+    columns.has('result') ? 'result IS NULL' : null,
+    columns.has('cancelledAt') ? 'cancelledAt IS NULL' : null,
+  ].filter((predicate): predicate is string => predicate !== null)
+    .map((predicate) => `AND ${predicate}`)
+    .join(' ');
   const duplicate = db.prepare(`
     SELECT playerId, COUNT(*) AS appearances
     FROM (
       SELECT blackPlayerId AS playerId FROM ChessGame
-      WHERE blackPlayerId IS NOT NULL ${hasResult ? 'AND result IS NULL' : ''}
+      WHERE blackPlayerId IS NOT NULL ${activeGamePredicate}
       UNION ALL
       SELECT whitePlayerId AS playerId FROM ChessGame
-      WHERE whitePlayerId IS NOT NULL ${hasResult ? 'AND result IS NULL' : ''}
+      WHERE whitePlayerId IS NOT NULL ${activeGamePredicate}
     )
     GROUP BY playerId
     HAVING COUNT(*) > 1

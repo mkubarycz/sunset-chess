@@ -12,6 +12,7 @@ import type { NativeBarcodeDetector } from './nativeBarcodeDecoder'
 import type { DecodeRequest, DecodeResponse } from './workerProtocol'
 import type { QrDetection } from './scanner'
 import type { OpticalFlowRequest, OpticalFlowResponse } from './opticalFlowProtocol'
+import { checkInZoneRect } from './actionZones'
 
 class FakeWorker extends EventTarget {
   postMessage = vi.fn((request: DecodeRequest) => {
@@ -1421,7 +1422,7 @@ describe('scanner and player producer', () => {
     expect(screen.queryByText(/could not be resolved/)).not.toBeInTheDocument()
   })
 
-  it('checks a held player QR in once and then shows its centered game context', async () => {
+  it('checks a held player QR in once and shows its game card in the player lane', async () => {
     const camera = setupCamera()
     const worker = new FakeWorker()
     let now = 10_000
@@ -1505,17 +1506,20 @@ describe('scanner and player producer', () => {
       await scanDetection(time, { data: payload, location })
     }
     expect(checkInPlayer).toHaveBeenCalledTimes(1)
-    expect(screen.getByRole('group', { name: 'Game context for Table 1' })).toBeInTheDocument()
-    expect(screen.getByText('Waiting for an opponent')).toBeInTheDocument()
-    expect(screen.getByText('Waiting for an opponent')).toHaveClass('game-waiting-header')
-    const resultOptions = screen.getByRole('group', { name: 'Result options for Table 1' })
-    const disabledChoices = within(resultOptions).getAllByRole('group')
-    expect(disabledChoices).toHaveLength(6)
-    expect(disabledChoices.every((zone) => zone.getAttribute('aria-disabled') === 'true')).toBe(true)
-    const stageCard = within(screen.getByRole('group', { name: 'Game context for Table 1' }))
-      .getByRole('article')
+    expect(screen.queryByRole('group', { name: 'Game context for Table 1' }))
+      .not.toBeInTheDocument()
+    const laneContexts = screen.getByRole('group', { name: 'Detected player game contexts' })
+    const laneGame = laneContexts.querySelector('.camera-lane-game')
+    expect(laneGame).toHaveClass('lane-left')
+    expect(screen.queryByText('Waiting for an opponent')).not.toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Result options for Table 1' }))
+      .not.toBeInTheDocument()
+    expect(screen.getByTestId('camera-interaction-layer')
+      .querySelector('[data-action="winner"], [data-action="draw"], [data-action="loser"]'))
+      .not.toBeInTheDocument()
+    const stageCard = within(laneContexts).getByRole('article')
     expect(stageCard).toHaveClass('stage-game-card')
-    expect(stageCard).toHaveStyle({ width: 'clamp(150px, 30vw, 280px)', height: 'auto' })
+    expect(stageCard).toHaveStyle({ width: 'clamp(140px, 28vw, 260px)', height: 'auto' })
   })
 
   it('defers check-in completion until the overlay hides and highlights the promoted card', async () => {
@@ -1927,7 +1931,7 @@ describe('ongoing games', () => {
 
   afterEach(() => vi.useRealTimers())
 
-  it('routes a newly decoded player scan into an open seat picker without submitting', async () => {
+  it('assigns a scanned player to the active seat only after the shared zone hold', async () => {
     const camera = setupCamera()
     let now = 1_000
     vi.spyOn(performance, 'now').mockImplementation(() => now)
@@ -1938,14 +1942,30 @@ describe('ongoing games', () => {
       { rank: 2, id: 1222, name: 'Blanca', currentRating: 700, gamesPlayed: 0, wins: 0, losses: 0, draws: 0, lastPlayedAt: null },
       { rank: 3, id: 3000, name: 'Zelda Knight', currentRating: 812, gamesPlayed: 0, wins: 0, losses: 0, draws: 0, lastPlayedAt: null },
     ]
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => new Response(
-      JSON.stringify(input === '/api/players' ? { players: roster } : { players: [] }),
-      { status: 200, headers: { 'content-type': 'application/json' } },
-    ))
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const body = input === '/api/players?gameId=9'
+        ? { players: roster }
+        : input === '/api/games/9/seats/black'
+          ? {
+              game: {
+                ...game,
+                blackPlayerId: 3000,
+                blackPlayer: { id: 3000, name: 'Zelda Knight', rating: 812 },
+              },
+            }
+          : { players: [] }
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    })
+    const checkInPlayer = vi.fn()
     render(<App
       nativeDetectorFactory={() => ({ detect })}
       fetchGames={vi.fn().mockResolvedValue({ games: [game], recentGames: [] })}
+      checkInPlayer={checkInPlayer}
       gamesPollIntervalMs={60_000}
+      seatScanAcknowledgementMs={500}
     />)
     const video = screen.getByLabelText('Mirrored live camera preview')
     Object.defineProperties(video, {
@@ -1956,8 +1976,11 @@ describe('ongoing games', () => {
       readyState: { configurable: true, value: HTMLMediaElement.HAVE_CURRENT_DATA },
     })
     await screen.findByLabelText('Ongoing games')
-    await userEvent.click(screen.getByRole('button', { name: 'Edit Black player on Table 2' }))
-    await waitFor(() => expect(screen.queryByText('Loading players…')).not.toBeInTheDocument())
+    await userEvent.click(screen.getByRole('button', { name: 'Open details for Table 2' }))
+    const dialog = screen.getByRole('dialog', { name: 'Table 2 game details' })
+    const blackPlayerInput = screen.getByRole('combobox', { name: 'Black player' })
+    await userEvent.click(blackPlayerInput)
+    await screen.findByRole('option', { name: 'Zelda Knight (812 Elo)' })
 
     detections = [{
       rawValue: JSON.stringify({ v: 1, kind: 'player', playerId: 3000, name: 'Zelda Knight' }),
@@ -1966,18 +1989,64 @@ describe('ongoing games', () => {
         { x: 220, y: 170 }, { x: 180, y: 170 },
       ],
     }]
-    for (let index = 0; index < 12; index += 1) {
+    for (let index = 0; index < 8; index += 1) {
       now += 100
       await act(async () => camera.callbacks.shift()?.(now))
     }
 
     expect(detect.mock.calls.length).toBeGreaterThan(1)
-    expect(await screen.findByText('Zelda Knight · #3000')).toBeInTheDocument()
-    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Replacement player' }))
-      .toHaveValue('Zelda Knight (812 Elo)'))
-    expect(screen.getByRole('button', { name: 'Replace player' })).toBeEnabled()
-    expect(fetchSpy.mock.calls.some(([input]) =>
-      input === '/api/games/9/seats/black')).toBe(false)
+    const cameraLayer = screen.getByTestId('camera-interaction-layer')
+    await waitFor(() => expect(cameraLayer).toHaveClass('is-visible'))
+    expect(fetchSpy.mock.calls.some(([input]) => input === '/api/games/9/seats/black'))
+      .toBe(false)
+    expect(within(cameraLayer).getByRole('group', {
+      name: 'left Black seat assignment target',
+    })).toHaveClass('status-idle')
+
+    detections = [{
+      rawValue: JSON.stringify({ v: 1, kind: 'player', playerId: 3000, name: 'Zelda Knight' }),
+      cornerPoints: [
+        { x: 340, y: 40 }, { x: 360, y: 40 },
+        { x: 360, y: 60 }, { x: 340, y: 60 },
+      ],
+    }]
+    for (let index = 0; index < 10; index += 1) {
+      now += 100
+      await act(async () => camera.callbacks.shift()?.(now))
+    }
+    const holdingZone = within(cameraLayer).getByRole('group', {
+      name: 'Assign Zelda Knight to the Black seat',
+    })
+    expect(holdingZone).toHaveClass('action-zone', 'action-check-in', 'lane-left', 'status-holding')
+    expect(within(holdingZone).getByRole('progressbar')).not.toHaveAttribute('aria-valuenow', '100')
+    expect(fetchSpy.mock.calls.some(([input]) => input === '/api/games/9/seats/black'))
+      .toBe(false)
+    const expectedSeatScanRect = checkInZoneRect(400, 300, 'left')
+    expect(holdingZone).toHaveStyle(
+      `--zone-x: ${expectedSeatScanRect.x}px; --zone-y: ${expectedSeatScanRect.y}px; `
+      + `--zone-width: ${expectedSeatScanRect.width}px; --zone-height: ${expectedSeatScanRect.height}px`,
+    )
+    expect(dialog).toBeInTheDocument()
+
+    for (let index = 0; index < 12; index += 1) {
+      now += 100
+      await act(async () => camera.callbacks.shift()?.(now))
+    }
+    await waitFor(() => expect(fetchSpy.mock.calls.some(([input]) =>
+      input === '/api/games/9/seats/black')).toBe(true))
+    const seatScanZone = within(cameraLayer).getByRole('group', {
+      name: 'Seat assignment for Zelda Knight',
+    })
+    await waitFor(() => expect(seatScanZone).toHaveClass('status-complete'))
+    expect(seatScanZone).toHaveTextContent(
+      'Zelda Knight checked into the Black spot on Table 2.',
+    )
+    await waitFor(() => expect(cameraLayer).toHaveClass('is-hidden'))
+    expect(dialog).toBeVisible()
+    await waitFor(() => expect(blackPlayerInput).toHaveFocus())
+    expect(checkInPlayer).not.toHaveBeenCalled()
+    expect(within(dialog).queryByText('Zelda Knight is now in the Black spot on Table 2.'))
+      .not.toBeInTheDocument()
   })
 
   it('loads immediately, shows empty and error states, and retries', async () => {
@@ -1996,6 +2065,53 @@ describe('ongoing games', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
     await waitFor(() => expect(fetchGames).toHaveBeenCalledTimes(3))
     expect(screen.queryByText(/Could not refresh ongoing games/)).not.toBeInTheDocument()
+  })
+
+  it('adds an empty ongoing game from the plus button', async () => {
+    const emptyGame = {
+      ...game,
+      id: 10,
+      tableNumber: 1,
+      createdAt: '2026-01-03T00:00:00.000Z',
+      blackPlayerId: null,
+      whitePlayerId: null,
+      blackPlayer: null,
+      whitePlayer: null,
+    }
+    let resolveCreate: ((game: typeof emptyGame) => void) | undefined
+    const createEmptyGame = vi.fn(() => new Promise<typeof emptyGame>((resolve) => {
+      resolveCreate = resolve
+    }))
+    render(<App
+      fetchGames={vi.fn().mockResolvedValue([])}
+      createEmptyGame={createEmptyGame}
+      gamesPollIntervalMs={60_000}
+    />)
+    await screen.findByText('No games are ongoing yet.')
+
+    const addButton = screen.getByRole('button', { name: 'Add empty game' })
+    await userEvent.click(addButton)
+    expect(createEmptyGame).toHaveBeenCalledWith(expect.any(AbortSignal))
+    expect(screen.getByRole('button', { name: 'Adding empty game' })).toBeDisabled()
+
+    await act(async () => resolveCreate?.(emptyGame))
+    expect(await screen.findByRole('article', {
+      name: 'Table 1: waiting for Black, waiting for White',
+    })).toHaveClass('featured-game')
+    expect(screen.getByRole('button', { name: 'Add empty game' })).toBeEnabled()
+    expect(screen.queryByText('No games are ongoing yet.')).not.toBeInTheDocument()
+  })
+
+  it('shows an error when an empty game cannot be created', async () => {
+    render(<App
+      fetchGames={vi.fn().mockResolvedValue([])}
+      createEmptyGame={vi.fn().mockRejectedValue(new Error('Database unavailable.'))}
+      gamesPollIntervalMs={60_000}
+    />)
+    await screen.findByText('No games are ongoing yet.')
+    await userEvent.click(screen.getByRole('button', { name: 'Add empty game' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Database unavailable.')
+    expect(screen.getByRole('button', { name: 'Add empty game' })).toBeEnabled()
   })
 
   it('renders a compact two-row checker card with ratings and no IDs or dates', async () => {
@@ -2055,7 +2171,7 @@ describe('ongoing games', () => {
       .toHaveClass('drawn-game')
   })
 
-  it('renders a tabbed primary workspace and one persistent Ongoing Games rail', async () => {
+  it('renders the global Ongoing Games rail inside the leaderboard tab', async () => {
     render(<App fetchGames={vi.fn().mockResolvedValue([game])} gamesPollIntervalMs={60_000} />)
     await userEvent.click(screen.getByRole('tab', { name: 'Leaderboard' }))
     const ongoingList = await screen.findByRole('region', { name: 'Ongoing games' })
@@ -2068,7 +2184,7 @@ describe('ongoing games', () => {
     const liveGames = document.querySelector<HTMLElement>('.live-games')
     const ongoingColumn = document.querySelector<HTMLElement>('.ongoing-column')
     const overlay = screen.getByTestId('camera-interaction-layer')
-    expect([...dashboard!.children]).toEqual([main, ongoingColumn])
+    expect([...dashboard!.children]).toEqual([main])
     expect(dashboard).not.toContainElement(overlay)
     expect(document.querySelector('.scanner-card, .center-stage, .right-rail')).not.toBeInTheDocument()
     const leaderboard = document.querySelector<HTMLElement>('.leaderboard')
@@ -2079,10 +2195,90 @@ describe('ongoing games', () => {
     expect(within(liveGames!).getByRole('heading', { level: 2 })).toHaveTextContent('Ongoing Games')
     expect(screen.getAllByRole('tab').map((tab) => tab.textContent))
       .toEqual(['Leaderboard', 'Recent Games'])
-    expect(main?.nextElementSibling).toBe(ongoingColumn)
+    expect(main).toContainElement(ongoingColumn)
     expect(document.querySelector('.brand-header')!.compareDocumentPosition(leaderboard!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(within(liveGames!).getByRole('region', { name: 'Ongoing games' })).toBe(ongoingList)
     expect(ongoingList).toHaveClass('games-list')
+  })
+
+  it('creates an active Club Session tab with scoped games and standings', async () => {
+    const session = {
+      id: 4,
+      type: 'club-session' as const,
+      name: 'Oct 2 Club Session',
+      createdAt: '2026-10-02T13:00:00.000Z',
+      active: true,
+      closedAt: null,
+      playerCount: 1,
+      gameCount: 1,
+      activeGameCount: 1,
+      pairingMode: 'club-session-pairing-1' as const,
+    }
+    const sessionGame = { ...game, id: 10, tableNumber: 3, eventId: session.id }
+    const globalGame = { ...game, id: 11, tableNumber: 4, eventId: null }
+    const createClubSession = vi.fn().mockResolvedValue(session)
+    const checkInPlayer = vi.fn().mockResolvedValue({
+      status: 'waiting',
+      game: sessionGame,
+    })
+    const fetchSessions = vi.fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([session])
+    const closeClubSession = vi.fn().mockResolvedValue({
+      ...session,
+      active: false,
+      activeGameCount: 0,
+      closedAt: '2026-10-02T15:00:00.000Z',
+    })
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => new Response(
+      JSON.stringify(input === '/api/players'
+        ? { players: [{ id: 1002, name: 'Manual Player', currentRating: 700 }] }
+        : { leaderboard: [] }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ))
+
+    render(<App
+      fetchGames={vi.fn().mockResolvedValue([sessionGame, globalGame])}
+      fetchSessions={fetchSessions}
+      createClubSession={createClubSession}
+      closeClubSession={closeClubSession}
+      checkInPlayer={checkInPlayer}
+      gamesPollIntervalMs={60_000}
+    />)
+    await userEvent.click(await screen.findByRole('button', { name: '+ Create Club Session' }))
+
+    expect(createClubSession).toHaveBeenCalledWith(expect.any(AbortSignal))
+    const sessionTab = await screen.findByRole('tab', { name: 'Oct 2 Club Session' })
+    expect(sessionTab).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByRole('button', { name: '+ Create Club Session' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Configure Oct 2 Club Session' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Session Standings' })).toBeVisible()
+
+    const sessionGames = screen.getByRole('region', { name: 'Club session ongoing games' })
+    expect(within(sessionGames).getAllByRole('article')).toHaveLength(1)
+    expect(within(sessionGames).getByRole('article')).toHaveAttribute('data-game-id', '10')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Add player to session' }))
+    await userEvent.click(await screen.findByRole('option', { name: 'Manual Player (700 Elo)' }))
+    expect(checkInPlayer).toHaveBeenCalledWith({
+      v: 1,
+      kind: 'player',
+      playerId: 1002,
+      name: 'Manual Player',
+    }, expect.any(AbortSignal))
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Leaderboard' }))
+    expect(within(screen.getByRole('region', { name: 'Ongoing games' })).getAllByRole('article'))
+      .toHaveLength(2)
+
+    await userEvent.click(sessionTab)
+    await userEvent.click(screen.getByRole('button', { name: 'Configure Oct 2 Club Session' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Close Session' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Draw Games and Close' }))
+    expect(closeClubSession).toHaveBeenCalledWith(session.id, 'draw')
+    expect(screen.queryByRole('tab', { name: 'Oct 2 Club Session' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '+ Create Club Session' })).toBeVisible()
+    expect(screen.getByRole('tab', { name: 'Leaderboard' })).toHaveAttribute('aria-selected', 'true')
   })
 
   it('polls additions and removals without overlap and aborts on cleanup', async () => {

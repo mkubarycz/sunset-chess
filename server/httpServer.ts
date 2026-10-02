@@ -137,22 +137,109 @@ export function createSunsetServer(
         await transport.handleRequest(req, res, await parseJson(req));
         return;
       }
-      if (url.pathname === '/api/games') {
-        if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed.' });
+      if (url.pathname === '/api/sessions') {
+        if (req.method === 'GET') {
+          return sendJson(res, 200, { sessions: repository.listClubSessions() });
+        }
+        if (req.method === 'POST') {
+          return sendJson(res, 201, { session: repository.createClubSession() });
+        }
+        return sendJson(res, 405, { error: 'Method not allowed.' });
+      }
+      const sessionCloseMatch = url.pathname.match(/^\/api\/sessions\/(\d+)\/close$/);
+      if (sessionCloseMatch) {
+        if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed.' });
+        if (req.headers['content-type']?.split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
+          return sendJson(res, 400, { error: 'Content-Type must be application/json.' });
+        }
+        const body = await parseJson(req, 4096);
+        const resolution = (body as { resolution?: unknown } | null)?.resolution;
+        if (!body || typeof body !== 'object' || Array.isArray(body)
+          || Object.keys(body).length !== 1
+          || (resolution !== 'draw' && resolution !== 'cancel')) {
+          return sendJson(res, 400, { error: 'Body must contain only resolution: draw or cancel.' });
+        }
         return sendJson(res, 200, {
-          games: repository.listJoinedGames('ongoing'),
-          recentGames: repository.listJoinedGames('finished', 20),
+          session: repository.closeClubSession(
+            Number(sessionCloseMatch[1]),
+            resolution,
+          ),
         });
+      }
+      const sessionPairingModeMatch = url.pathname.match(/^\/api\/sessions\/(\d+)\/pairing-mode$/);
+      if (sessionPairingModeMatch) {
+        if (req.method !== 'PATCH') return sendJson(res, 405, { error: 'Method not allowed.' });
+        if (req.headers['content-type']?.split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
+          return sendJson(res, 400, { error: 'Content-Type must be application/json.' });
+        }
+        const body = await parseJson(req, 4096);
+        const pairingMode = (body as { pairingMode?: unknown } | null)?.pairingMode;
+        if (!body || typeof body !== 'object' || Array.isArray(body)
+          || Object.keys(body).length !== 1 || pairingMode !== 'club-session-pairing-1') {
+          return sendJson(res, 400, {
+            error: 'Body must contain only pairingMode: club-session-pairing-1.',
+          });
+        }
+        return sendJson(res, 200, {
+          session: repository.updateClubSessionPairingMode(
+            Number(sessionPairingModeMatch[1]),
+            pairingMode,
+          ),
+        });
+      }
+      const sessionMatch = url.pathname.match(/^\/api\/sessions\/(\d+)$/);
+      if (sessionMatch) {
+        if (req.method !== 'PATCH') return sendJson(res, 405, { error: 'Method not allowed.' });
+        if (req.headers['content-type']?.split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
+          return sendJson(res, 400, { error: 'Content-Type must be application/json.' });
+        }
+        const body = await parseJson(req, 4096);
+        if (!body || typeof body !== 'object' || Array.isArray(body)
+          || Object.keys(body).length !== 1 || typeof (body as { name?: unknown }).name !== 'string') {
+          return sendJson(res, 400, { error: 'Body must contain only a string name.' });
+        }
+        return sendJson(res, 200, {
+          session: repository.updateClubSessionName(
+            Number(sessionMatch[1]),
+            (body as { name: string }).name,
+          ),
+        });
+      }
+      if (url.pathname === '/api/games') {
+        const rawEventId = url.searchParams.get('eventId');
+        if (rawEventId !== null && !/^\d+$/.test(rawEventId)) {
+          return sendJson(res, 400, { error: 'eventId must be a positive integer.' });
+        }
+        const eventId = rawEventId === null ? undefined : Number(rawEventId);
+        if (req.method === 'GET') {
+          return sendJson(res, 200, {
+            games: repository.listJoinedGames('ongoing', undefined, eventId),
+            recentGames: repository.listJoinedGames('finished', 20, eventId),
+          });
+        }
+        if (req.method === 'POST') {
+          return sendJson(res, 201, {
+            game: repository.createEmptyGame(() => new Date().toISOString(), eventId),
+          });
+        }
+        return sendJson(res, 405, { error: 'Method not allowed.' });
       }
       if (url.pathname === '/api/leaderboard') {
         if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed.' });
         const rawLimit = url.searchParams.get('limit');
+        const rawEventId = url.searchParams.get('eventId');
         if (rawLimit !== null && !/^\d+$/.test(rawLimit)) {
           return sendJson(res, 400, { error: 'limit must be an integer between 1 and 200.' });
         }
+        if (rawEventId !== null && !/^\d+$/.test(rawEventId)) {
+          return sendJson(res, 400, { error: 'eventId must be a positive integer.' });
+        }
         try {
           return sendJson(res, 200, {
-            leaderboard: repository.listLeaderboard(rawLimit === null ? 100 : Number(rawLimit)),
+            leaderboard: repository.listLeaderboard(
+              rawLimit === null ? 100 : Number(rawLimit),
+              rawEventId === null ? undefined : Number(rawEventId),
+            ),
           });
         } catch (error) {
           if (error instanceof DomainError) {
@@ -163,7 +250,25 @@ export function createSunsetServer(
       }
       if (url.pathname === '/api/players') {
         if (req.method === 'GET') {
-          return sendJson(res, 200, { players: repository.listLeaderboard(200) });
+          const rawGameId = url.searchParams.get('gameId');
+          if (rawGameId !== null && !/^\d+$/.test(rawGameId)) {
+            return sendJson(res, 400, { error: 'gameId must be a positive integer.' });
+          }
+          try {
+            return sendJson(res, 200, {
+              players: rawGameId === null
+                ? repository.listLeaderboard(200)
+                : repository.listSeatOptions(Number(rawGameId)),
+            });
+          } catch (error) {
+            if (error instanceof DomainError) {
+              return sendJson(res, error.code === 'not_found' ? 404 : error.code === 'conflict' ? 409 : 400, {
+                error: error.message,
+                code: error.code,
+              });
+            }
+            throw error;
+          }
         }
         if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed.' });
         if (req.headers['content-type']?.split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
@@ -188,6 +293,42 @@ export function createSunsetServer(
         } catch (error) {
           if (error instanceof DomainError) {
             return sendJson(res, error.code === 'conflict' ? 409 : 400, {
+              error: error.message,
+              code: error.code,
+            });
+          }
+          throw error;
+        }
+      }
+      const playerMoveMatch = url.pathname.match(/^\/api\/players\/(\d+)\/move$/);
+      if (playerMoveMatch) {
+        if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed.' });
+        if (req.headers['content-type']?.split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
+          return sendJson(res, 400, { error: 'Content-Type must be application/json.' });
+        }
+        let body: unknown;
+        try {
+          body = await parseJson(req, 1024);
+        } catch (error) {
+          return sendJson(res, 400, {
+            error: error instanceof Error ? error.message : 'Invalid JSON body.',
+          });
+        }
+        if (!body || typeof body !== 'object' || Array.isArray(body)
+          || Object.keys(body).length !== 1
+          || !Number.isInteger((body as { destinationGameId?: unknown }).destinationGameId)) {
+          return sendJson(res, 400, { error: 'Body must contain only destinationGameId as an integer.' });
+        }
+        try {
+          return sendJson(res, 200, {
+            game: repository.moveWaitingPlayer(
+              Number(playerMoveMatch[1]),
+              (body as { destinationGameId: number }).destinationGameId,
+            ),
+          });
+        } catch (error) {
+          if (error instanceof DomainError) {
+            return sendJson(res, error.code === 'not_found' ? 404 : error.code === 'conflict' ? 409 : 400, {
               error: error.message,
               code: error.code,
             });
@@ -430,6 +571,12 @@ export function createSunsetServer(
       }
       sendJson(res, 404, { error: 'Not found.' });
     } catch (error) {
+      if (error instanceof DomainError) {
+        return sendJson(res, error.code === 'not_found' ? 404 : error.code === 'conflict' ? 409 : 400, {
+          error: error.message,
+          code: error.code,
+        });
+      }
       sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
     }
   });

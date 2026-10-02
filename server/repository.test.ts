@@ -46,7 +46,10 @@ describe('ChessRepository', () => {
         1000, 1001, '1-0'
       );
       DROP TABLE PlayerRatingEvent;
-      DELETE FROM schema_migrations WHERE version IN (5, 6);
+      DROP TABLE ClubEventPairingCohort;
+      DROP TABLE ClubEventPlayer;
+      DROP TABLE ClubEvent;
+      DELETE FROM schema_migrations WHERE version IN (5, 6, 7, 8, 9);
     `);
     db.close();
 
@@ -123,9 +126,9 @@ describe('ChessRepository', () => {
     ]);
     expect(persisted.getGame(game.id)).toEqual(game);
     expect(reopened.prepare('SELECT count(*) AS count FROM schema_migrations').get())
-      .toEqual({ count: 6 });
+      .toEqual({ count: 9 });
     expect(db.prepare('SELECT count(*) AS count FROM schema_migrations').get())
-      .toEqual({ count: 6 });
+      .toEqual({ count: 9 });
     reopened.close();
     db.close();
   });
@@ -170,7 +173,7 @@ describe('ChessRepository', () => {
     migrated.close();
     const reopened = openDatabase(path);
     expect(reopened.prepare('SELECT count(*) AS count FROM ChessGame').get()).toEqual({ count: 1 });
-    expect(reopened.prepare('SELECT count(*) AS count FROM schema_migrations').get()).toEqual({ count: 6 });
+    expect(reopened.prepare('SELECT count(*) AS count FROM schema_migrations').get()).toEqual({ count: 9 });
     reopened.close();
   });
 
@@ -459,6 +462,326 @@ describe('ChessRepository', () => {
     db.close();
   });
 
+  it('creates empty games at the lowest available table and rolls back invalid clocks', () => {
+    const { db, repository } = fixture();
+    const first = repository.createEmptyGame(() => '2026-01-01T00:00:00.000Z');
+    const second = repository.createEmptyGame(() => '2026-01-01T00:01:00.000Z');
+    expect(first).toMatchObject({
+      tableNumber: 1,
+      blackPlayerId: null,
+      whitePlayerId: null,
+      blackPlayer: null,
+      whitePlayer: null,
+    });
+    expect(second.tableNumber).toBe(2);
+
+    repository.deleteGame(first.id);
+    expect(repository.createEmptyGame(() => '2026-01-01T00:02:00.000Z').tableNumber).toBe(1);
+    expect(() => repository.createEmptyGame(() => 'not-a-date')).toThrow(/invalid ISO timestamp/);
+    expect(repository.listJoinedGames('ongoing')).toHaveLength(2);
+    db.close();
+  });
+
+  it('fills existing empty tables before creating another game', () => {
+    const { db, repository } = fixture();
+    const first = repository.createEmptyGame(() => '2026-01-02T00:00:00.000Z');
+    const second = repository.createEmptyGame(() => '2026-01-01T00:00:00.000Z');
+
+    const alice = repository.checkInPlayer({ id: 1000, name: 'Alice' }, () => 1);
+    expect(alice).toMatchObject({
+      status: 'waiting',
+      side: 'white',
+      game: { id: first.id, tableNumber: 1, blackPlayerId: null, whitePlayerId: 1000 },
+    });
+    expect(repository.listGames()).toHaveLength(2);
+
+    const bob = repository.checkInPlayer({ id: 1001, name: 'Bob' });
+    expect(bob).toMatchObject({
+      status: 'paired',
+      side: 'black',
+      game: { id: first.id, tableNumber: 1, blackPlayerId: 1001, whitePlayerId: 1000 },
+    });
+
+    const carol = repository.checkInPlayer({ id: 1002, name: 'Carol' }, () => 0);
+    expect(carol).toMatchObject({
+      status: 'waiting',
+      side: 'black',
+      game: { id: second.id, tableNumber: 2, blackPlayerId: 1002, whitePlayerId: null },
+    });
+    expect(repository.listGames()).toHaveLength(2);
+    db.close();
+  });
+
+  it('tracks active club-session check-ins, standings membership, and games', () => {
+    const { db, repository } = fixture();
+    repository.upsertPlayer(1002, 'Not checked in');
+    const legacyEmpty = repository.createEmptyGame(
+      () => '2026-10-02T12:59:00.000Z',
+      null,
+    );
+    const session = repository.createClubSession(
+      undefined,
+      () => '2026-10-02T13:00:00.000Z',
+    );
+    expect(session).toMatchObject({
+      name: 'Oct 2 Club Session',
+      type: 'club-session',
+      active: true,
+      playerCount: 0,
+      gameCount: 0,
+    });
+
+    const alice = repository.checkInPlayer(
+      { id: 1000, name: 'Alice' },
+      () => 0,
+      () => '2026-10-02T13:01:00.000Z',
+    );
+    expect(alice.game.id).toBe(legacyEmpty.id);
+    expect(alice.game.eventId).toBe(session.id);
+    expect(repository.listLeaderboard(100, session.id).map(({ id }) => id)).toEqual([1000]);
+    expect(repository.listJoinedGames('ongoing', undefined, session.id)).toHaveLength(1);
+
+    const bob = repository.checkInPlayer(
+      { id: 1001, name: 'Bob' },
+      () => 1,
+      () => '2026-10-02T13:02:00.000Z',
+    );
+    expect(bob).toMatchObject({ status: 'paired', game: { id: alice.game.id, eventId: session.id } });
+    expect(repository.listLeaderboard(100, session.id).map(({ id }) => id).sort())
+      .toEqual([1000, 1001]);
+
+    const renamed = repository.updateClubSessionName(session.id, 'Thursday Club Night');
+    expect(renamed).toMatchObject({
+      name: 'Thursday Club Night',
+      playerCount: 2,
+      gameCount: 1,
+    });
+    expect(() => repository.updateClubSessionName(session.id, '   ')).toThrow(ValidationError);
+    expect(() => repository.createClubSession('Too Soon')).toThrow(ConflictError);
+
+    const incomplete = repository.createEmptyGame(() => '2026-10-02T13:03:00.000Z');
+    const closed = repository.closeClubSession(
+      session.id,
+      'draw',
+      () => '2026-10-02T14:00:00.000Z',
+    );
+    expect(closed).toMatchObject({
+      active: false,
+      activeGameCount: 0,
+      closedAt: '2026-10-02T14:00:00.000Z',
+    });
+    expect(repository.getGame(alice.game.id)).toMatchObject({
+      result: '1/2-1/2',
+      finishedAt: '2026-10-02T14:00:00.000Z',
+    });
+    expect(() => repository.getGame(incomplete.id)).toThrow(NotFoundError);
+    expect(repository.getPlayer(1000).rating).toBe(700);
+    expect(repository.getPlayer(1001).rating).toBe(700);
+    expect(() => repository.closeClubSession(session.id, 'cancel')).toThrow(ConflictError);
+
+    const next = repository.createClubSession('Next Session', () => '2026-10-03T13:00:00.000Z');
+    expect(repository.listClubSessions().filter(({ active }) => active)).toEqual([
+      expect.objectContaining({ id: next.id }),
+    ]);
+    expect(repository.createEmptyGame(() => '2026-10-03T13:01:00.000Z').eventId).toBe(next.id);
+    expect(repository.createEmptyGame(() => '2026-10-03T13:02:00.000Z', null).eventId).toBeNull();
+    db.close();
+  });
+
+  it('snapshots balanced Elo cohorts and only pairs eligible players within a cohort', () => {
+    const { db, repository } = fixture();
+    for (let id = 1000; id < 1008; id += 1) {
+      repository.upsertPlayer(id, `Player ${id}`);
+    }
+    const session = repository.createClubSession('Pairing Test');
+    expect(session.pairingMode).toBe('club-session-pairing-1');
+    expect(db.prepare(`
+      SELECT cohort, GROUP_CONCAT(playerId, ',') AS players
+      FROM ClubEventPairingCohort WHERE eventId = ?
+      GROUP BY cohort ORDER BY cohort
+    `).all(session.id)).toEqual([
+      { cohort: 'A', players: '1000,1001' },
+      { cohort: 'B', players: '1002,1003' },
+      { cohort: 'C', players: '1004,1005' },
+      { cohort: 'D', players: '1006,1007' },
+    ]);
+
+    const firstA = repository.checkInPlayer({ id: 1000, name: 'Player 1000' }, () => 0);
+    const firstB = repository.checkInPlayer({ id: 1002, name: 'Player 1002' }, () => 0);
+    expect(firstB).toMatchObject({ status: 'waiting', game: { tableNumber: 2 } });
+    const secondA = repository.checkInPlayer({ id: 1001, name: 'Player 1001' });
+    expect(secondA).toMatchObject({ status: 'paired', game: { id: firstA.game.id } });
+
+    repository.upsertPlayer(1008, 'Late Player');
+    repository.checkInPlayer({ id: 1008, name: 'Late Player' }, () => 0);
+    expect(db.prepare(`
+      SELECT cohort FROM ClubEventPairingCohort WHERE eventId = ? AND playerId = 1008
+    `).get(session.id)).toEqual({ cohort: 'A' });
+    db.close();
+  });
+
+  it('falls back across record preference within the same cohort', () => {
+    const { db, repository } = fixture();
+    for (let id = 1000; id < 1016; id += 1) {
+      repository.upsertPlayer(id, `Player ${id}`);
+    }
+    repository.createClubSession('Pairing Fallback');
+    const decisive = repository.checkInPlayer({ id: 1000, name: 'Player 1000' }, () => 0);
+    repository.checkInPlayer({ id: 1001, name: 'Player 1001' });
+    repository.finalizeGame(decisive.game.id, '0-1');
+    const draw = repository.checkInPlayer({ id: 1002, name: 'Player 1002' }, () => 0);
+    repository.checkInPlayer({ id: 1003, name: 'Player 1003' });
+    repository.finalizeGame(draw.game.id, '1/2-1/2');
+
+    const evenWaiting = repository.checkInPlayer({ id: 1002, name: 'Player 1002' }, () => 0);
+    const positiveIncoming = repository.checkInPlayer({ id: 1000, name: 'Player 1000' });
+    expect(positiveIncoming).toMatchObject({
+      status: 'paired',
+      game: { id: evenWaiting.game.id },
+    });
+    db.close();
+  });
+
+  it('moves a waiting player atomically and closes the vacated table', () => {
+    const { db, repository } = fixture();
+    repository.upsertPlayer(1000, 'Alice');
+    repository.upsertPlayer(1001, 'Bob');
+    const source = repository.checkInPlayer({ id: 1000, name: 'Alice' }, () => 0);
+    const destination = repository.createEmptyGame(
+      () => '2026-10-02T12:00:00.000Z',
+      null,
+    );
+    repository.updateGameSeat(destination.id, 'white', 1001);
+
+    expect(repository.moveWaitingPlayer(1000, destination.id)).toMatchObject({
+      id: destination.id,
+      blackPlayer: { id: 1000, name: 'Alice' },
+      whitePlayer: { id: 1001, name: 'Bob' },
+    });
+    expect(() => repository.getGame(source.game.id)).toThrow(NotFoundError);
+    expect(repository.listJoinedGames('ongoing')).toHaveLength(1);
+    db.close();
+  });
+
+  it('offers session seat options from checked-in available and waiting players', () => {
+    const { db, repository } = fixture();
+    for (let id = 1000; id < 1006; id += 1) {
+      repository.upsertPlayer(id, `Player ${id}`);
+    }
+    const session = repository.createClubSession('Seat Options');
+    const checkedInAt = '2026-10-02T12:00:00.000Z';
+    const addMember = db.prepare(`
+      INSERT INTO ClubEventPlayer(eventId, playerId, checkedInAt) VALUES (?, ?, ?)
+    `);
+    for (const id of [1000, 1001, 1002, 1003, 1005]) {
+      addMember.run(session.id, id, checkedInAt);
+    }
+    const target = repository.createEmptyGame(() => checkedInAt, session.id);
+    repository.updateGameSeat(target.id, 'black', 1000);
+    const waiting = repository.createEmptyGame(() => '2026-10-02T12:01:00.000Z', session.id);
+    repository.updateGameSeat(waiting.id, 'white', 1001);
+    const playing = repository.createEmptyGame(() => '2026-10-02T12:02:00.000Z', session.id);
+    repository.updateGameSeat(playing.id, 'black', 1003);
+    repository.updateGameSeat(playing.id, 'white', 1005);
+
+    expect(repository.listSeatOptions(target.id).map(({ id }) => id)).toEqual(
+      expect.arrayContaining([1001, 1002]),
+    );
+    expect(repository.listSeatOptions(target.id).map(({ id }) => id)).not.toEqual(
+      expect.arrayContaining([1003, 1004, 1005]),
+    );
+    expect(() => repository.updateGameSeat(target.id, 'white', 1004))
+      .toThrow('has not checked into this Club Session');
+    expect(repository.updateGameSeat(target.id, 'white', 1001)).toMatchObject({
+      id: target.id,
+      blackPlayerId: 1000,
+      whitePlayerId: 1001,
+    });
+    expect(() => repository.getGame(waiting.id)).toThrow(NotFoundError);
+    db.close();
+  });
+
+  it('reports leaderboard readiness and session-only records', () => {
+    const { db, repository } = fixture();
+    for (let id = 1000; id < 1008; id += 1) {
+      repository.upsertPlayer(id, id === 1000 ? 'Alice' : id === 1001 ? 'Bob' : `Player ${id}`);
+    }
+    repository.createClubSession('Status Test');
+    const waiting = repository.checkInPlayer({ id: 1000, name: 'Alice' }, () => 0);
+    expect(repository.listLeaderboard()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 1000,
+        checkInStatus: 'waiting',
+        tableNumber: waiting.game.tableNumber,
+        opponentName: null,
+      }),
+      expect.objectContaining({
+        id: 1001,
+        checkInStatus: 'not-checked-in',
+        tableNumber: null,
+      }),
+    ]));
+    repository.checkInPlayer({ id: 1001, name: 'Bob' });
+    expect(repository.listLeaderboard()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 1000,
+        checkInStatus: 'playing',
+        opponentName: 'Bob',
+      }),
+      expect.objectContaining({
+        id: 1001,
+        checkInStatus: 'playing',
+        opponentName: 'Alice',
+      }),
+    ]));
+    repository.finalizeGame(waiting.game.id, '1-0');
+    expect(repository.listLeaderboard(100, repository.getActiveClubSession()!.id))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: 1000,
+          checkInStatus: 'not-checked-in',
+          sessionGamesPlayed: 1,
+          sessionWins: 0,
+          sessionLosses: 1,
+          sessionDraws: 0,
+        }),
+        expect.objectContaining({
+          id: 1001,
+          sessionGamesPlayed: 1,
+          sessionWins: 1,
+          sessionLosses: 0,
+          sessionDraws: 0,
+        }),
+      ]));
+    db.close();
+  });
+
+  it('avoids session rematches and prefers the same cumulative record group', () => {
+    const { db, repository } = fixture();
+    for (let id = 1000; id < 1016; id += 1) {
+      repository.upsertPlayer(id, `Player ${id}`);
+    }
+    repository.createClubSession('Record Groups');
+    const first = repository.checkInPlayer({ id: 1000, name: 'Player 1000' }, () => 0);
+    repository.checkInPlayer({ id: 1001, name: 'Player 1001' });
+    const second = repository.checkInPlayer({ id: 1002, name: 'Player 1002' }, () => 0);
+    repository.checkInPlayer({ id: 1003, name: 'Player 1003' });
+    repository.finalizeGame(first.game.id, '0-1');
+    repository.finalizeGame(second.game.id, '0-1');
+
+    const positiveWaiting = repository.checkInPlayer({ id: 1000, name: 'Player 1000' }, () => 0);
+    const negativeWaiting = repository.checkInPlayer({ id: 1001, name: 'Player 1001' }, () => 0);
+    expect(negativeWaiting.status).toBe('waiting');
+    expect(negativeWaiting.game.id).not.toBe(positiveWaiting.game.id);
+    const positiveIncoming = repository.checkInPlayer({ id: 1002, name: 'Player 1002' });
+    expect(positiveIncoming).toMatchObject({
+      status: 'paired',
+      game: { id: positiveWaiting.game.id },
+    });
+    expect(positiveIncoming.game.id).not.toBe(negativeWaiting.game.id);
+    db.close();
+  });
+
   it('enforces nullable-seat, foreign-key, and global participation constraints in SQLite', () => {
     const { db, repository } = fixture();
     repository.upsertPlayer(1000, 'Alice');
@@ -487,6 +810,25 @@ describe('ChessRepository', () => {
     db.close();
   });
 
+  it('does not count cancelled unfinished games as active during startup checks', () => {
+    const { db, repository, path } = fixture();
+    repository.upsertPlayer(1000, 'Alice');
+    db.exec(`
+      INSERT INTO ChessGame(
+        tableNumber, createdAt, blackPlayerId, cancelledAt, cancellationReason
+      ) VALUES (
+        1, '2026-01-01T00:00:00.000Z', 1000,
+        '2026-01-01T01:00:00.000Z', 'legacy cancellation'
+      );
+      INSERT INTO ChessGame(tableNumber, createdAt, blackPlayerId)
+      VALUES (1, '2026-01-02T00:00:00.000Z', 1000);
+    `);
+    db.close();
+    const reopened = openDatabase(path);
+    expect(new ChessRepository(reopened).listJoinedGames('ongoing')).toHaveLength(1);
+    reopened.close();
+  });
+
   it('finalizes exactly once, updates Elo atomically, and frees players and tables', () => {
     const { db, repository } = fixture();
     repository.upsertPlayer(1000, 'Alice');
@@ -501,6 +843,15 @@ describe('ChessRepository', () => {
       result: '1-0',
       finishedAt: '2026-05-01T12:00:00.000Z',
     });
+    expect(repository.getPlayer(1000).rating).toBe(684);
+    expect(repository.getPlayer(1001).rating).toBe(716);
+    expect(repository.finalizeGame(
+      game.id,
+      '1-0',
+      () => { throw new Error('Idempotent finalization must not read the clock.'); },
+    )).toEqual(finalized);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM PlayerRatingEvent WHERE gameId = ?')
+      .get(game.id)).toEqual({ count: 2 });
     expect(repository.getPlayer(1000).rating).toBe(684);
     expect(repository.getPlayer(1001).rating).toBe(716);
     expect(repository.listJoinedGames('finished')).toMatchObject([{

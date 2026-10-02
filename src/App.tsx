@@ -63,7 +63,6 @@ import {
 } from './cameraConfiguration'
 import {
   createResultZones,
-  createDisabledResultZones,
   blockReentryLatch,
   emptyCheckInState,
   emptyLaneCheckInStates,
@@ -97,6 +96,8 @@ import {
   GameCard,
   type AuthoritativePlayerScan,
   type OngoingGame,
+  type SeatScanFeedback,
+  type SeatScanTarget,
 } from './GameCard'
 import { createJsQrWorker, createQrWorker, WorkerDecoder } from './workerDecoder'
 import { createOpenCvWorker, OpticalFlowTracker } from './opticalFlowTracker'
@@ -152,6 +153,8 @@ import { SunsetChessLogo } from './SunsetChessLogo'
 import { DashboardTabs } from './DashboardTabs'
 import { ModalDialog } from './ModalDialog'
 import { SettingsMenu } from './SettingsMenu'
+import { SessionCard, type ClubSession } from './SessionCard'
+import { SessionPlayerDialog, type SelectablePlayer } from './SessionPlayerDialog'
 import {
   loadUiPreferences,
   saveUiPreferences,
@@ -188,6 +191,7 @@ export const CAMERA_INACTIVITY_MS = 5 * 60 * 1000
 export const VIDEO_FRAME_CALLBACK_WATCHDOG_MS = 500
 export const PLAYER_LOOKUP_RETRY_BASE_MS = 1_000
 export const PLAYER_LOOKUP_RETRY_MAX_MS = 10_000
+const SEAT_SCAN_ACKNOWLEDGEMENT_MS = 1_000
 const PLAYER_LOOKUP_REENTRY_RESET_MS = 250
 
 const stateCopy: Record<CameraState, { title: string; detail: string }> = {
@@ -288,7 +292,21 @@ interface AppProps {
   deletePlayer?: (playerId: number, signal: AbortSignal) => Promise<void>
   resolvePlayer?: (playerId: number, signal: AbortSignal) => Promise<PlayerPayload>
   fetchGames?: (signal: AbortSignal) => Promise<GameFeed | OngoingGame[]>
+  createEmptyGame?: (signal: AbortSignal, eventId?: number) => Promise<OngoingGame>
+  fetchSessions?: (signal: AbortSignal) => Promise<ClubSession[]>
+  createClubSession?: (signal: AbortSignal) => Promise<ClubSession>
+  renameClubSession?: (id: number, name: string) => Promise<ClubSession>
+  updateClubSessionPairingMode?: (
+    id: number,
+    pairingMode: 'club-session-pairing-1',
+  ) => Promise<ClubSession>
+  closeClubSession?: (id: number, resolution: 'draw' | 'cancel') => Promise<ClubSession>
   checkInPlayer?: (player: PlayerPayload, signal: AbortSignal) => Promise<CheckInResult>
+  moveWaitingPlayer?: (
+    playerId: number,
+    destinationGameId: number,
+    signal: AbortSignal,
+  ) => Promise<OngoingGame>
   finalizeGame?: (
     gameId: number,
     result: '1-0' | '0-1' | '1/2-1/2',
@@ -296,6 +314,7 @@ interface AppProps {
   ) => Promise<OngoingGame | null | void>
   gamesPollIntervalMs?: number
   resultAcknowledgementMs?: number
+  seatScanAcknowledgementMs?: number
 }
 
 export type { OngoingGame } from './GameCard'
@@ -340,6 +359,87 @@ async function defaultFetchGames(signal: AbortSignal): Promise<GameFeed> {
   return body as GameFeed
 }
 
+async function defaultCreateEmptyGame(signal: AbortSignal, eventId?: number): Promise<OngoingGame> {
+  const query = eventId === undefined ? '' : `?eventId=${eventId}`
+  const response = await fetch(`/api/games${query}`, {
+    method: 'POST',
+    signal,
+    headers: { accept: 'application/json' },
+  })
+  const body = await response.json() as { game?: OngoingGame; error?: string }
+  if (!response.ok || !body.game) {
+    throw new Error(body.error || `Game creation failed (${response.status}).`)
+  }
+  return body.game
+}
+
+async function defaultFetchSessions(signal: AbortSignal): Promise<ClubSession[]> {
+  const response = await fetch('/api/sessions', { signal, headers: { accept: 'application/json' } })
+  const body = await response.json() as { sessions?: ClubSession[]; error?: string }
+  if (!response.ok || !Array.isArray(body.sessions)) {
+    throw new Error(body.error || `Club sessions request failed (${response.status}).`)
+  }
+  return body.sessions
+}
+
+async function defaultCreateClubSession(signal: AbortSignal): Promise<ClubSession> {
+  const response = await fetch('/api/sessions', {
+    method: 'POST',
+    signal,
+    headers: { accept: 'application/json' },
+  })
+  const body = await response.json() as { session?: ClubSession; error?: string }
+  if (!response.ok || !body.session) {
+    throw new Error(body.error || `Club session creation failed (${response.status}).`)
+  }
+  return body.session
+}
+
+async function defaultRenameClubSession(id: number, name: string): Promise<ClubSession> {
+  const response = await fetch(`/api/sessions/${id}`, {
+    method: 'PATCH',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+  const body = await response.json() as { session?: ClubSession; error?: string }
+  if (!response.ok || !body.session) {
+    throw new Error(body.error || `Club session update failed (${response.status}).`)
+  }
+  return body.session
+}
+
+async function defaultUpdateClubSessionPairingMode(
+  id: number,
+  pairingMode: 'club-session-pairing-1',
+): Promise<ClubSession> {
+  const response = await fetch(`/api/sessions/${id}/pairing-mode`, {
+    method: 'PATCH',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify({ pairingMode }),
+  })
+  const body = await response.json() as { session?: ClubSession; error?: string }
+  if (!response.ok || !body.session) {
+    throw new Error(body.error || `Club session pairing mode update failed (${response.status}).`)
+  }
+  return body.session
+}
+
+async function defaultCloseClubSession(
+  id: number,
+  resolution: 'draw' | 'cancel',
+): Promise<ClubSession> {
+  const response = await fetch(`/api/sessions/${id}/close`, {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify({ resolution }),
+  })
+  const body = await response.json() as { session?: ClubSession; error?: string }
+  if (!response.ok || !body.session) {
+    throw new Error(body.error || `Club session closure failed (${response.status}).`)
+  }
+  return body.session
+}
+
 async function defaultCheckInPlayer(
   player: PlayerPayload,
   signal: AbortSignal,
@@ -358,6 +458,25 @@ async function defaultCheckInPlayer(
   }
   return body as CheckInResult
 }
+
+async function defaultMoveWaitingPlayer(
+  playerId: number,
+  destinationGameId: number,
+  signal: AbortSignal,
+): Promise<OngoingGame> {
+  const response = await fetch(`/api/players/${playerId}/move`, {
+    method: 'POST',
+    signal,
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify({ destinationGameId }),
+  })
+  const body = await response.json() as { game?: OngoingGame; error?: string }
+  if (!response.ok || !body.game) {
+    throw new Error(body.error || `Player move failed (${response.status}).`)
+  }
+  return body.game
+}
+
 export default function App({
   workerFactory = createQrWorker,
   jsQrWorkerFactory = createJsQrWorker,
@@ -368,16 +487,25 @@ export default function App({
   deletePlayer = defaultDeletePlayer,
   resolvePlayer = defaultResolvePlayer,
   fetchGames = defaultFetchGames,
+  createEmptyGame = defaultCreateEmptyGame,
+  fetchSessions = defaultFetchSessions,
+  createClubSession = defaultCreateClubSession,
+  renameClubSession = defaultRenameClubSession,
+  updateClubSessionPairingMode = defaultUpdateClubSessionPairingMode,
+  closeClubSession = defaultCloseClubSession,
   checkInPlayer = defaultCheckInPlayer,
+  moveWaitingPlayer = defaultMoveWaitingPlayer,
   finalizeGame = defaultFinalizeGame,
   gamesPollIntervalMs = 2000,
   resultAcknowledgementMs = RESULT_ACKNOWLEDGEMENT_MS,
+  seatScanAcknowledgementMs = SEAT_SCAN_ACKNOWLEDGEMENT_MS,
 }: AppProps) {
   const [cameraState, setCameraState] = useState<CameraState>(
     window.isSecureContext === false ? 'insecure' : 'initial',
   )
   const initialPreferences = useMemo(() => loadUiPreferences(), [])
   const [preferences, setPreferences] = useState<UiPreferences>(initialPreferences.preferences)
+  const [selectedView, setSelectedView] = useState<string>(initialPreferences.preferences.selectedTab)
   const [settingsError, setSettingsError] = useState(initialPreferences.error)
   const [remembered, setRemembered] = useState<RememberedDetection | null>(null)
   const [name, setName] = useState('')
@@ -390,7 +518,14 @@ export default function App({
   const [recentGames, setRecentGames] = useState<OngoingGame[]>([])
   const [gamesLoading, setGamesLoading] = useState(true)
   const [gamesError, setGamesError] = useState('')
+  const [creatingGame, setCreatingGame] = useState(false)
+  const [createGameError, setCreateGameError] = useState('')
   const [leaderboardRefresh, setLeaderboardRefresh] = useState(0)
+  const [sessions, setSessions] = useState<ClubSession[]>([])
+  const [sessionsError, setSessionsError] = useState('')
+  const [creatingSession, setCreatingSession] = useState(false)
+  const [sessionConfigOpen, setSessionConfigOpen] = useState(false)
+  const [sessionPlayerDialogOpen, setSessionPlayerDialogOpen] = useState(false)
   const [checkInNotice, setCheckInNotice] = useState('')
   const [checkInError, setCheckInError] = useState(false)
   const [cameraNotice, setCameraNotice] = useState('')
@@ -404,6 +539,11 @@ export default function App({
     useState<FormattedResultAcknowledgement | null>(null)
   const [resultCameraSuppressed, setResultCameraSuppressed] = useState(false)
   const [piecePresent, setPiecePresent] = useState(false)
+  const [seatScanTarget, setSeatScanTarget] = useState<SeatScanTarget | null>(null)
+  const [seatScanFeedback, setSeatScanFeedback] = useState<SeatScanFeedback | null>(null)
+  const [seatScanZones, setSeatScanZones] = useState<ActionZone[]>([])
+  const [qualifiedSeatScan, setQualifiedSeatScan] =
+    useState<AuthoritativePlayerScan | null>(null)
   const [diagnosticUi, setDiagnosticUi] = useState<{
     phase: 'idle' | 'recording' | 'ready' | 'error'
     id: string
@@ -413,6 +553,8 @@ export default function App({
     message: string
   }>({ phase: 'idle', id: '', remainingMs: 0, videoUrl: null, jsonUrl: null, message: '' })
   const videoRef = useRef<HTMLVideoElement>(null)
+  const sessionConfigButtonRef = useRef<HTMLButtonElement>(null)
+  const sessionAddPlayerButtonRef = useRef<HTMLButtonElement>(null)
   const previewRef = useRef<HTMLDivElement>(null)
   const payloadLabelRef = useRef<HTMLDivElement>(null)
   const actionZoneRefs = useRef(new Map<string, HTMLDivElement>())
@@ -421,6 +563,12 @@ export default function App({
   const gameCardRefs = useRef(new Map<string, HTMLElement>())
   const transitionSequenceRef = useRef(0)
   const transitionCleanupRef = useRef(new Set<() => void>())
+  const seatScanTargetRef = useRef<SeatScanTarget | null>(null)
+  const seatScanFeedbackTimerRef = useRef<number | null>(null)
+  const seatScanStateRef = useRef<CheckInState>(emptyCheckInState())
+  const seatScanZonesRef = useRef<ActionZone[]>([])
+  const qualifiedSeatScanRef = useRef<AuthoritativePlayerScan | null>(null)
+  const seatScanSequenceRef = useRef(0)
   const overlayRef = useRef<HTMLCanvasElement>(null)
   const captureRef = useRef<HTMLCanvasElement | null>(null)
   const visualCaptureRef = useRef<HTMLCanvasElement | null>(null)
@@ -526,6 +674,7 @@ export default function App({
     leftAt: number | null
   }>({ playerId: null, leftAt: null })
   const gamesRequestRef = useRef<AbortController | null>(null)
+  const createGameRequestRef = useRef<AbortController | null>(null)
   const gamesRef = useRef<OngoingGame[]>([])
   const checkInRequestRef = useRef(new Map<number, AbortController>())
   const submittedCheckInRef = useRef(new Set<number>())
@@ -551,7 +700,9 @@ export default function App({
     [featuredGame, games],
   )
   const unavailablePlayerIds = useMemo(
-    () => games.flatMap((game) => [game.blackPlayerId, game.whitePlayerId])
+    () => games
+      .filter((game) => game.blackPlayerId !== null && game.whitePlayerId !== null)
+      .flatMap((game) => [game.blackPlayerId, game.whitePlayerId])
       .filter((playerId): playerId is number => playerId !== null),
     [games],
   )
@@ -567,6 +718,69 @@ export default function App({
       }
       return next
     })
+  }, [])
+
+  const handleSeatScanTargetChange = useCallback((target: SeatScanTarget | null) => {
+    seatScanTargetRef.current = target
+    seatScanStateRef.current = emptyCheckInState()
+    seatScanZonesRef.current = []
+    qualifiedSeatScanRef.current = null
+    setSeatScanTarget(target)
+    setSeatScanFeedback(null)
+    setSeatScanZones([])
+    setQualifiedSeatScan(null)
+    if (seatScanFeedbackTimerRef.current !== null) {
+      window.clearTimeout(seatScanFeedbackTimerRef.current)
+      seatScanFeedbackTimerRef.current = null
+    }
+  }, [])
+
+  const handleSeatScanFeedback = useCallback((feedback: SeatScanFeedback) => {
+    const lane = seatScanZonesRef.current.find(
+      (zone) => zone.occupant?.playerId === feedback.playerId,
+    )?.lane ?? laneBindingRef.current.lanes[feedback.playerId] ?? 'left'
+    const nextZones = seatScanZonesRef.current
+      .filter((zone) => zone.lane === lane)
+      .map((zone): ActionZone => ({
+        ...zone,
+        label: feedback.playerName,
+        instructions: feedback.message,
+        status: feedback.status === 'error' ? 'error' : 'complete',
+        progress: feedback.status === 'error' ? zone.progress : 1,
+        accessibility: {
+          label: `Seat assignment for ${feedback.playerName}`,
+          live: 'assertive',
+        },
+        completion: {
+          ...zone.completion,
+          completed: feedback.status === 'success',
+        },
+      }))
+    seatScanZonesRef.current = nextZones
+    setSeatScanZones(nextZones)
+    setSeatScanFeedback(feedback)
+    if (seatScanFeedbackTimerRef.current !== null) {
+      window.clearTimeout(seatScanFeedbackTimerRef.current)
+      seatScanFeedbackTimerRef.current = null
+    }
+    if (feedback.status !== 'assigning') {
+      seatScanFeedbackTimerRef.current = window.setTimeout(() => {
+        setSeatScanFeedback(null)
+        seatScanZonesRef.current = []
+        setSeatScanZones([])
+        seatScanFeedbackTimerRef.current = null
+        const target = seatScanTargetRef.current
+        window.setTimeout(() => {
+          if (target) document.getElementById(`seat-player-${target.gameId}-${target.side}`)?.focus()
+        }, 0)
+      }, seatScanAcknowledgementMs)
+    }
+  }, [seatScanAcknowledgementMs])
+
+  useEffect(() => () => {
+    if (seatScanFeedbackTimerRef.current !== null) {
+      window.clearTimeout(seatScanFeedbackTimerRef.current)
+    }
   }, [])
 
   useEffect(() => {
@@ -618,6 +832,61 @@ export default function App({
     setResultCameraSuppressed(false)
   }, [])
 
+  const refreshSessions = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const next = await fetchSessions(signal ?? new AbortController().signal)
+      if (signal?.aborted) return
+      setSessions(next)
+      setSessionsError('')
+      const active = next.find((session) => session.active)
+      if (!active) {
+        setSessionConfigOpen(false)
+        setSessionPlayerDialogOpen(false)
+        setSelectedView((current) => current.startsWith('session-') ? 'leaderboard' : current)
+      }
+    } catch (error) {
+      if (!signal?.aborted) {
+        setSessionsError(error instanceof Error ? error.message : 'Could not load club sessions.')
+      }
+    }
+  }, [fetchSessions])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    void refreshSessions(controller.signal)
+    return () => controller.abort()
+  }, [refreshSessions])
+
+  const handleCreateClubSession = useCallback(async () => {
+    if (creatingSession) return
+    const controller = new AbortController()
+    setCreatingSession(true)
+    setSessionsError('')
+    try {
+      const session = await createClubSession(controller.signal)
+      setSessions((current) => [session, ...current.map((item) => ({ ...item, active: false }))])
+      setSelectedView(`session-${session.id}`)
+      setLeaderboardRefresh((value) => value + 1)
+    } catch (error) {
+      setSessionsError(error instanceof Error ? error.message : 'Could not create a club session.')
+    } finally {
+      setCreatingSession(false)
+    }
+  }, [createClubSession, creatingSession])
+
+  const handleRenameClubSession = useCallback(async (id: number, name: string) => {
+    const updated = await renameClubSession(id, name)
+    setSessions((current) => current.map((session) => session.id === id ? updated : session))
+  }, [renameClubSession])
+
+  const handleUpdateClubSessionPairingMode = useCallback(async (
+    id: number,
+    pairingMode: 'club-session-pairing-1',
+  ) => {
+    const updated = await updateClubSessionPairingMode(id, pairingMode)
+    setSessions((current) => current.map((session) => session.id === id ? updated : session))
+  }, [updateClubSessionPairingMode])
+
   const refreshGames = useCallback(async (force = false) => {
     if (gamesRequestRef.current) {
       if (!force) return
@@ -646,12 +915,116 @@ export default function App({
     }
   }, [fetchGames])
 
+  const handleCloseClubSession = useCallback(async (
+    id: number,
+    resolution: 'draw' | 'cancel',
+  ) => {
+    const closed = await closeClubSession(id, resolution)
+    setSessionConfigOpen(false)
+    setSessionPlayerDialogOpen(false)
+    setSessions((current) => current.map((session) => session.id === id ? closed : session))
+    setSelectedView('leaderboard')
+    setLeaderboardRefresh((value) => value + 1)
+    await refreshGames(true)
+  }, [closeClubSession, refreshGames])
+
+  const handleManualSessionCheckIn = useCallback(async (player: SelectablePlayer) => {
+    const controller = new AbortController()
+    setCheckInError(false)
+    setCheckInNotice(`Checking in ${player.name}…`)
+    try {
+      const result = await checkInPlayer({
+        v: 1,
+        kind: 'player',
+        playerId: player.id,
+        name: player.name,
+      }, controller.signal)
+      if (result.status === 'paired') {
+        setCheckInNotice(`${player.name} checks into Table ${result.game.tableNumber}`)
+      } else if (result.status === 'waiting') {
+        setCheckInNotice(`${player.name} checks into Table ${result.game.tableNumber}. Waiting for an opponent.`)
+      } else {
+        setCheckInNotice(`${player.name} is already checked in at Table ${result.game.tableNumber}`)
+      }
+      setGames((current) => mergeCheckedInGame(current, result.game))
+      setFeaturedGame({ id: result.game.id, createdAt: result.game.createdAt })
+      await refreshGames(true)
+      await refreshSessions()
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : 'Check-in failed.'
+      setCheckInError(true)
+      setCheckInNotice(message)
+      throw cause
+    }
+  }, [checkInPlayer, refreshGames, refreshSessions])
+
+  const handleMoveWaitingPlayer = useCallback(async (
+    player: SelectablePlayer,
+    destinationGameId: number,
+  ) => {
+    const controller = new AbortController()
+    setCheckInError(false)
+    setCheckInNotice(`Moving ${player.name}…`)
+    try {
+      const moved = await moveWaitingPlayer(player.id, destinationGameId, controller.signal)
+      setCheckInNotice(`${player.name} moved to Table ${moved.tableNumber}.`)
+      setFeaturedGame({ id: moved.id, createdAt: moved.createdAt })
+      await refreshGames(true)
+      await refreshSessions()
+    } catch (cause) {
+      setCheckInError(true)
+      setCheckInNotice(cause instanceof Error ? cause.message : 'Player move failed.')
+      throw cause
+    }
+  }, [moveWaitingPlayer, refreshGames, refreshSessions])
+
+  const handleOpenPlayerGame = useCallback((player: SelectablePlayer) => {
+    const activeGame = games.find((game) =>
+      game.blackPlayerId === player.id || game.whitePlayerId === player.id)
+    if (!activeGame) {
+      setGamesError(`Could not find ${player.name}'s ongoing game.`)
+      return
+    }
+    setFeaturedGame({ id: activeGame.id, createdAt: activeGame.createdAt })
+    gameCardRefs.current.get(gameIdentityKey(activeGame))
+      ?.querySelector<HTMLButtonElement>('.game-card-hit')
+      ?.click()
+  }, [games])
+
   const handleGameMutate = useCallback(async () => {
     clearResultMode()
     resetCheckInTargets()
     setFeaturedGame(null)
     await refreshGames(true)
-  }, [clearResultMode, refreshGames, resetCheckInTargets])
+    void refreshSessions()
+  }, [clearResultMode, refreshGames, refreshSessions, resetCheckInTargets])
+
+  const handleCreateEmptyGame = useCallback(async (eventId?: number) => {
+    if (createGameRequestRef.current) return
+    const controller = new AbortController()
+    createGameRequestRef.current = controller
+    setCreatingGame(true)
+    setCreateGameError('')
+    try {
+      const game = eventId === undefined
+        ? await createEmptyGame(controller.signal)
+        : await createEmptyGame(controller.signal, eventId)
+      if (controller.signal.aborted) return
+      setGames((current) => mergeCheckedInGame(current, game))
+      setFeaturedGame({ id: game.id, createdAt: game.createdAt })
+      setGamesError('')
+      void refreshSessions()
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setCreateGameError(error instanceof Error ? error.message : 'Could not create an empty game.')
+      }
+    } finally {
+      if (createGameRequestRef.current === controller) {
+        createGameRequestRef.current = null
+        if (!controller.signal.aborted) setCreatingGame(false)
+      }
+    }
+  }, [createEmptyGame, refreshSessions])
 
   const submitResult = useCallback((
     gameId: number,
@@ -815,6 +1188,7 @@ export default function App({
       }
       submittedCheckInRef.current.delete(playerId)
       void refreshGames(true)
+      void refreshSessions()
     }).catch((error) => {
       if (controller.signal.aborted || generation !== cameraGenerationRef.current) return
       setCheckInError(true)
@@ -826,7 +1200,7 @@ export default function App({
         checkInRequestRef.current.delete(playerId)
       }
     })
-  }, [checkInPlayer, clearResultAcknowledgement, refreshGames])
+  }, [checkInPlayer, clearResultAcknowledgement, refreshGames, refreshSessions])
 
   useEffect(() => {
     void refreshGames()
@@ -843,6 +1217,8 @@ export default function App({
       document.removeEventListener('visibilitychange', refreshWhenVisible)
       gamesRequestRef.current?.abort()
       gamesRequestRef.current = null
+      createGameRequestRef.current?.abort()
+      createGameRequestRef.current = null
     }
   }, [gamesPollIntervalMs, refreshGames])
 
@@ -1305,6 +1681,11 @@ export default function App({
     }
     if (presence.removed) {
       checkInStateRef.current = emptyCheckInState()
+      if (!qualifiedSeatScanRef.current) {
+        seatScanStateRef.current = emptyCheckInState()
+        seatScanZonesRef.current = []
+        setSeatScanZones([])
+      }
       resultHoldRef.current = emptyHoldState()
       resultAssignmentRef.current = null
       resultAuthorityRef.current = emptyResultAuthorityUpdate()
@@ -1351,7 +1732,72 @@ export default function App({
       resultAssignmentRef.current = null
       resultAuthorityRef.current = emptyResultAuthorityUpdate()
     }
-    const interactionPlayers = tooManyPlayers
+    const seatScanTarget = seatScanTargetRef.current
+    if (
+      seatScanTarget
+      && qualifiedSeatScanRef.current
+      && relevantPresentPlayers.length === 0
+      && seatScanZonesRef.current.length === 0
+    ) {
+      seatScanStateRef.current = emptyCheckInState()
+      qualifiedSeatScanRef.current = null
+      setQualifiedSeatScan(null)
+    }
+    if (seatScanTarget && !qualifiedSeatScanRef.current) {
+      const seatScanUpdate = updateCheckInZones(
+        seatScanStateRef.current,
+        relevantPresentPlayers,
+        width,
+        height,
+        now,
+        {
+          enabled: freshPlayerIds.size <= 2,
+          freshPlayerIds: holdQualifiedPlayerIds,
+          resetKey: `${seatScanTarget.gameId}:${seatScanTarget.side}`,
+        },
+      )
+      seatScanStateRef.current = seatScanUpdate.state
+      const sideLabel = seatScanTarget.side === 'black' ? 'Black' : 'White'
+      const nextSeatScanZones = seatScanUpdate.zones.map((zone): ActionZone => ({
+        ...zone,
+        id: `seat-scan-${zone.lane}`,
+        label: zone.occupant?.name ?? `${sideLabel} player`,
+        instructions: zone.occupant
+          ? zone.instructions
+          : `Hold player QR here for the ${sideLabel} seat`,
+        accessibility: {
+          label: zone.occupant
+            ? `Assign ${zone.occupant.name} to the ${sideLabel} seat`
+            : `${zone.lane} ${sideLabel} seat assignment target`,
+          live: 'polite',
+        },
+      }))
+      if (actionZonesKey(nextSeatScanZones) !== actionZonesKey(seatScanZonesRef.current)) {
+        seatScanZonesRef.current = nextSeatScanZones
+        setSeatScanZones(nextSeatScanZones)
+      }
+      for (const zone of nextSeatScanZones) {
+        const progress = actionProgressRefs.current.get(zone.id)
+        if (progress) {
+          const percentage = Math.round(zone.progress * 100)
+          progress.style.transform = `scaleX(${zone.progress})`
+          progress.setAttribute('aria-valuenow', String(percentage))
+        }
+      }
+      const completedPlayer = seatScanUpdate.completed[0]
+      if (completedPlayer) {
+        const completedScan = {
+          playerId: completedPlayer.playerId,
+          token: `seat:${seatScanTarget.gameId}:${seatScanTarget.side}:`
+            + `${completedPlayer.playerId}:${++seatScanSequenceRef.current}`,
+        }
+        qualifiedSeatScanRef.current = completedScan
+        setQualifiedSeatScan(completedScan)
+      }
+    }
+    const interactionPlayers = seatScanTargetRef.current
+      ? []
+      : tooManyPlayers
       ? []
       : reentryLatchRef.current.blocked && !resultSuppressionActive
         ? []
@@ -1369,7 +1815,8 @@ export default function App({
       width,
       laneBinding.state.lanes,
     )
-    const nextIndependentContexts = independentMode ? laneContexts : []
+    const singleKnownGame = laneContexts.length === 1 && laneContexts[0].game !== null
+    const nextIndependentContexts = independentMode || singleKnownGame ? laneContexts : []
     setIndependentLaneContexts((current) => {
       const currentKey = current.map(({ lane, player, game }) =>
         `${lane}:${player.playerId}:${game?.id ?? 'check-in'}`).join('|')
@@ -1392,7 +1839,7 @@ export default function App({
         : new Set<number>()
     const checkInPlayers = eligiblePresentPlayers
     const checkInOptions = {
-      enabled: !matchedGame && !tooManyPlayers,
+      enabled: !seatScanTargetRef.current && !matchedGame && !tooManyPlayers,
       blockedPlayerIds,
       resetKey: String(cameraGenerationRef.current),
       freshPlayerIds: eligibleHoldQualifiedPlayerIds,
@@ -1512,11 +1959,7 @@ export default function App({
             evaluation,
             !authority.qualified,
           )
-        : createDisabledResultZones(
-            matchedGame,
-            width,
-            height,
-          )
+        : []
       if (hold.state.completed
         && authority.source === 'direct'
         && assignment
@@ -2582,15 +3025,6 @@ export default function App({
 
   const copy = stateCopy[cameraState]
   const parsedRaw = remembered ? parseQrPayload(remembered.detection.data) : null
-  const authoritativePlayerScan: AuthoritativePlayerScan | null = remembered
-    && (parsedRaw?.kind === 'player' || parsedRaw?.kind === 'player-reference')
-    ? {
-        playerId: parsedRaw.kind === 'player'
-          ? parsedRaw.player.playerId
-          : parsedRaw.reference.playerId,
-        token: `${remembered.detection.data}:${remembered.seenAt}`,
-      }
-    : null
   const parsed = parsedRaw?.kind === 'player-reference'
     ? playerCacheRef.current.has(parsedRaw.reference.playerId)
       ? {
@@ -2602,9 +3036,11 @@ export default function App({
     : parsedRaw
   const diagnosticRecording = diagnosticUi.phase === 'recording'
   const interactionVisible = cameraState === 'active'
-    && ((piecePresent && !resultCameraSuppressed)
-      || diagnosticRecording
-      || Boolean(resultAcknowledgement))
+    && (seatScanTarget
+      ? seatScanZones.length > 0 || seatScanFeedback !== null
+      : (piecePresent && !resultCameraSuppressed)
+        || diagnosticRecording
+        || Boolean(resultAcknowledgement))
   const cameraUnavailable = cameraState === 'insecure' || cameraState === 'unavailable'
   const cameraButtonLabel = cameraState === 'active'
     ? 'Stop Camera'
@@ -2720,6 +3156,93 @@ export default function App({
           </div>}
     </section>
   )
+
+  const activeSession = sessions.find((session) => session.active) ?? null
+  const sessionViewId = activeSession ? `session-${activeSession.id}` : null
+  const dashboardTabs = [
+    { id: 'leaderboard', label: 'Leaderboard' },
+    { id: 'recent-games', label: 'Recent Games' },
+    ...(activeSession && sessionViewId ? [{
+      id: sessionViewId,
+      label: activeSession.name,
+      action: {
+        label: `Configure ${activeSession.name}`,
+        buttonRef: sessionConfigButtonRef,
+        onClick: () => setSessionConfigOpen(true),
+      },
+    }] : []),
+  ]
+  const ongoingGamesPanel = (
+    panelGames: OngoingGame[],
+    scope: 'all' | 'session',
+    eventId?: number,
+  ) => {
+    const panelDisplayedGames = featuredFirst(panelGames, featuredGame)
+    const headingId = scope === 'all' ? 'ongoing-games-heading' : `session-${eventId}-games-heading`
+    return (
+      <aside className="game-column ongoing-column" aria-labelledby={headingId}>
+        <section className="ongoing-games live-games" aria-busy={gamesLoading}>
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">{scope === 'all' ? 'All events' : 'Club session'}</p>
+              <h2 id={headingId}>Ongoing Games</h2>
+            </div>
+            <div className="section-heading-actions">
+              {gamesError && (
+                <button type="button" className="secondary" onClick={() => void refreshGames()}>
+                  Retry
+                </button>
+              )}
+              <button
+                type="button"
+                className="add-game-button secondary"
+                aria-label={creatingGame ? 'Adding empty game' : 'Add empty game'}
+                title="Add an empty ongoing game"
+                disabled={creatingGame}
+                onClick={() => void handleCreateEmptyGame(eventId)}
+              >
+                <span aria-hidden="true">+</span>
+              </button>
+            </div>
+          </div>
+          {createGameError && <p className="games-message error" role="alert">{createGameError}</p>}
+          {gamesLoading && games.length === 0 && (
+            <p className="games-message" role="status">Loading ongoing games…</p>
+          )}
+          {gamesError && (
+            <p className="games-message error" role="alert">
+              Could not refresh ongoing games. {games.length > 0 ? 'Showing the last update.' : ''}
+            </p>
+          )}
+          {!gamesLoading && !gamesError && panelGames.length === 0 && (
+            <p className="games-message">No games are ongoing yet.</p>
+          )}
+          {panelGames.length > 0 && (
+            <div className="games-list" ref={gamesListRef} role="region"
+              aria-label={scope === 'all' ? 'Ongoing games' : 'Club session ongoing games'}>
+              {panelDisplayedGames.map((game) => (
+                <GameCard
+                  className={featuredGame && isSameGame(game, featuredGame) ? ' featured-game' : ''}
+                  key={gameIdentityKey(game)}
+                  game={game}
+                  onMutate={handleGameMutate}
+                  unavailablePlayerIds={unavailablePlayerIds}
+                  authoritativePlayerScan={qualifiedSeatScan}
+                  onSeatScanTargetChange={handleSeatScanTargetChange}
+                  onSeatScanFeedback={handleSeatScanFeedback}
+                  cardRef={(element) => {
+                    const key = gameIdentityKey(game)
+                    if (element) gameCardRefs.current.set(key, element)
+                    else gameCardRefs.current.delete(key)
+                  }}
+                />
+              ))}
+            </div>
+          )}
+        </section>
+      </aside>
+    )
+  }
 
   const playerCreator = addPlayerOpen && (
     <ModalDialog className=" add-player-dialog"
@@ -2857,62 +3380,73 @@ export default function App({
             </p>
           )}
           <DashboardTabs
-            selected={preferences.selectedTab}
-            onSelect={(selectedTab) => updatePreferences({ selectedTab })}
+            selected={selectedView}
+            tabs={dashboardTabs}
+            createLabel={!activeSession
+              ? (creatingSession ? '+ Creating Club Session…' : '+ Create Club Session')
+              : undefined}
+            onCreate={!activeSession && !creatingSession ? () => void handleCreateClubSession() : undefined}
+            onSelect={(view) => {
+              setSelectedView(view)
+              if (view === 'leaderboard' || view === 'recent-games') {
+                updatePreferences({ selectedTab: view })
+              }
+            }}
           >{{
-            leaderboard: <Leaderboard refreshKey={leaderboardRefresh} variant="rail"
-              onAddPlayer={() => {
-                addPlayerReturnFocusRef.current = document.activeElement as HTMLElement | null
-                setAddPlayerOpen(true)
-              }} />,
+            leaderboard: <div className="workspace-with-games">
+              <Leaderboard refreshKey={leaderboardRefresh} variant="rail"
+                onCheckIn={handleManualSessionCheckIn}
+                onOpenGame={handleOpenPlayerGame}
+                onMoveWaitingPlayer={handleMoveWaitingPlayer}
+                waitingGames={games}
+                onAddPlayer={() => {
+                  addPlayerReturnFocusRef.current = document.activeElement as HTMLElement | null
+                  setAddPlayerOpen(true)
+                }} />
+              {ongoingGamesPanel(games, 'all')}
+            </div>,
             'recent-games': recentGamesPanel,
+            ...(activeSession && sessionViewId ? {
+              [sessionViewId]: <div className="workspace-with-games">
+                <Leaderboard refreshKey={leaderboardRefresh} variant="rail"
+                  eventId={activeSession.id} title="Session Standings"
+                  onCheckIn={handleManualSessionCheckIn}
+                  onOpenGame={handleOpenPlayerGame}
+                  onMoveWaitingPlayer={handleMoveWaitingPlayer}
+                  waitingGames={games}
+                  addPlayerLabel="Add player to session"
+                  onAddPlayer={(trigger) => {
+                    sessionAddPlayerButtonRef.current = trigger
+                    setSessionPlayerDialogOpen(true)
+                  }} />
+                {ongoingGamesPanel(
+                  games.filter((game) => game.eventId === activeSession.id),
+                  'session',
+                  activeSession.id,
+                )}
+              </div>,
+            } : {}),
           }}</DashboardTabs>
+          {activeSession && sessionConfigOpen && (
+            <SessionCard session={activeSession}
+              open
+              onClose={() => setSessionConfigOpen(false)}
+              returnFocusRef={sessionConfigButtonRef}
+              onRename={(name) => handleRenameClubSession(activeSession.id, name)}
+              onPairingModeChange={(pairingMode) =>
+                handleUpdateClubSessionPairingMode(activeSession.id, pairingMode)}
+              onCloseSession={(resolution) =>
+                handleCloseClubSession(activeSession.id, resolution)} />
+          )}
+          {activeSession && sessionPlayerDialogOpen && (
+            <SessionPlayerDialog eventId={activeSession.id}
+              returnFocusRef={sessionAddPlayerButtonRef}
+              onClose={() => setSessionPlayerDialogOpen(false)}
+              onCheckIn={handleManualSessionCheckIn} />
+          )}
+          {sessionsError && <p className="games-message error">{sessionsError}</p>}
           {playerCreator}
         </section>
-
-        <aside className="game-column ongoing-column" aria-labelledby="ongoing-games-heading">
-          <section className="ongoing-games live-games" aria-busy={gamesLoading}>
-            <div className="section-heading">
-              <div>
-                <p className="eyebrow">Live tables</p>
-                <h2 id="ongoing-games-heading">Ongoing Games</h2>
-              </div>
-              {gamesError && (
-                <button type="button" className="secondary" onClick={() => void refreshGames()}>
-                  Retry
-                </button>
-              )}
-            </div>
-            {gamesLoading && games.length === 0 && <p className="games-message" role="status">Loading ongoing games…</p>}
-            {gamesError && (
-              <p className="games-message error" role="alert">
-                Could not refresh ongoing games. {games.length > 0 ? 'Showing the last update.' : ''}
-              </p>
-            )}
-            {!gamesLoading && !gamesError && games.length === 0 && (
-              <p className="games-message">No games are ongoing yet.</p>
-            )}
-            {games.length > 0 && (
-              <div className="games-list" ref={gamesListRef} role="region" aria-label="Ongoing games">
-                {displayedGames.map((game) => (
-                  <GameCard
-                    className={featuredGame && isSameGame(game, featuredGame) ? ' featured-game' : ''}
-                    key={gameIdentityKey(game)}
-                    game={game}
-                    onMutate={handleGameMutate}
-                    unavailablePlayerIds={unavailablePlayerIds}
-                    authoritativePlayerScan={authoritativePlayerScan}
-                    cardRef={(element) => {
-                      const key = gameIdentityKey(game)
-                      if (element) gameCardRefs.current.set(key, element)
-                      else gameCardRefs.current.delete(key)
-                    }}
-                  />
-                ))}
-              </div>
-            )}
-          </section>
-        </aside>
 
       </div>
 
@@ -2929,7 +3463,16 @@ export default function App({
         {interactionVisible && (
           <>
             <div className="overlay-control-strip">
-              <span><i className={`status-dot ${cameraState}`} />{diagnosticRecording ? 'Recording diagnostic' : 'Piece detected'}</span>
+              <span>
+                <i className={`status-dot ${cameraState}`} />
+                {diagnosticRecording
+                  ? 'Recording diagnostic'
+                  : seatScanFeedback?.status === 'success'
+                    ? 'Player assigned'
+                    : seatScanFeedback?.status === 'error'
+                      ? 'Player not assigned'
+                      : 'Piece detected'}
+              </span>
               <button type="button" className="secondary" onClick={handleStopCamera}>Stop Camera</button>
             </div>
             {preferences.showDebugTools && <div className="tracking-legend" aria-label="Tracking overlay legend">
@@ -2938,7 +3481,7 @@ export default function App({
             </div>}
           </>
         )}
-        {interactionVisible && !resultAcknowledgement && parsed && (
+        {interactionVisible && !seatScanTarget && !resultAcknowledgement && parsed && (
           <div
             className={`payload-label ${parsed.kind}`}
             ref={payloadLabelRef}
@@ -2948,7 +3491,26 @@ export default function App({
             {parsed.label}
           </div>
         )}
-        {interactionVisible && !resultAcknowledgement && gameContext && (
+        {interactionVisible && seatScanZones.length > 0 && (
+          <div
+            className="action-zones"
+            role="group"
+            aria-label={`Assign player to Table ${seatScanTarget?.tableNumber}`}
+          >
+            {seatScanZones.map((zone) => (
+              <ActionZoneView
+                zone={zone}
+                key={zone.id}
+                progressRef={(element) => {
+                  if (element) actionProgressRefs.current.set(zone.id, element)
+                  else actionProgressRefs.current.delete(zone.id)
+                }}
+              />
+            ))}
+          </div>
+        )}
+        {interactionVisible && !seatScanTarget && !resultAcknowledgement
+          && gameContext?.opponent && (
           <div
             className="camera-game-context"
             role="group"
@@ -2960,11 +3522,11 @@ export default function App({
               width="clamp(150px, 30vw, 280px)"
               height="auto"
               management={false}
+              selectable={false}
             />
-            {gameContext.waitingCopy && <p className="game-waiting-header">{gameContext.waitingCopy}</p>}
           </div>
         )}
-        {interactionVisible && !resultAcknowledgement && independentLaneContexts.length > 0 && (
+        {interactionVisible && !seatScanTarget && !resultAcknowledgement && independentLaneContexts.length > 0 && (
           <div className="camera-lane-contexts" role="group" aria-label="Detected player game contexts">
             {independentLaneContexts.flatMap(({ lane, player: detectedPlayer, game }) =>
               game ? [(
@@ -2975,12 +3537,13 @@ export default function App({
                     width="clamp(140px, 28vw, 260px)"
                     height="auto"
                     management={false}
+                    selectable={false}
                   />
                 </div>
               )] : [])}
           </div>
         )}
-        {interactionVisible && !resultAcknowledgement && actionZones.length > 0 && (
+        {interactionVisible && !seatScanTarget && !resultAcknowledgement && actionZones.length > 0 && (
           <div
             className="action-zones"
             role="group"
@@ -3006,7 +3569,7 @@ export default function App({
             ))}
           </div>
         )}
-        {interactionVisible && !resultAcknowledgement && overlayMessage && (
+        {interactionVisible && !seatScanTarget && !resultAcknowledgement && overlayMessage && (
           <p className="action-zone-message" role="status" aria-live="polite">{overlayMessage}</p>
         )}
         {interactionVisible && resultAcknowledgement && (

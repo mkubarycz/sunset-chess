@@ -38,8 +38,8 @@ export function formatResultNotice(game: OngoingGame): string {
   }
   if (game.result === '1/2-1/2') return `${white.name} DRAW ${black.name}`
   return game.result === '1-0'
-    ? `${white.name} def. ${black.name}`
-    : `${black.name} def. ${white.name}`
+    ? `${white.name} DEF ${black.name}`
+    : `${black.name} DEF ${white.name}`
 }
 
 export function findAuthoritativeResult(

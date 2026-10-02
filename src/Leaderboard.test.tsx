@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Leaderboard } from './Leaderboard'
 
@@ -50,9 +50,9 @@ describe('Leaderboard', () => {
       .toEqual(['Rank', 'Player', 'Elo', 'Record'])
     expect(screen.getByLabelText('Rank 1, gold')).toHaveClass('podium-1')
     expect(screen.getByLabelText('Rank 2, silver')).toHaveClass('podium-2')
-    const bob = await screen.findByRole('button', { name: /Bob.*716 Elo.*1-0-0/i })
-    expect(bob).toBeInTheDocument()
-    fireEvent.click(bob)
+    const bobName = await screen.findByRole('button', { name: 'Open player card for Bob' })
+    expect(bobName).toHaveClass('leaderboard-player-name')
+    fireEvent.click(bobName)
     const dialog = await screen.findByRole('dialog')
     expect(dialog.parentElement).toBe(document.body.lastElementChild)
     expect(dialog).toHaveAccessibleName('Player card for Bob')
@@ -80,6 +80,83 @@ describe('Leaderboard', () => {
     })))
     fireEvent.keyDown(dialog, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-    await waitFor(() => expect(bob).toHaveFocus())
+    await waitFor(() => expect(bobName).toHaveFocus())
+  })
+
+  it('shows authoritative readiness, checks in available players, and adds session records', async () => {
+    const onCheckIn = vi.fn().mockResolvedValue(undefined)
+    const onOpenGame = vi.fn()
+    const onMoveWaitingPlayer = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        leaderboard: [
+          {
+            rank: 1, id: 1000, name: 'Alice', currentRating: 720,
+            gamesPlayed: 3, wins: 2, losses: 1, draws: 0, lastPlayedAt: null,
+            checkInStatus: 'not-checked-in', tableNumber: null, opponentName: null,
+            sessionGamesPlayed: 1, sessionWins: 1, sessionLosses: 0, sessionDraws: 0,
+          },
+          {
+            rank: 2, id: 1001, name: 'Bob', currentRating: 700,
+            gamesPlayed: 2, wins: 1, losses: 1, draws: 0, lastPlayedAt: null,
+            checkInStatus: 'waiting', tableNumber: 10, opponentName: null,
+            sessionGamesPlayed: 0, sessionWins: 0, sessionLosses: 0, sessionDraws: 0,
+          },
+          {
+            rank: 3, id: 1002, name: 'Carol', currentRating: 680,
+            gamesPlayed: 4, wins: 1, losses: 2, draws: 1, lastPlayedAt: null,
+            checkInStatus: 'playing', tableNumber: 4, opponentName: 'Dana',
+            sessionGamesPlayed: 2, sessionWins: 0, sessionLosses: 1, sessionDraws: 1,
+          },
+        ],
+      }),
+    }))
+
+    render(<Leaderboard refreshKey={0} eventId={4} onCheckIn={onCheckIn}
+      onOpenGame={onOpenGame}
+      onMoveWaitingPlayer={onMoveWaitingPlayer}
+      waitingGames={[
+        {
+          id: 10, tableNumber: 10, createdAt: '2026-10-02T12:00:00.000Z',
+          blackPlayerId: null, whitePlayerId: 1001, finishedAt: null, result: null,
+          eventId: 4, blackPlayer: null, whitePlayer: { id: 1001, name: 'Bob', rating: 700 },
+        },
+        {
+          id: 11, tableNumber: 11, createdAt: '2026-10-02T12:01:00.000Z',
+          blackPlayerId: 1003, whitePlayerId: null, finishedAt: null, result: null,
+          eventId: 4, blackPlayer: { id: 1003, name: 'Dana', rating: 690 }, whitePlayer: null,
+        },
+      ]} />)
+
+    expect(await screen.findByText('Not checked in')).toBeVisible()
+    expect(screen.getByText('Waiting at', { exact: false })).toBeVisible()
+    expect(screen.getByText('Playing Dana on', { exact: false })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Open Table 10 game details' }))
+    expect(onOpenGame).toHaveBeenCalledWith(expect.objectContaining({ id: 1001, name: 'Bob' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open Table 4 game details' }))
+    expect(onOpenGame).toHaveBeenCalledWith(expect.objectContaining({ id: 1002, name: 'Carol' }))
+    expect(screen.getAllByRole('columnheader').map((header) => header.textContent))
+      .toEqual(['Rank', 'Player', 'Elo', 'Record', 'Session Record'])
+    expect(screen.getByText('1-0-0')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Check in Alice' }))
+    await waitFor(() => expect(onCheckIn).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 1000, name: 'Alice' }),
+    ))
+    expect(screen.queryByRole('button', { name: 'Check in Bob' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Check in Carol' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Move To...' }))
+    const moveDialog = screen.getByRole('dialog', { name: 'Move Bob to another table' })
+    expect(within(moveDialog).getByText('Table 10 will close.', { exact: false })).toBeVisible()
+    fireEvent.click(within(moveDialog).getByRole('button', {
+      name: 'Table 11 — waiting for Dana',
+    }))
+    await waitFor(() => expect(onMoveWaitingPlayer).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 1001, name: 'Bob' }),
+      11,
+    ))
+    await waitFor(() => expect(screen.queryByRole('dialog', {
+      name: 'Move Bob to another table',
+    })).not.toBeInTheDocument())
   })
 })
