@@ -980,18 +980,18 @@ describe('scanner and player producer', () => {
         .not.toBeInTheDocument())
     expect(screen.getByTestId('camera-interaction-layer')).toHaveClass('is-hidden')
 
-    detections = []
-    for (let index = 0; index < 20; index += 1) {
-      now += 100
-      await act(async () => camera.callbacks.shift()?.(now))
-    }
     detections = [{
-      rawValue: payload(1001, 'White'),
+      rawValue: payload(1002, 'New Player'),
       cornerPoints: [
         { x: 340, y: 130 }, { x: 360, y: 130 },
         { x: 360, y: 150 }, { x: 340, y: 150 },
       ],
     }]
+    for (let index = 0; index < 2; index += 1) {
+      now += 100
+      await act(async () => camera.callbacks.shift()?.(now))
+    }
+    expect(screen.getByTestId('camera-interaction-layer')).toHaveClass('is-visible')
     for (let index = 0; index < 23; index += 1) {
       now += 100
       await act(async () => camera.callbacks.shift()?.(now))

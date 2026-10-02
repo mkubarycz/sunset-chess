@@ -73,7 +73,9 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
   bounded DOM-only progress updates
 - Result recording returns authoritative post-game ratings and per-player
   deltas; the camera remains visible for a three-second accessible
-  acknowledgement, then the acknowledgement and camera fade together.
+  acknowledgement, then the acknowledgement and camera fade together. The
+  completed pair stays re-entry blocked, while a newly scanned player restores
+  the camera and normal interaction immediately.
 - Two unrelated detected players retain stable left/right ownership. Each lane
   independently shows its ongoing game card or enables its own check-in
   ActionZone; score reporting remains available only when both pieces belong to

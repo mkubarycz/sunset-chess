@@ -528,6 +528,7 @@ export default function App({
   const resultRequestRef = useRef<AbortController | null>(null)
   const resultAcknowledgementTimerRef = useRef<number | null>(null)
   const resultAcknowledgementSequenceRef = useRef(0)
+  const resultSuppressedPlayerIdsRef = useRef(new Set<number>())
   const gameContextRef = useRef<GameContext | null>(null)
   const resultHoldRef = useRef<HoldState>(emptyHoldState())
   const resultAssignmentRef = useRef<ResultAssignment | null>(null)
@@ -605,6 +606,7 @@ export default function App({
       resultAcknowledgementTimerRef.current = null
     }
     setResultAcknowledgement('')
+    resultSuppressedPlayerIdsRef.current.clear()
     setResultCameraSuppressed(false)
   }, [])
 
@@ -674,6 +676,10 @@ export default function App({
         throw new Error('Result was recorded, but updated ratings could not be loaded.')
       }
       const acknowledgement = formatResultAcknowledgement(authoritative)
+      resultSuppressedPlayerIdsRef.current = new Set([
+        authoritative.blackPlayerId,
+        authoritative.whitePlayerId,
+      ].filter((playerId): playerId is number => playerId !== null))
       const sequence = ++resultAcknowledgementSequenceRef.current
       if (resultAcknowledgementTimerRef.current !== null) {
         window.clearTimeout(resultAcknowledgementTimerRef.current)
@@ -683,9 +689,12 @@ export default function App({
         if (resultAcknowledgementSequenceRef.current !== sequence) return
         resultAcknowledgementTimerRef.current = null
         setResultAcknowledgement('')
-        setResultCameraSuppressed(true)
-        piecePresentRef.current = false
-        setPiecePresent(false)
+        const suppressCompletedPlayers = resultSuppressedPlayerIdsRef.current.size > 0
+        setResultCameraSuppressed(suppressCompletedPlayers)
+        if (suppressCompletedPlayers) {
+          piecePresentRef.current = false
+          setPiecePresent(false)
+        }
       }, resultAcknowledgementMs)
       setCheckInNotice('Result recorded. Ratings updated.')
       reentryLatchRef.current = blockReentryLatch()
@@ -1234,6 +1243,14 @@ export default function App({
     }))
     const presentPlayerIds = new Set(presentPlayerDetections.map(({ playerId }) => playerId))
     const freshPlayerIds = new Set(freshPlayerDetections.map(({ playerId }) => playerId))
+    const newIdentityAfterResult = [...freshPlayerIds].some(
+      (playerId) => !resultSuppressedPlayerIdsRef.current.has(playerId),
+    )
+    if (resultSuppressedPlayerIdsRef.current.size > 0 && newIdentityAfterResult) {
+      resultSuppressedPlayerIdsRef.current.clear()
+      reentryLatchRef.current = openReentryLatch()
+      setResultCameraSuppressed(false)
+    }
     const resultGeometryFreshPlayerIds = new Set(visible.flatMap(({
       detection, evidenceAgeMs,
     }) => {
@@ -1274,6 +1291,7 @@ export default function App({
       now,
     )
     if (previousReentryLatch.blocked && !reentryLatchRef.current.blocked) {
+      resultSuppressedPlayerIdsRef.current.clear()
       setResultCameraSuppressed(false)
     }
     const tooManyPlayers = freshPlayerDetections.length > 2
