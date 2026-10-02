@@ -91,6 +91,14 @@ export interface CheckInUpdate {
   completed: PlayerDetection[]
 }
 
+export type LaneCheckInStates = Record<ActionZoneLane, CheckInState>
+
+export interface IndependentLaneContext {
+  lane: ActionZoneLane
+  player: PlayerDetection
+  game: OngoingGame | null
+}
+
 export interface GameContext {
   game: OngoingGame
   anchor: PlayerDetection
@@ -145,6 +153,11 @@ export const emptyCheckInState = (): CheckInState => ({
   occupantKey: null,
   occupant: null,
   occupantLane: null,
+})
+
+export const emptyLaneCheckInStates = (): LaneCheckInStates => ({
+  left: emptyCheckInState(),
+  right: emptyCheckInState(),
 })
 
 export const emptyLaneBindingState = (): LaneBindingState => ({
@@ -562,8 +575,70 @@ export function matchGameContext(
       resultReady: fullySeated && oppositeAndDistinct,
       key: `${game.id}:${game.createdAt}:${game.blackPlayerId}:${game.whitePlayerId}:${anchor.playerId}:${anchorLane}:${opponent?.playerId ?? 'absent'}`,
     }
+
   }
   return null
+}
+
+export function matchIndependentLaneContexts(
+      players: readonly PlayerDetection[],
+      games: readonly OngoingGame[],
+      width: number,
+      laneBindings: Readonly<Record<number, ActionZoneLane>> = {},
+    ): IndependentLaneContext[] {
+      return [...new Map(players.map((player) => [player.playerId, player])).values()]
+        .map((player) => ({
+          player,
+          lane: laneBindings[player.playerId]
+            ?? screenLane(detectionCenter(player.detection), width),
+          game: games.find((game) =>
+            game.result === null
+            && game.finishedAt === null
+            && (game.blackPlayerId === player.playerId || game.whitePlayerId === player.playerId),
+          ) ?? null,
+        }))
+        .sort((a, b) => a.lane === b.lane ? a.player.playerId - b.player.playerId
+          : a.lane === 'left' ? -1 : 1)
+    }
+
+    export function shareOngoingGame(contexts: readonly IndependentLaneContext[]): boolean {
+      return contexts.length === 2
+        && contexts[0].game !== null
+        && contexts[1].game !== null
+        && contexts[0].game.id === contexts[1].game.id
+        && contexts[0].game.createdAt === contexts[1].game.createdAt
+    }
+
+    export function updateIndependentCheckInZones(
+      states: LaneCheckInStates,
+      contexts: readonly IndependentLaneContext[],
+      width: number,
+      height: number,
+      now: number,
+      options: Parameters<typeof updateCheckInZones>[5] = {},
+    ): { states: LaneCheckInStates; zones: ActionZone[]; completed: PlayerDetection[] } {
+      const updates = (['left', 'right'] as const).map((lane) => {
+        const context = contexts.find((candidate) => candidate.lane === lane)
+        const eligiblePlayer = context?.game === null ? context.player : null
+        const update = updateCheckInZones(
+          states[lane],
+          eligiblePlayer ? [eligiblePlayer] : [],
+          width,
+          height,
+          now,
+          { ...options, enabled: Boolean(options.enabled !== false && eligiblePlayer) },
+        )
+        return { lane, update }
+      })
+      return {
+        states: {
+          left: updates[0].update.state,
+          right: updates[1].update.state,
+        },
+        zones: updates.flatMap(({ lane, update }) =>
+          update.zones.filter((zone) => zone.lane === lane)),
+        completed: updates.flatMap(({ update }) => update.completed),
+      }
 }
 
 export function resultZoneRect(

@@ -911,8 +911,18 @@ describe('scanner and player producer', () => {
       game: { ...game, id: 2, tableNumber: 2, blackPlayerId: null, blackPlayer: null },
     })
     let currentGames = [game]
+    const completedGame = {
+      ...game,
+      finishedAt: '2026-01-01T01:00:00.000Z',
+      result: '1-0' as const,
+      whitePlayer: { ...game.whitePlayer, rating: 714 },
+      blackPlayer: { ...game.blackPlayer, rating: 686 },
+      whiteRatingDelta: 14,
+      blackRatingDelta: -14,
+    }
     const finalizeGame = vi.fn().mockImplementation(async () => {
       currentGames = []
+      return completedGame
     })
     render(<App
       nativeDetectorFactory={() => nativeDetector}
@@ -920,6 +930,7 @@ describe('scanner and player producer', () => {
       checkInPlayer={checkInPlayer}
       finalizeGame={finalizeGame}
       gamesPollIntervalMs={60_000}
+      resultAcknowledgementMs={100}
     />)
     const video = screen.getByLabelText('Mirrored live camera preview')
     Object.defineProperties(video, {
@@ -956,14 +967,18 @@ describe('scanner and player producer', () => {
     ))
     expect(finalizeGame).toHaveBeenCalledTimes(1)
     expect(checkInPlayer).not.toHaveBeenCalled()
-    expect(await screen.findByText('Result 1-0 recorded. Ratings updated.')).toBeInTheDocument()
+    expect(await screen.findByText('White 714(+14) def. Black 686(-14)')).toBeInTheDocument()
+    expect(screen.getByTestId('camera-interaction-layer')).toHaveClass('is-visible')
     for (let index = 0; index < 23; index += 1) {
       now += 100
       await act(async () => camera.callbacks.shift()?.(now))
     }
     expect(finalizeGame).toHaveBeenCalledTimes(1)
     expect(checkInPlayer).not.toHaveBeenCalled()
-    expect(screen.getAllByText('Move QR away, then re-enter to check in')).toHaveLength(1)
+    await waitFor(() =>
+      expect(screen.queryByText('White 714(+14) def. Black 686(-14)'))
+        .not.toBeInTheDocument())
+    expect(screen.getByTestId('camera-interaction-layer')).toHaveClass('is-hidden')
 
     detections = []
     for (let index = 0; index < 20; index += 1) {
@@ -1016,7 +1031,13 @@ describe('scanner and player producer', () => {
       blackPlayer: { id: 1000, name: 'Black', rating: 700 },
       whitePlayer: { id: 1001, name: 'White', rating: 700 },
     }
-    const finalizeGame = vi.fn().mockResolvedValue(undefined)
+    const finalizeGame = vi.fn().mockResolvedValue({
+      ...game,
+      finishedAt: '2026-01-01T01:00:00.000Z',
+      result: '1/2-1/2',
+      whiteRatingDelta: 0,
+      blackRatingDelta: 0,
+    })
     render(<App
       nativeDetectorFactory={() => ({ detect: vi.fn(async () => detections) })}
       resolvePlayer={resolvePlayer}

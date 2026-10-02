@@ -7,14 +7,18 @@ import {
   createDisabledResultZones,
   createResultZones,
   emptyCheckInState,
+  emptyLaneCheckInStates,
   emptyHoldState,
   emptyLaneBindingState,
   evaluateResultChoices,
+  matchIndependentLaneContexts,
   matchGameContext,
   resultZoneRect,
   screenLane,
+  shareOngoingGame,
   updateCheckInZones,
   updateHold,
+  updateIndependentCheckInZones,
   updateLaneBinding,
   updateReentryLatch,
   type PlayerDetection,
@@ -350,6 +354,46 @@ describe('check-in ActionZones', () => {
 })
 
 describe('game context and per-lane square results', () => {
+  it('classifies unrelated players per stable lane for every game/check-in combination', () => {
+    const players = [player(1000, 50, 50), player(1002, 350, 50)]
+    const bindings = { 1000: 'left', 1002: 'right' } as const
+    const combinations = [
+      { games: [], expected: [null, null] },
+      { games: [game(1, 1000, 1001)], expected: [1, null] },
+      { games: [game(2, 1003, 1002)], expected: [null, 2] },
+      {
+        games: [game(1, 1000, 1001), game(2, 1003, 1002)],
+        expected: [1, 2],
+      },
+    ]
+    for (const combination of combinations) {
+      const contexts = matchIndependentLaneContexts(players, combination.games, 400, bindings)
+      expect(contexts.map(({ lane }) => lane)).toEqual(['left', 'right'])
+      expect(contexts.map(({ game: matched }) => matched?.id ?? null))
+        .toEqual(combination.expected)
+      expect(shareOngoingGame(contexts)).toBe(false)
+      const update = updateIndependentCheckInZones(
+        emptyLaneCheckInStates(), contexts, 400, 300, 0,
+        { freshPlayerIds: new Set([1000, 1002]) },
+      )
+      expect(update.zones.map(({ lane, occupant }) =>
+        [lane, occupant?.playerId ?? null])).toEqual(
+          contexts.filter(({ game: matched }) => matched === null)
+            .map(({ lane, player: detected }) => [lane, detected.playerId]),
+        )
+    }
+  })
+
+  it('recognizes two detected opponents in the same ongoing game', () => {
+    const contexts = matchIndependentLaneContexts(
+      [player(1000, 50), player(1001, 350)],
+      [game()],
+      400,
+      { 1000: 'left', 1001: 'right' },
+    )
+    expect(shareOngoingGame(contexts)).toBe(true)
+  })
+
   it('centers a known game and names the absent seated opponent on the opposite lane', () => {
     const context = matchGameContext([player(1000, 50)], [game()], 400)!
     expect(context.game.id).toBe(1)

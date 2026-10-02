@@ -71,6 +71,13 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
 - Reusable ActionZones for top-corner check-in and lane-aware per-player
   Win/Draw/Lose choices, with motion-tolerant accumulated 1.5-second holds and
   bounded DOM-only progress updates
+- Result recording returns authoritative post-game ratings and per-player
+  deltas; the camera remains visible for a three-second accessible
+  acknowledgement, then the acknowledgement and camera fade together.
+- Two unrelated detected players retain stable left/right ownership. Each lane
+  independently shows its ongoing game card or enables its own check-in
+  ActionZone; score reporting remains available only when both pieces belong to
+  the same result-ready game.
 - Friendly player labels while retaining support for arbitrary QR strings
 - Persistent players and chess games through a local MCP endpoint
 - Responsive, horizontally scrollable ongoing-game thumbnail rail with a compact

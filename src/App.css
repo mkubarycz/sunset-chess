@@ -252,6 +252,16 @@ body {
 .action-zone-hold-progress { width: 100%; height: 100%; transform: scaleX(0); transform-origin: left; background: var(--success); will-change: transform; }
 .action-loser .action-zone-hold-progress { background: #f0abab; }
 .camera-game-context { position: absolute; z-index: 4; inset: 0; display: grid; place-items: center; pointer-events: none; }
+.camera-lane-contexts { position: absolute; z-index: 4; inset: 0; pointer-events: none; }
+.camera-lane-game {
+  position: absolute;
+  top: 50%;
+  max-width: calc(50% - 20px);
+  transform: translateY(-50%);
+}
+.camera-lane-game.lane-left { left: clamp(8px, 3vw, 36px); }
+.camera-lane-game.lane-right { right: clamp(8px, 3vw, 36px); }
+.camera-lane-game .game-card { max-width: 100%; pointer-events: none; }
 .stage-game-card { min-width: 150px; border-color: rgba(255,210,122,.75); box-shadow: 0 14px 42px rgba(0,0,0,.62); }
 .stage-game-card h3 { padding: 10px 12px; font-size: clamp(1rem, 2vw, 1.35rem); }
 .stage-game-card .player-side { min-height: 48px; }
@@ -276,6 +286,27 @@ body {
   pointer-events: none;
 }
 .action-zone-message { position: absolute; z-index: 6; left: 50%; top: 50%; width: max-content; max-width: calc(100% - 24px); margin: 0; transform: translate(-50%, -50%); border: 1px solid var(--error); border-radius: var(--radius-sm); padding: 10px 14px; color: var(--ivory); background: rgba(91,24,38,.92); font-weight: 800; text-align: center; pointer-events: none; }
+.result-acknowledgement {
+  position: absolute;
+  z-index: 10;
+  left: 50%;
+  top: 50%;
+  width: min(760px, calc(100% - 32px));
+  margin: 0;
+  transform: translate(-50%, -50%);
+  border: 2px solid var(--amber-bright);
+  border-radius: var(--radius-md);
+  padding: clamp(18px, 4vw, 36px);
+  color: var(--ivory);
+  background: rgba(9, 11, 15, .92);
+  box-shadow: 0 18px 54px rgba(0, 0, 0, .62);
+  font-family: Georgia, serif;
+  font-size: clamp(1.1rem, 3.6vw, 2.2rem);
+  font-weight: 800;
+  line-height: 1.3;
+  text-align: center;
+  pointer-events: none;
+}
 .payload-label { position: absolute; z-index: 2; left: 0; top: 0; width: min(240px, calc(100% - 16px)); max-height: 58px; overflow: hidden; padding: 8px 10px; border: 1px solid var(--amber-bright); border-radius: var(--radius-sm); color: #17100b; background: rgba(255,246,229,.97); box-shadow: 0 5px 18px rgba(0,0,0,.45); font-size: .86rem; font-weight: 750; line-height: 1.35; overflow-wrap: anywhere; pointer-events: none; will-change: transform; }
 .payload-label.raw { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .76rem; }
 

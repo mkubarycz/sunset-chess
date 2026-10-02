@@ -282,12 +282,16 @@ export function createSunsetServer(
           return sendJson(res, 400, { error: 'Body must contain only result.' });
         }
         try {
-          return sendJson(res, 200, {
-            game: repository.finalizeGame(
-              Number(resultMatch[1]),
-              (body as { result: '1-0' | '0-1' | '1/2-1/2' }).result,
-            ),
-          });
+          const gameId = Number(resultMatch[1]);
+          repository.finalizeGame(
+            gameId,
+            (body as { result: '1-0' | '0-1' | '1/2-1/2' }).result,
+          );
+          const game = repository.listJoinedGames('finished').find(
+            (candidate) => candidate.id === gameId,
+          );
+          if (!game) throw new Error('Completed game could not be reloaded.');
+          return sendJson(res, 200, { game });
         } catch (error) {
           if (error instanceof DomainError) {
             return sendJson(res, error.code === 'conflict' ? 409 : error.code === 'not_found' ? 404 : 400, {

@@ -66,12 +66,16 @@ import {
   createDisabledResultZones,
   blockReentryLatch,
   emptyCheckInState,
+  emptyLaneCheckInStates,
   emptyHoldState,
   emptyLaneBindingState,
   evaluateResultChoices,
+  matchIndependentLaneContexts,
   matchGameContext,
   openReentryLatch,
+  shareOngoingGame,
   updateCheckInZones,
+  updateIndependentCheckInZones,
   updateHold,
   updateLaneBinding,
   updateReentryLatch,
@@ -80,6 +84,8 @@ import {
   type CheckInState,
   type GameContext,
   type HoldState,
+  type IndependentLaneContext,
+  type LaneCheckInStates,
   type LaneBindingState,
   type PlayerDetection,
   type ReentryLatchState,
@@ -161,6 +167,11 @@ import {
   updateResultAuthority,
   type ResultAuthorityUpdate,
 } from './resultAuthority'
+import {
+  findAuthoritativeResult,
+  formatResultAcknowledgement,
+  RESULT_ACKNOWLEDGEMENT_MS,
+} from './resultAcknowledgement'
 import './App.css'
 
 type CameraState = 'initial' | 'requesting' | 'active' | 'inactive' | 'denied' | 'unavailable' | 'insecure' | 'error'
@@ -194,17 +205,18 @@ async function defaultFinalizeGame(
   gameId: number,
   result: '1-0' | '0-1' | '1/2-1/2',
   signal: AbortSignal,
-): Promise<void> {
+): Promise<OngoingGame> {
   const response = await fetch(`/api/games/${gameId}/result`, {
     method: 'PATCH',
     signal,
     headers: { accept: 'application/json', 'content-type': 'application/json' },
     body: JSON.stringify({ result }),
   })
-  const body = await response.json() as { error?: string }
-  if (!response.ok) {
+  const body = await response.json() as { game?: OngoingGame; error?: string }
+  if (!response.ok || !body.game) {
     throw new Error(body.error || `Result request failed (${response.status}).`)
   }
+  return body.game
 }
 
 async function defaultCreatePlayer(name: string, signal: AbortSignal): Promise<PlayerPayload> {
@@ -278,8 +290,9 @@ interface AppProps {
     gameId: number,
     result: '1-0' | '0-1' | '1/2-1/2',
     signal: AbortSignal,
-  ) => Promise<void>
+  ) => Promise<OngoingGame | null | void>
   gamesPollIntervalMs?: number
+  resultAcknowledgementMs?: number
 }
 
 export type { OngoingGame } from './GameCard'
@@ -355,6 +368,7 @@ export default function App({
   checkInPlayer = defaultCheckInPlayer,
   finalizeGame = defaultFinalizeGame,
   gamesPollIntervalMs = 2000,
+  resultAcknowledgementMs = RESULT_ACKNOWLEDGEMENT_MS,
 }: AppProps) {
   const [cameraState, setCameraState] = useState<CameraState>(
     window.isSecureContext === false ? 'insecure' : 'initial',
@@ -382,6 +396,9 @@ export default function App({
   const [actionZones, setActionZones] = useState<ActionZone[]>([])
   const [gameContext, setGameContext] = useState<GameContext | null>(null)
   const [overlayMessage, setOverlayMessage] = useState('')
+  const [independentLaneContexts, setIndependentLaneContexts] = useState<IndependentLaneContext[]>([])
+  const [resultAcknowledgement, setResultAcknowledgement] = useState('')
+  const [resultCameraSuppressed, setResultCameraSuppressed] = useState(false)
   const [piecePresent, setPiecePresent] = useState(false)
   const [diagnosticUi, setDiagnosticUi] = useState<{
     phase: 'idle' | 'recording' | 'ready' | 'error'
@@ -509,12 +526,15 @@ export default function App({
   const checkInRequestRef = useRef(new Map<number, AbortController>())
   const submittedCheckInRef = useRef(new Set<number>())
   const resultRequestRef = useRef<AbortController | null>(null)
+  const resultAcknowledgementTimerRef = useRef<number | null>(null)
+  const resultAcknowledgementSequenceRef = useRef(0)
   const gameContextRef = useRef<GameContext | null>(null)
   const resultHoldRef = useRef<HoldState>(emptyHoldState())
   const resultAssignmentRef = useRef<ResultAssignment | null>(null)
   const resultAuthorityRef = useRef<ResultAuthorityUpdate>(emptyResultAuthorityUpdate())
   const submittedResultRef = useRef<string | null>(null)
   const checkInStateRef = useRef<CheckInState>(emptyCheckInState())
+  const laneCheckInStatesRef = useRef<LaneCheckInStates>(emptyLaneCheckInStates())
   const actionZonesRef = useRef<ActionZone[]>([])
   const laneBindingRef = useRef<LaneBindingState>(emptyLaneBindingState())
   const reentryLatchRef = useRef<ReentryLatchState>(openReentryLatch())
@@ -569,12 +589,23 @@ export default function App({
 
   const resetCheckInTargets = useCallback(() => {
     checkInStateRef.current = emptyCheckInState()
+    laneCheckInStatesRef.current = emptyLaneCheckInStates()
     actionZonesRef.current = []
     setActionZones([])
     actionProgressRefs.current.forEach((progress) => {
       progress.style.transform = 'scaleX(0)'
       progress.setAttribute('aria-valuenow', '0')
     })
+  }, [])
+
+  const clearResultAcknowledgement = useCallback(() => {
+    resultAcknowledgementSequenceRef.current += 1
+    if (resultAcknowledgementTimerRef.current !== null) {
+      window.clearTimeout(resultAcknowledgementTimerRef.current)
+      resultAcknowledgementTimerRef.current = null
+    }
+    setResultAcknowledgement('')
+    setResultCameraSuppressed(false)
   }, [])
 
   const refreshGames = useCallback(async (force = false) => {
@@ -619,14 +650,44 @@ export default function App({
     generation: number,
   ) => {
     if (resultRequestRef.current || submittedResultRef.current === dedupeKey) return
+    clearResultAcknowledgement()
     submittedResultRef.current = dedupeKey
     const controller = new AbortController()
     resultRequestRef.current = controller
     setCheckInError(false)
     setCheckInNotice(`Recording ${result}…`)
-    void finalizeGame(gameId, result, controller.signal).then(() => {
+    void finalizeGame(gameId, result, controller.signal).then(async (returnedGame) => {
       if (controller.signal.aborted || generation !== cameraGenerationRef.current) return
-      setCheckInNotice(`Result ${result} recorded. Ratings updated.`)
+      let authoritative = returnedGame ?? null
+      if (!authoritative) {
+        const response = await fetchGames(controller.signal)
+        if (controller.signal.aborted || generation !== cameraGenerationRef.current) return
+        const next = Array.isArray(response) ? response : response.games
+        const recent = Array.isArray(response) ? [] : response.recentGames
+        authoritative = findAuthoritativeResult(gameId, authoritative, recent)
+        setGames(next)
+        setRecentGames(recent)
+        setFeaturedGame((current) => retainFeaturedGame(next, current))
+        setLeaderboardRefresh((value) => value + 1)
+      }
+      if (!authoritative) {
+        throw new Error('Result was recorded, but updated ratings could not be loaded.')
+      }
+      const acknowledgement = formatResultAcknowledgement(authoritative)
+      const sequence = ++resultAcknowledgementSequenceRef.current
+      if (resultAcknowledgementTimerRef.current !== null) {
+        window.clearTimeout(resultAcknowledgementTimerRef.current)
+      }
+      setResultAcknowledgement(acknowledgement)
+      resultAcknowledgementTimerRef.current = window.setTimeout(() => {
+        if (resultAcknowledgementSequenceRef.current !== sequence) return
+        resultAcknowledgementTimerRef.current = null
+        setResultAcknowledgement('')
+        setResultCameraSuppressed(true)
+        piecePresentRef.current = false
+        setPiecePresent(false)
+      }, resultAcknowledgementMs)
+      setCheckInNotice('Result recorded. Ratings updated.')
       reentryLatchRef.current = blockReentryLatch()
       trackingRefs.current.clear()
       visualTrackerRef.current.clear()
@@ -634,7 +695,7 @@ export default function App({
       rememberedRef.current = null
       setRemembered(null)
       clearResultMode()
-      void refreshGames(true)
+      if (returnedGame) void refreshGames(true)
     }).catch((error) => {
       if (controller.signal.aborted || generation !== cameraGenerationRef.current) return
       setCheckInError(true)
@@ -646,7 +707,7 @@ export default function App({
     }).finally(() => {
       if (resultRequestRef.current === controller) resultRequestRef.current = null
     })
-  }, [clearResultMode, finalizeGame, refreshGames])
+  }, [clearResultAcknowledgement, clearResultMode, fetchGames, finalizeGame, refreshGames, resultAcknowledgementMs])
 
   const requestPlayerResolution = useCallback((playerId: number, generation: number) => {
     const previousFailure = playerLookupErrorRef.current.get(playerId)
@@ -701,9 +762,9 @@ export default function App({
     if (
       gameContextRef.current?.resultReady
       || submittedCheckInRef.current.has(playerId)
-      || checkInRequestRef.current.size > 0
       || checkInRequestRef.current.has(playerId)
     ) return
+    clearResultAcknowledgement()
     submittedCheckInRef.current.add(playerId)
     const controller = new AbortController()
     checkInRequestRef.current.set(playerId, controller)
@@ -746,7 +807,7 @@ export default function App({
         checkInRequestRef.current.delete(playerId)
       }
     })
-  }, [checkInPlayer, refreshGames])
+  }, [checkInPlayer, clearResultAcknowledgement, refreshGames])
 
   useEffect(() => {
     void refreshGames()
@@ -797,6 +858,8 @@ export default function App({
     submittedCheckInRef.current.clear()
     laneBindingRef.current = emptyLaneBindingState()
     reentryLatchRef.current = openReentryLatch()
+    clearResultAcknowledgement()
+    setIndependentLaneContexts([])
     updateOverlayMessage('')
     resetCheckInTargets()
     resultRequestRef.current?.abort()
@@ -839,7 +902,7 @@ export default function App({
       scanSizeRef.current = null
       setRemembered(null)
     }
-  }, [cancelCheckInTransition, cancelScheduledFrame, clearInactivityTimer, clearResultMode, resetCheckInTargets, updateOverlayMessage])
+  }, [cancelCheckInTransition, cancelScheduledFrame, clearInactivityTimer, clearResultAcknowledgement, clearResultMode, resetCheckInTargets, updateOverlayMessage])
 
   const finalizeDiagnostic = useCallback(() => {
     const session = diagnosticSessionRef.current
@@ -1204,11 +1267,15 @@ export default function App({
     }
     presenceStateRef.current =
       `${freshPlayerIds.size} fresh / ${presentPlayerIds.size} present`
+    const previousReentryLatch = reentryLatchRef.current
     reentryLatchRef.current = updateReentryLatch(
-      reentryLatchRef.current,
+      previousReentryLatch,
       freshPlayerDetections.length,
       now,
     )
+    if (previousReentryLatch.blocked && !reentryLatchRef.current.blocked) {
+      setResultCameraSuppressed(false)
+    }
     const tooManyPlayers = freshPlayerDetections.length > 2
     const relevantPresentPlayers = presentPlayerDetections.length <= 2
       ? presentPlayerDetections
@@ -1228,12 +1295,27 @@ export default function App({
     const interactionPlayers = reentryLatchRef.current.blocked || tooManyPlayers
       ? []
       : relevantPresentPlayers
-    const matchedGame = matchGameContext(
+    const laneContexts = matchIndependentLaneContexts(
       interactionPlayers,
       gamesRef.current,
       width,
       laneBinding.state.lanes,
     )
+    const independentMode = laneContexts.length === 2 && !shareOngoingGame(laneContexts)
+    const matchedGame = independentMode ? null : matchGameContext(
+      interactionPlayers,
+      gamesRef.current,
+      width,
+      laneBinding.state.lanes,
+    )
+    const nextIndependentContexts = independentMode ? laneContexts : []
+    setIndependentLaneContexts((current) => {
+      const currentKey = current.map(({ lane, player, game }) =>
+        `${lane}:${player.playerId}:${game?.id ?? 'check-in'}`).join('|')
+      const nextKey = nextIndependentContexts.map(({ lane, player, game }) =>
+        `${lane}:${player.playerId}:${game?.id ?? 'check-in'}`).join('|')
+      return currentKey === nextKey ? current : nextIndependentContexts
+    })
     if (matchedGame?.resultReady) {
       checkInRequestRef.current.forEach((controller) => controller.abort())
       checkInRequestRef.current.clear()
@@ -1245,23 +1327,39 @@ export default function App({
     const blockedPlayerIds = reentryLatchRef.current.blocked
       ? presentPlayerIds
       : new Set<number>()
-    const checkInPlayers = checkInRequestRef.current.size > 0
-      ? relevantPresentPlayers.filter(({ playerId }) => submittedCheckInRef.current.has(playerId))
-      : relevantPresentPlayers
-    const checkInUpdate = updateCheckInZones(
+    const checkInPlayers = relevantPresentPlayers
+    const checkInOptions = {
+      enabled: !matchedGame && !tooManyPlayers,
+      blockedPlayerIds,
+      resetKey: String(cameraGenerationRef.current),
+      freshPlayerIds: holdQualifiedPlayerIds,
+    }
+    const independentCheckIn = independentMode
+      ? updateIndependentCheckInZones(
+          laneCheckInStatesRef.current,
+          laneContexts,
+          width,
+          height,
+          now,
+          checkInOptions,
+        )
+      : null
+    if (independentCheckIn) laneCheckInStatesRef.current = independentCheckIn.states
+    const regularCheckIn = independentMode ? null : updateCheckInZones(
       checkInStateRef.current,
       checkInPlayers,
       width,
       height,
       now,
-      {
-        enabled: !matchedGame && !tooManyPlayers,
-        blockedPlayerIds,
-        resetKey: String(cameraGenerationRef.current),
-        freshPlayerIds: holdQualifiedPlayerIds,
-      },
+      checkInOptions,
     )
-    checkInStateRef.current = checkInUpdate.state
+    if (regularCheckIn) checkInStateRef.current = regularCheckIn.state
+    const checkInUpdate = independentCheckIn
+      ? {
+          zones: independentCheckIn.zones,
+          completed: independentCheckIn.completed,
+        }
+      : regularCheckIn!
     submittedCheckInRef.current.forEach((playerId) => {
       if (!freshPlayerIds.has(playerId) && !checkInRequestRef.current.has(playerId)) {
         submittedCheckInRef.current.delete(playerId)
@@ -2441,7 +2539,9 @@ export default function App({
     : parsedRaw
   const diagnosticRecording = diagnosticUi.phase === 'recording'
   const interactionVisible = cameraState === 'active'
-    && (piecePresent || diagnosticRecording)
+    && ((piecePresent && !resultCameraSuppressed)
+      || diagnosticRecording
+      || Boolean(resultAcknowledgement))
   const cameraUnavailable = cameraState === 'insecure' || cameraState === 'unavailable'
   const cameraButtonLabel = cameraState === 'active'
     ? 'Stop Camera'
@@ -2775,7 +2875,7 @@ export default function App({
             </div>}
           </>
         )}
-        {interactionVisible && parsed && (
+        {interactionVisible && !resultAcknowledgement && parsed && (
           <div
             className={`payload-label ${parsed.kind}`}
             ref={payloadLabelRef}
@@ -2785,7 +2885,7 @@ export default function App({
             {parsed.label}
           </div>
         )}
-        {interactionVisible && gameContext && (
+        {interactionVisible && !resultAcknowledgement && gameContext && (
           <div
             className="camera-game-context"
             role="group"
@@ -2801,7 +2901,23 @@ export default function App({
             {gameContext.waitingCopy && <p className="game-waiting-header">{gameContext.waitingCopy}</p>}
           </div>
         )}
-        {interactionVisible && actionZones.length > 0 && (
+        {interactionVisible && !resultAcknowledgement && independentLaneContexts.length > 0 && (
+          <div className="camera-lane-contexts" role="group" aria-label="Detected player game contexts">
+            {independentLaneContexts.flatMap(({ lane, player: detectedPlayer, game }) =>
+              game ? [(
+                <div className={`camera-lane-game lane-${lane}`} key={`${lane}:${detectedPlayer.playerId}:${game.id}`}>
+                  <GameCard
+                    game={game}
+                    className=" stage-game-card"
+                    width="clamp(140px, 28vw, 260px)"
+                    height="auto"
+                    management={false}
+                  />
+                </div>
+              )] : [])}
+          </div>
+        )}
+        {interactionVisible && !resultAcknowledgement && actionZones.length > 0 && (
           <div
             className="action-zones"
             role="group"
@@ -2827,10 +2943,15 @@ export default function App({
             ))}
           </div>
         )}
-        {interactionVisible && overlayMessage && (
+        {interactionVisible && !resultAcknowledgement && overlayMessage && (
           <p className="action-zone-message" role="status" aria-live="polite">{overlayMessage}</p>
         )}
-        {interactionVisible && !gameContext?.resultReady && <div className="scan-corners" aria-hidden="true" />}
+        {interactionVisible && resultAcknowledgement && (
+          <p className="result-acknowledgement" role="status" aria-live="assertive">
+            {resultAcknowledgement}
+          </p>
+        )}
+        {interactionVisible && !resultAcknowledgement && !gameContext?.resultReady && <div className="scan-corners" aria-hidden="true" />}
       </section>
     </main>
   )

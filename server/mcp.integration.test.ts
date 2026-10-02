@@ -380,7 +380,15 @@ describe('Sunset Chess HTTP and MCP', () => {
     });
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ game: { result: '1/2-1/2' } });
+    expect(await response.json()).toMatchObject({
+      game: {
+        result: '1/2-1/2',
+        blackPlayer: { id: 1000, rating: 700 },
+        whitePlayer: { id: 1001, rating: 700 },
+        blackRatingDelta: 0,
+        whiteRatingDelta: 0,
+      },
+    });
     expect(app.repository.getPlayer(1000).rating).toBe(700);
     expect(app.repository.getPlayer(1001).rating).toBe(700);
     expect((await fetch(`http://127.0.0.1:${app.port}/api/games/${game.id}/result`, {
