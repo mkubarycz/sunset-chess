@@ -341,6 +341,8 @@ describe('Sunset Chess HTTP and MCP', () => {
         canCancel: true,
         blackPlayerId: alice.id,
         whitePlayerId: 1001,
+        blackStartingRating: 700,
+        whiteStartingRating: 700,
         blackRatingDelta: null,
         whiteRatingDelta: null,
         blackPlayer: alice,

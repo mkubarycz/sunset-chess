@@ -93,6 +93,26 @@ describe('GameCard', () => {
     expect(screen.queryByText(/White player|Black player/)).not.toBeInTheDocument()
   })
 
+  it('displays each player rating from the beginning of the game', () => {
+    render(<GameCard game={{
+      ...game,
+      result: '1-0',
+      finishedAt: '2026-01-01T01:00:00.000Z',
+      blackPlayer: { ...game.blackPlayer!, rating: 688 },
+      whitePlayer: { ...game.whitePlayer!, rating: 712 },
+      blackStartingRating: 700,
+      whiteStartingRating: 700,
+      blackRatingDelta: -12,
+      whiteRatingDelta: 12,
+    }} />)
+
+    expect(screen.getAllByText('700')).toHaveLength(2)
+    expect(screen.queryByText('688')).not.toBeInTheDocument()
+    expect(screen.queryByText('712')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Black player: Noir, rating 700')).toBeVisible()
+    expect(screen.getByLabelText('White player: Blanca, rating 700')).toBeVisible()
+  })
+
   it('shows cancelled audit details without a misleading delta or management menu', () => {
     render(<GameCard game={{
       ...game,

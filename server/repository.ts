@@ -27,6 +27,8 @@ export interface JoinedChessGame extends ChessGame {
   canCancel: boolean;
   blackPlayer: Player | null;
   whitePlayer: Player | null;
+  blackStartingRating: number | null;
+  whiteStartingRating: number | null;
   blackRatingDelta: number | null;
   whiteRatingDelta: number | null;
 }
@@ -296,6 +298,8 @@ export class ChessRepository {
         END AS canCancel,
         black.name AS blackPlayerName, black.rating AS blackPlayerRating,
         white.name AS whitePlayerName, white.rating AS whitePlayerRating,
+        COALESCE(blackEvent.previousRating, black.rating) AS blackStartingRating,
+        COALESCE(whiteEvent.previousRating, white.rating) AS whiteStartingRating,
         blackEvent.delta AS blackRatingDelta,
         whiteEvent.delta AS whiteRatingDelta
       FROM ChessGame AS g
@@ -315,6 +319,8 @@ export class ChessRepository {
         blackPlayerRating: number | null;
         whitePlayerName: string | null;
         whitePlayerRating: number | null;
+        blackStartingRating: number | null;
+        whiteStartingRating: number | null;
         blackRatingDelta: number | null;
         whiteRatingDelta: number | null;
         canCancel: number;
@@ -330,6 +336,8 @@ export class ChessRepository {
         cancelledAt: value.cancelledAt,
         cancellationReason: value.cancellationReason,
         canCancel: value.canCancel === 1,
+        blackStartingRating: value.blackStartingRating,
+        whiteStartingRating: value.whiteStartingRating,
         blackRatingDelta: value.blackRatingDelta,
         whiteRatingDelta: value.whiteRatingDelta,
         blackPlayer: value.blackPlayerId === null

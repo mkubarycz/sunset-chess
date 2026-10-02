@@ -64,6 +64,8 @@ function profileGameToGameCard(
     whitePlayerId: playerIsBlack ? opponent.id : player.id,
     blackPlayer: playerIsBlack ? player : opponent,
     whitePlayer: playerIsBlack ? opponent : player,
+    blackStartingRating: playerIsBlack ? game.ratingBefore : game.opponent.rating - game.opponent.delta,
+    whiteStartingRating: playerIsBlack ? game.opponent.rating - game.opponent.delta : game.ratingBefore,
     blackRatingDelta: playerIsBlack ? game.delta : game.opponent.delta,
     whiteRatingDelta: playerIsBlack ? game.opponent.delta : game.delta,
   }

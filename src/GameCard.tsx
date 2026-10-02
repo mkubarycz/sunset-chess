@@ -13,6 +13,8 @@ export interface OngoingGame {
   cancelledAt?: string | null
   cancellationReason?: string | null
   canCancel?: boolean
+  blackStartingRating?: number | null
+  whiteStartingRating?: number | null
   blackRatingDelta?: number | null
   whiteRatingDelta?: number | null
   blackPlayer: { id: number; name: string; rating: number } | null
@@ -54,6 +56,7 @@ function MiniBoard() {
 function PlayerSide({
   side,
   player,
+  startingRating,
   result,
   ratingDelta,
   cancelled,
@@ -62,6 +65,7 @@ function PlayerSide({
 }: {
   side: 'black' | 'white'
   player: OngoingGame['blackPlayer']
+  startingRating?: number | null
   result: OngoingGame['result']
   ratingDelta?: number | null
   cancelled: boolean
@@ -72,14 +76,15 @@ function PlayerSide({
   const isDraw = result === '1/2-1/2'
   const outcome = result ? isDraw ? 'D' : isWinner ? 'W' : 'L' : null
   const label = side === 'black' ? 'Black' : 'White'
+  const displayedRating = startingRating ?? player?.rating
   return (
     <div
       className={`player-side table-player-side ${side}-side${isWinner ? ' winner' : ''}${isDraw ? ' draw' : ''}`}
-      aria-label={player ? `${label} player: ${player.name}, rating ${player.rating}` : `Waiting for ${label}`}
+      aria-label={player ? `${label} player: ${player.name}, rating ${displayedRating}` : `Waiting for ${label}`}
     >
       <span className="player-identity-line">
         <strong>{player?.name ?? `Waiting for ${label}`}</strong>
-        {player && <span className="player-rating">{player.rating}</span>}
+        {player && <span className="player-rating">{displayedRating}</span>}
       </span>
       {player && result && !cancelled && ratingDelta != null && (
         <span className={`rating-delta ${ratingDelta > 0 ? 'positive' : ratingDelta < 0 ? 'negative' : 'neutral'}`}>
@@ -355,7 +360,8 @@ export function GameCard({
         game.blackPlayer ? `${game.blackPlayer.name} plays black` : 'waiting for Black'
       }, ${game.whitePlayer ? `${game.whitePlayer.name} plays white` : 'waiting for White'}`}
     >
-      <PlayerSide side="black" player={game.blackPlayer} result={game.result}
+      <PlayerSide side="black" player={game.blackPlayer} startingRating={game.blackStartingRating}
+        result={game.result}
         ratingDelta={game.blackRatingDelta} cancelled={cancelled}
         tableNumber={game.tableNumber}
         onEdit={management && !cancelled && !game.result
@@ -380,7 +386,8 @@ export function GameCard({
           </div>}
         </div>}
       </div>
-      <PlayerSide side="white" player={game.whitePlayer} result={game.result}
+      <PlayerSide side="white" player={game.whitePlayer} startingRating={game.whiteStartingRating}
+        result={game.result}
         ratingDelta={game.whiteRatingDelta} cancelled={cancelled}
         tableNumber={game.tableNumber}
         onEdit={management && !cancelled && !game.result

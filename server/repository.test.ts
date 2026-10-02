@@ -503,6 +503,13 @@ describe('ChessRepository', () => {
     });
     expect(repository.getPlayer(1000).rating).toBe(684);
     expect(repository.getPlayer(1001).rating).toBe(716);
+    expect(repository.listJoinedGames('finished')).toMatchObject([{
+      id: game.id,
+      blackPlayer: { id: 1000, rating: 684 },
+      whitePlayer: { id: 1001, rating: 716 },
+      blackStartingRating: 700,
+      whiteStartingRating: 700,
+    }]);
     expect(() => repository.finalizeGame(game.id, '0-1')).toThrow(ConflictError);
     expect(repository.deleteGame(game.id).cancelledAt).not.toBeNull();
     expect(repository.getPlayer(1000).rating).toBe(700);

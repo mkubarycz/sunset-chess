@@ -87,7 +87,7 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
   details, a high-contrast table badge over the board, and automatic refresh
   about every two seconds
 - Twenty most recently completed games with compact W/L/D plus signed Elo
-  changes and current player Elo
+  changes and each player's Elo at the beginning of that game
 - Successful QR check-ins optimistically promote the assigned table to the
   rail's left edge, then animate a decorative identity token from the detected
   QR label (reduced-motion users receive only a stationary highlight)
