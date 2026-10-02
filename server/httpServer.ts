@@ -3,10 +3,13 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { extname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { DatabaseSync } from 'node:sqlite';
+import { z } from 'zod';
+import { sunsetChessContract } from './data-contract/index.js';
 import { checkDatabase } from './database.js';
-import { DomainError } from './errors.js';
+import { DomainError, ValidationError } from './errors.js';
 import { createMcpServer } from './mcp.js';
 import type { ChessRepository } from './repository.js';
+import { ResourceService } from './resources.js';
 
 const mimeTypes: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
@@ -116,6 +119,7 @@ export function createSunsetServer(
   db: DatabaseSync,
   publicDirectory = resolve(process.cwd(), 'dist'),
 ) {
+  const resources = new ResourceService(repository);
   return createServer(async (req, res) => {
     try {
       if (!allowedHostAuthority(req.headers.host) || !allowedOriginValue(req.headers.origin)) {
@@ -127,6 +131,44 @@ export function createSunsetServer(
         if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed.' });
         checkDatabase(db);
         return sendJson(res, 200, { ok: true, service: 'sunset-chess', database: 'available' });
+      }
+      if (url.pathname === '/api/contract' || url.pathname === '/.well-known/sunset-chess-contract') {
+        if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed.' });
+        return sendJson(res, 200, sunsetChessContract);
+      }
+      const resourceMatch = url.pathname.match(/^\/api\/resources\/([^/]+)(?:\/([^/]+))?$/);
+      if (resourceMatch) {
+        const kind = decodeURIComponent(resourceMatch[1]);
+        const id = resourceMatch[2] === undefined ? undefined : decodeURIComponent(resourceMatch[2]);
+        if (req.method === 'GET') {
+          if (id !== undefined) return sendJson(res, 200, { resource: resources.get(kind, id) });
+          const numberParameter = (name: string): number | undefined => {
+            const value = url.searchParams.get(name);
+            if (value === null) return undefined;
+            if (!/^\d+$/.test(value)) throw new ValidationError(`${name} must be a positive integer.`);
+            return Number(value);
+          };
+          return sendJson(res, 200, {
+            resources: resources.query(kind, {
+              limit: numberParameter('limit'),
+              eventId: numberParameter('eventId'),
+              playerId: numberParameter('playerId'),
+            }),
+          });
+        }
+        if (req.method === 'POST' && id === undefined) {
+          const created = resources.create(kind, await parseJson(req, 16_384));
+          return sendJson(res, 201, created);
+        }
+        if (req.method === 'PATCH' && id !== undefined) {
+          return sendJson(res, 200, {
+            resource: resources.update(kind, id, await parseJson(req, 16_384)),
+          });
+        }
+        if (req.method === 'DELETE' && id !== undefined) {
+          return sendJson(res, 200, { resource: resources.delete(kind, id) });
+        }
+        return sendJson(res, 405, { error: 'Method not allowed.' });
       }
       if (url.pathname === '/mcp') {
         if (req.method !== 'POST') return sendJson(res, 405, { error: 'MCP requires POST.' });
@@ -242,6 +284,13 @@ export function createSunsetServer(
             ),
           });
         } catch (error) {
+          if (error instanceof z.ZodError) {
+            return sendJson(res, 400, {
+              error: 'Resource input does not conform to the application contract.',
+              code: 'validation',
+              issues: error.issues,
+            });
+          }
           if (error instanceof DomainError) {
             return sendJson(res, 400, { error: error.message, code: error.code });
           }
@@ -262,7 +311,9 @@ export function createSunsetServer(
             });
           } catch (error) {
             if (error instanceof DomainError) {
-              return sendJson(res, error.code === 'not_found' ? 404 : error.code === 'conflict' ? 409 : 400, {
+              return sendJson(res, error.code === 'not_found' ? 404
+                : error.code === 'conflict' ? 409
+                  : error.code === 'capability_not_supported' ? 405 : 400, {
                 error: error.message,
                 code: error.code,
               });

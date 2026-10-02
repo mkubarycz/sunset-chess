@@ -533,16 +533,18 @@ automatic hardware zoom.
 
 The Node 22 server serves the built Vite SPA and stateless Streamable HTTP MCP
 on one port. SQLite defaults to `.data/sunset-chess.sqlite`; override it with
-`SUNSET_CHESS_DB_PATH`. The v6 schema uses STRICT `Player`, `ChessGame`, and
-`PlayerRatingEvent` tables,
-foreign keys with `ON DELETE RESTRICT`, and transactional `schema_migrations`.
-Every migrated game is ongoing. `ChessGame.tableNumber` is positive and unique
+`SUNSET_CHESS_DB_PATH`. Schema v10 physically migrates the legacy v9 tables to
+first-class STRICT resource tables: `PlayerResource`, `GameResource`,
+`ClubSessionResource`, `CheckInResource`, `RatingEventResource`, and
+`PairingCohortResource`. Foreign keys and transactional `schema_migrations`
+preserve v9 identities, games, sessions, rating history, cohorts, and constraints.
+`GameResource.tableNumber` is positive and unique
 among ongoing games; completed games retain their historical table number.
 `createdAt` records creation, `finishedAt` records finalization, and either or
 both sides may be empty only while ongoing. Cancelling an unfinished game
 deletes it. `cancelledAt` and optional `cancellationReason` preserve finished
 game cancellation as an auditable state.
-`ChessGame.result` is null while ongoing, or one of the standard PGN tokens
+`GameResource.result` is null while ongoing, or one of the standard PGN tokens
 `1-0`, `0-1`, and `1/2-1/2`. A non-null result is final and immutable through
 normal APIs.
 Database triggers prevent a player from occupying any side of more than one
@@ -554,7 +556,7 @@ operator-facing error identifies a duplicate player and requires the operator to
 back up the database and resolve every duplicate before restarting. Valid,
 non-conflicting legacy databases continue to migrate transactionally.
 
-`PlayerRatingEvent` is the append-only rating source of truth. Each row records
+`RatingEventResource` is the append-only rating source of truth. Each row records
 the player, optional game, previous/new rating, integer delta, ISO timestamp,
 and an explicit `baseline`, `game`, `migration`, or `compensation` reason; game and
 compensation events also
@@ -570,7 +572,7 @@ pairing, or profile recent games. A player may be deleted only while
 unreferenced by every game and represented by exactly one baseline rating event;
 cleanup deletes that baseline and the player in one transaction. Game references
 or any non-baseline history permanently block deletion.
-`Player.rating` remains a transactionally maintained projection
+`PlayerResource.rating` remains a transactionally maintained projection
 for compatibility and efficient game-card joins. Reads verify it against the
 latest ledger row (or 700 when no row exists) and fail explicitly on divergence.
 Migration replays completed games in `finishedAt`, then ID order using the same
@@ -591,7 +593,44 @@ prefers opponents with the same cumulative session record sign (positive,
 even, or negative), then the longest-waiting eligible opponent. If none is
 eligible, check-in reuses an empty table or creates a new one.
 
-MCP is published at <http://localhost:4175/mcp>. Tools are `player-list`,
+## Resource contract and adapters
+
+Sunset Chess 1.2 publishes a self-describing Zod application contract at
+`GET /api/contract` and `GET /.well-known/sunset-chess-contract`. The common
+resource envelope is `{ kind, metadata, spec, status, relationships }`. The
+contract describes every resource's JSON schemas, relationships, CRUD/query
+capabilities, constraints, lifecycle rules, effects, errors, and events.
+
+The source contract lives in `server/data-contract/`. Each resource owns a
+small `<resource>.ts` descriptor, while each supported generic method owns its
+input/output schemas and operation documentation in a discoverable
+`<resource>.<method>.ts` file. `server/data-contract/index.ts` is the small
+public assembler/export surface consumed by the runtime transports and tests.
+
+Generic HTTP operations are:
+
+- `GET /api/resources/:kind` with optional `limit`, `eventId`, and `playerId`
+  relationship filters;
+- `GET /api/resources/:kind/:id`;
+- `POST /api/resources/:kind`;
+- `PATCH /api/resources/:kind/:id`;
+- `DELETE /api/resources/:kind/:id`.
+
+MCP exposes the same model through `contract-discover`, `resource-query`,
+`resource-get`, `resource-create`, `resource-update`, and `resource-delete`.
+The existing UI-focused `/api` endpoints and named MCP tools remain compatibility
+adapters over the same repository behavior.
+
+`check-in` is a first-class immutable resource. Creating it atomically upserts
+the constrained 1000–2000 player identity, preserves or assigns the frozen
+session cohort, records attendance, and preserves or produces game/table
+placement. Its response includes player and game effect envelopes. A failed
+placement rolls the check-in, cohort assignment, player change, and game change
+back together. v9 stored attendance but not an immutable original placement;
+migration reconstructs active placements and explicitly marks older
+unrecoverable placement status as `migrated` instead of inventing history.
+
+MCP is published at <http://localhost:4175/mcp>. Compatibility tools are `player-list`,
 `player-get`, `player-create`, `player-upsert`, `player-name-update`,
 `player-check-in`, `player-delete`,
 `game-list`, `game-get`, `game-create`, `game-result-set`, `game-cancel`,
@@ -725,6 +764,8 @@ The Compose definition applies the same ownership labels, port mapping, and
 named volume expected by the Working Memory desktop launcher. Use this command
 instead of a manual `docker run`; an unlabeled container is intentionally
 rejected by the launcher. Container recreation and restart preserve the
-database. To reset it, stop/remove the container and explicitly remove
-`working-memory-sunset-chess-data` yourself; the application never deletes the
-volume automatically.
+database. The canonical deployment uses image `sunset-chess:1.2`, container
+`working-memory-sunset-chess`, claim and Compose project `sunset-chess`, port
+4175, and named volume `working-memory-sunset-chess-data`. To reset it,
+stop/remove the container and explicitly remove the volume yourself; the
+application never deletes the volume automatically.

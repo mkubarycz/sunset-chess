@@ -381,6 +381,91 @@ const migrations = [
       WHERE e.type = 'club-session';
     `,
   },
+  {
+    version: 10,
+    sql: `
+      ALTER TABLE Player RENAME TO PlayerResource;
+      ALTER TABLE ChessGame RENAME TO GameResource;
+      ALTER TABLE PlayerRatingEvent RENAME TO RatingEventResource;
+      ALTER TABLE ClubEvent RENAME TO ClubSessionResource;
+      ALTER TABLE ClubEventPairingCohort RENAME TO PairingCohortResource;
+      ALTER TABLE ClubEventPlayer RENAME TO CheckInResource_v9;
+
+      CREATE TABLE CheckInResource (
+        id INTEGER PRIMARY KEY,
+        eventId INTEGER REFERENCES ClubSessionResource(id) ON DELETE RESTRICT,
+        playerId INTEGER NOT NULL REFERENCES PlayerResource(id) ON DELETE RESTRICT,
+        checkedInAt TEXT NOT NULL CHECK (
+          length(checkedInAt) >= 20 AND datetime(checkedInAt) IS NOT NULL
+        ),
+        gameId INTEGER REFERENCES GameResource(id) ON DELETE SET NULL,
+        placement TEXT CHECK (
+          placement IS NULL OR placement IN ('paired', 'waiting', 'already-checked-in')
+        ),
+        side TEXT CHECK (side IS NULL OR side IN ('black', 'white')),
+        CHECK (
+          (placement IS NULL AND side IS NULL)
+          OR (placement IS NOT NULL AND side IS NOT NULL)
+        )
+      ) STRICT;
+      CREATE UNIQUE INDEX CheckInResource_session_player
+      ON CheckInResource(eventId, playerId) WHERE eventId IS NOT NULL;
+      CREATE UNIQUE INDEX CheckInResource_standalone_game_player
+      ON CheckInResource(gameId, playerId) WHERE eventId IS NULL;
+      CREATE INDEX CheckInResource_player ON CheckInResource(playerId, eventId);
+      INSERT INTO CheckInResource(eventId, playerId, checkedInAt)
+      SELECT eventId, playerId, checkedInAt FROM CheckInResource_v9;
+      UPDATE CheckInResource
+      SET
+        gameId = (
+          SELECT g.id FROM GameResource AS g
+          WHERE g.eventId = CheckInResource.eventId
+            AND g.result IS NULL AND g.cancelledAt IS NULL
+            AND (g.blackPlayerId = CheckInResource.playerId
+              OR g.whitePlayerId = CheckInResource.playerId)
+          ORDER BY g.id LIMIT 1
+        ),
+        placement = (
+          SELECT CASE
+            WHEN g.blackPlayerId IS NOT NULL AND g.whitePlayerId IS NOT NULL THEN 'paired'
+            ELSE 'waiting'
+          END
+          FROM GameResource AS g
+          WHERE g.eventId = CheckInResource.eventId
+            AND g.result IS NULL AND g.cancelledAt IS NULL
+            AND (g.blackPlayerId = CheckInResource.playerId
+              OR g.whitePlayerId = CheckInResource.playerId)
+          ORDER BY g.id LIMIT 1
+        ),
+        side = (
+          SELECT CASE WHEN g.blackPlayerId = CheckInResource.playerId THEN 'black' ELSE 'white' END
+          FROM GameResource AS g
+          WHERE g.eventId = CheckInResource.eventId
+            AND g.result IS NULL AND g.cancelledAt IS NULL
+            AND (g.blackPlayerId = CheckInResource.playerId
+              OR g.whitePlayerId = CheckInResource.playerId)
+          ORDER BY g.id LIMIT 1
+        )
+      WHERE EXISTS (
+        SELECT 1 FROM GameResource AS g
+        WHERE g.eventId = CheckInResource.eventId
+          AND g.result IS NULL AND g.cancelledAt IS NULL
+          AND (g.blackPlayerId = CheckInResource.playerId
+            OR g.whitePlayerId = CheckInResource.playerId)
+      );
+      DROP TABLE CheckInResource_v9;
+
+      DROP INDEX IF EXISTS ClubEvent_one_active_session;
+      CREATE UNIQUE INDEX ClubSessionResource_one_active
+      ON ClubSessionResource(active) WHERE active = 1;
+      DROP INDEX IF EXISTS ChessGame_event_status;
+      CREATE INDEX GameResource_session_status
+      ON GameResource(eventId, result, cancelledAt, tableNumber);
+      DROP INDEX IF EXISTS ClubEventPairingCohort_lookup;
+      CREATE INDEX PairingCohortResource_lookup
+      ON PairingCohortResource(eventId, cohort, snapshotRating DESC, playerId);
+    `,
+  },
 ] as const;
 
 function backfillRatingLedger(db: DatabaseSync, recordedAt: string): void {
@@ -444,8 +529,17 @@ function backfillRatingLedger(db: DatabaseSync, recordedAt: string): void {
 }
 
 function assertUniqueGameParticipation(db: DatabaseSync): void {
+  const gameTable = db.prepare(`
+    SELECT CASE
+      WHEN EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ChessGame')
+        THEN 'ChessGame'
+      WHEN EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'GameResource')
+        THEN 'GameResource'
+    END AS name
+  `).get() as { name?: 'ChessGame' | 'GameResource' };
+  if (!gameTable.name) return;
   const columns = new Set(
-    (db.prepare('PRAGMA table_info(ChessGame)').all() as Array<{ name: string }>)
+    (db.prepare(`PRAGMA table_info(${gameTable.name})`).all() as Array<{ name: string }>)
       .map((column) => column.name),
   );
   const activeGamePredicate = [
@@ -457,10 +551,10 @@ function assertUniqueGameParticipation(db: DatabaseSync): void {
   const duplicate = db.prepare(`
     SELECT playerId, COUNT(*) AS appearances
     FROM (
-      SELECT blackPlayerId AS playerId FROM ChessGame
+      SELECT blackPlayerId AS playerId FROM ${gameTable.name}
       WHERE blackPlayerId IS NOT NULL ${activeGamePredicate}
       UNION ALL
-      SELECT whitePlayerId AS playerId FROM ChessGame
+      SELECT whitePlayerId AS playerId FROM ${gameTable.name}
       WHERE whitePlayerId IS NOT NULL ${activeGamePredicate}
     )
     GROUP BY playerId

@@ -80,6 +80,131 @@ async function fixture() {
 }
 
 describe('Sunset Chess HTTP and MCP', () => {
+  it('discovers one contract and exposes conforming generic resources over HTTP and MCP', async () => {
+    const app = await fixture();
+    const base = `http://127.0.0.1:${app.port}`;
+    const contract = await (await fetch(`${base}/api/contract`)).json() as {
+      application: { version: string };
+      resources: Record<string, {
+        schemas: {
+          createInput: { properties: Record<string, unknown> } | null;
+          updateInput: { properties: Record<string, unknown> } | null;
+        };
+      }>;
+    };
+    expect(contract.application.version).toBe('1.2.0');
+    expect(contract.resources).toHaveProperty('check-in');
+    expect(Object.keys(contract.resources.game.schemas.createInput?.properties ?? {}).sort())
+      .toEqual(['blackPlayerId', 'eventId', 'whitePlayerId']);
+    expect(Object.keys(contract.resources.game.schemas.updateInput?.properties ?? {}).sort())
+      .toEqual(['blackPlayerId', 'cancel', 'cancellationReason', 'result', 'whitePlayerId']);
+    expect(Object.keys(
+      contract.resources['club-session'].schemas.createInput?.properties ?? {},
+    ).sort()).toEqual(['name', 'pairingMode']);
+
+    const sessionResponse = await fetch(`${base}/api/resources/club-session`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Contract Client Session',
+        pairingMode: 'club-session-pairing-1',
+      }),
+    });
+    expect(sessionResponse.status).toBe(201);
+    expect(await sessionResponse.json()).toMatchObject({
+      resource: {
+        kind: 'club-session',
+        spec: {
+          name: 'Contract Client Session',
+          pairingMode: 'club-session-pairing-1',
+        },
+      },
+    });
+    const unsupportedSession = await fetch(`${base}/api/resources/club-session`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Unsupported Session',
+        pairingMode: 'club-session-pairing-1',
+        unsupported: true,
+      }),
+    });
+    const unsupportedSessionBody = await unsupportedSession.json();
+    expect({
+      status: unsupportedSession.status,
+      body: unsupportedSessionBody,
+    }).toMatchObject({
+      status: 400,
+      body: { code: 'validation' },
+    });
+
+    const createdResponse = await fetch(`${base}/api/resources/player`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 1000, name: 'HTTP Resource Player' }),
+    });
+    expect(createdResponse.status).toBe(201);
+    expect(await createdResponse.json()).toMatchObject({
+      resource: {
+        kind: 'player',
+        metadata: { id: '1000' },
+        spec: { name: 'HTTP Resource Player' },
+        status: { rating: 700 },
+        relationships: {},
+      },
+    });
+    expect(await (await fetch(`${base}/api/resources/player/1000`)).json())
+      .toMatchObject({ resource: { metadata: { id: '1000' } } });
+
+    const discovered = await app.client.callTool({ name: 'contract-discover', arguments: {} });
+    expect(discovered.structuredContent).toMatchObject({
+      application: { version: '1.2.0' },
+      resources: { player: expect.any(Object) },
+    });
+    const queried = await app.client.callTool({
+      name: 'resource-query',
+      arguments: { kind: 'player' },
+    });
+    expect(queried.structuredContent).toMatchObject({
+      resources: [{ kind: 'player', metadata: { id: '1000' } }],
+    });
+    await app.close();
+  });
+
+  it('rolls back a generic multi-field game update when the second seat duplicates the first', async () => {
+    const app = await fixture();
+    const base = `http://127.0.0.1:${app.port}`;
+    await fetch(`${base}/api/resources/player`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 1000, name: 'Alice' }),
+    });
+    const created = await (await fetch(`${base}/api/resources/game`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    })).json() as { resource: { metadata: { id: string } } };
+    const update = await fetch(`${base}/api/resources/game/${created.resource.metadata.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ blackPlayerId: 1000, whitePlayerId: 1000 }),
+    });
+    expect(update.status).toBe(400);
+    expect(await update.json()).toMatchObject({
+      code: 'validation',
+      error: 'A player cannot occupy both seats.',
+    });
+    expect(await (await fetch(
+      `${base}/api/resources/game/${created.resource.metadata.id}`,
+    )).json()).toMatchObject({
+      resource: {
+        relationships: { blackPlayer: null, whitePlayer: null },
+        status: { lifecycle: 'waiting', result: null },
+      },
+    });
+    await app.close();
+  });
+
   it('accepts exact IPv4/IPv6 loopback authorities and rejects malformed or remote values', () => {
     for (const authority of ['localhost', 'localhost:4175', '127.0.0.1:4175', '[::1]', '[::1]:4175']) {
       expect(allowedHostAuthority(authority)).toBe(true);
@@ -211,7 +336,7 @@ describe('Sunset Chess HTTP and MCP', () => {
     app.repository.upsertPlayer(1001, 'Bob');
     app.repository.upsertPlayer(1002, 'Black King');
     app.db.prepare(`
-      INSERT INTO ClubEventPlayer(eventId, playerId, checkedInAt) VALUES (?, ?, ?)
+      INSERT INTO CheckInResource(eventId, playerId, checkedInAt) VALUES (?, ?, ?)
     `).run(created.session.id, 1001, '2026-10-02T12:00:00.000Z');
     const seated = await fetch(`${base}/api/games/${emptyTable.game.id}/seats/white`, {
       method: 'PATCH',
@@ -384,11 +509,12 @@ describe('Sunset Chess HTTP and MCP', () => {
     const tools = await app.client.listTools();
     expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
       'club-session-close', 'club-session-create', 'club-session-list', 'club-session-name-update',
-      'club-session-pairing-mode-update',
+      'club-session-pairing-mode-update', 'contract-discover',
       'game-cancel', 'game-create', 'game-delete', 'game-get', 'game-list', 'game-result-set',
       'game-seat-update',
       'leaderboard-list', 'player-check-in', 'player-create', 'player-delete',
       'player-get', 'player-list', 'player-name-update', 'player-profile-get', 'player-upsert',
+      'resource-create', 'resource-delete', 'resource-get', 'resource-query', 'resource-update',
       'waiting-player-move',
     ]);
     expect(Object.fromEntries(tools.tools.map((tool) => [tool.name, tool.annotations]))).toMatchObject({

@@ -1,7 +1,9 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { sunsetChessContract } from './data-contract/index.js';
 import { DomainError } from './errors.js';
 import type { ChessRepository } from './repository.js';
+import { ResourceService } from './resources.js';
 
 const playerId = z.number().int().min(1000).max(2000);
 const gameId = z.number().int().positive();
@@ -19,6 +21,16 @@ function domainResult(action: () => unknown) {
   try {
     return result(action());
   } catch (error) {
+    if (error instanceof z.ZodError) {
+      const body = {
+        error: {
+          code: 'validation',
+          message: 'Resource input does not conform to the application contract.',
+          issues: error.issues,
+        },
+      };
+      return { ...result(body), isError: true };
+    }
     if (error instanceof DomainError) {
       const body = { error: { code: error.code, message: error.message } };
       return { ...result(body), isError: true };
@@ -28,7 +40,52 @@ function domainResult(action: () => unknown) {
 }
 
 export function createMcpServer(repository: ChessRepository): McpServer {
-  const server = new McpServer({ name: 'sunset-chess', version: '1.0.0' });
+  const server = new McpServer({ name: 'sunset-chess', version: '1.2.0' });
+  const resources = new ResourceService(repository);
+  server.registerTool('contract-discover', {
+    description: 'Discover the self-describing Sunset Chess application/resource contract, including schemas, relationships, capabilities, constraints, lifecycle rules, effects, errors, and events.',
+    inputSchema: {},
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async () => result(sunsetChessContract));
+  server.registerTool('resource-query', {
+    description: 'Query common-envelope resources by kind and supported relationship filters.',
+    inputSchema: {
+      kind: z.string(),
+      limit: z.number().int().min(1).max(200).optional(),
+      eventId: z.number().int().positive().optional(),
+      playerId: playerId.optional(),
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ kind, limit, eventId, playerId: queryPlayerId }) =>
+    domainResult(() => ({
+      resources: resources.query(kind, { limit, eventId, playerId: queryPlayerId }),
+    })));
+  server.registerTool('resource-get', {
+    description: 'Read one common-envelope resource by kind and stable identifier.',
+    inputSchema: { kind: z.string(), id: z.string().min(1) },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ kind, id }) => domainResult(() => ({ resource: resources.get(kind, id) })));
+  server.registerTool('resource-create', {
+    description: 'Create a resource through its declared domain operation and return atomic effects.',
+    inputSchema: { kind: z.string(), spec: z.record(z.string(), z.unknown()) },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  }, async ({ kind, spec }) => domainResult(() => resources.create(kind, spec)));
+  server.registerTool('resource-update', {
+    description: 'Update mutable resource specification through declared lifecycle rules.',
+    inputSchema: {
+      kind: z.string(),
+      id: z.string().min(1),
+      spec: z.record(z.string(), z.unknown()),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ kind, id, spec }) =>
+    domainResult(() => ({ resource: resources.update(kind, id, spec) })));
+  server.registerTool('resource-delete', {
+    description: 'Delete a resource only when its declared capability and lifecycle permit it.',
+    inputSchema: { kind: z.string(), id: z.string().min(1) },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  }, async ({ kind, id }) =>
+    domainResult(() => ({ resource: resources.delete(kind, id) })));
   server.registerTool('player-list', {
     description: 'List every player ordered by id.',
     inputSchema: {},

@@ -37,26 +37,28 @@ describe('ChessRepository', () => {
   it('backfills honest rating history and preserves inconsistent cached ratings', () => {
     const { db, path } = fixture();
     db.exec(`
-      INSERT INTO Player(id, name, rating) VALUES
+      INSERT INTO PlayerResource(id, name, rating) VALUES
         (1000, 'Alice', 684), (1001, 'Bob', 716), (1002, 'Manual', 950);
-      INSERT INTO ChessGame(
+      INSERT INTO GameResource(
         id, tableNumber, createdAt, finishedAt, blackPlayerId, whitePlayerId, result
       ) VALUES (
         1, 1, '2026-01-01T11:00:00.000Z', '2026-01-01T12:00:00.000Z',
         1000, 1001, '1-0'
       );
-      DROP TABLE PlayerRatingEvent;
-      DROP TABLE ClubEventPairingCohort;
-      DROP TABLE ClubEventPlayer;
-      DROP TABLE ClubEvent;
-      DELETE FROM schema_migrations WHERE version IN (5, 6, 7, 8, 9);
+      DROP TABLE RatingEventResource;
+      DROP TABLE PairingCohortResource;
+      DROP TABLE CheckInResource;
+      DROP TABLE ClubSessionResource;
+      ALTER TABLE PlayerResource RENAME TO Player;
+      ALTER TABLE GameResource RENAME TO ChessGame;
+      DELETE FROM schema_migrations WHERE version IN (5, 6, 7, 8, 9, 10);
     `);
     db.close();
 
     const migrated = openDatabase(path);
     expect(migrated.prepare(`
       SELECT playerId, gameId, previousRating, rating, delta, reason
-      FROM PlayerRatingEvent ORDER BY playerId, id
+      FROM RatingEventResource ORDER BY playerId, id
     `).all()).toEqual([
       { playerId: 1000, gameId: null, previousRating: 700, rating: 700, delta: 0, reason: 'baseline' },
       { playerId: 1000, gameId: 1, previousRating: 700, rating: 684, delta: -16, reason: 'game' },
@@ -65,7 +67,7 @@ describe('ChessRepository', () => {
       { playerId: 1002, gameId: null, previousRating: 950, rating: 950, delta: 0, reason: 'migration' },
     ]);
     const reopened = openDatabase(path);
-    expect(reopened.prepare('SELECT COUNT(*) AS count FROM PlayerRatingEvent').get())
+    expect(reopened.prepare('SELECT COUNT(*) AS count FROM RatingEventResource').get())
       .toEqual({ count: 5 });
     reopened.close();
     migrated.close();
@@ -106,7 +108,7 @@ describe('ChessRepository', () => {
         { reason: 'game', gameId: game.id, rating: 716 },
       ],
     });
-    db.prepare('UPDATE Player SET rating = 999 WHERE id = 1000').run();
+    db.prepare('UPDATE PlayerResource SET rating = 999 WHERE id = 1000').run();
     expect(() => repository.assertRatingProjectionIntegrity()).toThrow(
       'Rating projection divergence for player 1000',
     );
@@ -126,9 +128,9 @@ describe('ChessRepository', () => {
     ]);
     expect(persisted.getGame(game.id)).toEqual(game);
     expect(reopened.prepare('SELECT count(*) AS count FROM schema_migrations').get())
-      .toEqual({ count: 9 });
+      .toEqual({ count: 10 });
     expect(db.prepare('SELECT count(*) AS count FROM schema_migrations').get())
-      .toEqual({ count: 9 });
+      .toEqual({ count: 10 });
     reopened.close();
     db.close();
   });
@@ -160,20 +162,20 @@ describe('ChessRepository', () => {
 
     const migrated = openDatabase(path);
     expect(migrated.prepare(
-      'SELECT id, tableNumber, createdAt, blackPlayerId, whitePlayerId FROM ChessGame ORDER BY id',
+      'SELECT id, tableNumber, createdAt, blackPlayerId, whitePlayerId FROM GameResource ORDER BY id',
     ).all()).toEqual([
       { id: 8, tableNumber: 1, createdAt: expect.any(String), blackPlayerId: 1000, whitePlayerId: 1001 },
     ]);
     expect(() => migrated.exec(
-      'INSERT INTO ChessGame(tableNumber, blackPlayerId, whitePlayerId) VALUES (2, 1000, 1001)',
+      'INSERT INTO GameResource(tableNumber, blackPlayerId, whitePlayerId) VALUES (2, 1000, 1001)',
     )).toThrow();
     expect(() => migrated.exec(
-      'INSERT INTO ChessGame(tableNumber, blackPlayerId, whitePlayerId) VALUES (0, 1000, 1001)',
+      'INSERT INTO GameResource(tableNumber, blackPlayerId, whitePlayerId) VALUES (0, 1000, 1001)',
     )).toThrow();
     migrated.close();
     const reopened = openDatabase(path);
-    expect(reopened.prepare('SELECT count(*) AS count FROM ChessGame').get()).toEqual({ count: 1 });
-    expect(reopened.prepare('SELECT count(*) AS count FROM schema_migrations').get()).toEqual({ count: 9 });
+    expect(reopened.prepare('SELECT count(*) AS count FROM GameResource').get()).toEqual({ count: 1 });
+    expect(reopened.prepare('SELECT count(*) AS count FROM schema_migrations').get()).toEqual({ count: 10 });
     reopened.close();
   });
 
@@ -210,7 +212,7 @@ describe('ChessRepository', () => {
     const migrated = openDatabase(path);
     const rows = migrated.prepare(`
       SELECT id, tableNumber, createdAt, blackPlayerId, whitePlayerId
-      FROM ChessGame ORDER BY createdAt, id
+      FROM GameResource ORDER BY createdAt, id
     `).all() as Array<Record<string, unknown>>;
     expect(rows.map(({ id, tableNumber, blackPlayerId, whitePlayerId }) => ({
       id, tableNumber, blackPlayerId, whitePlayerId,
@@ -225,9 +227,9 @@ describe('ChessRepository', () => {
     expect(migrated.prepare(`
       SELECT playerId
       FROM (
-        SELECT blackPlayerId AS playerId FROM ChessGame WHERE blackPlayerId IS NOT NULL
+        SELECT blackPlayerId AS playerId FROM GameResource WHERE blackPlayerId IS NOT NULL
         UNION ALL
-        SELECT whitePlayerId FROM ChessGame WHERE whitePlayerId IS NOT NULL
+        SELECT whitePlayerId FROM GameResource WHERE whitePlayerId IS NOT NULL
       )
       GROUP BY playerId HAVING COUNT(*) > 1
     `).all()).toEqual([]);
@@ -343,7 +345,7 @@ describe('ChessRepository', () => {
     expect(repository.createPlayer('Next')).toEqual({ id: 1999, name: 'Next', rating: 700 });
     expect(limits).toEqual([1001, 999]);
 
-    const insert = db.prepare('INSERT OR IGNORE INTO Player(id, name) VALUES (?, ?)');
+    const insert = db.prepare('INSERT OR IGNORE INTO PlayerResource(id, name) VALUES (?, ?)');
     for (let id = 1000; id <= 2000; id += 1) insert.run(id, `P${id}`);
     expect(() => repository.createPlayer('Overflow')).toThrow(/No player IDs are available/);
     expect(repository.listPlayers()).toHaveLength(1001);
@@ -360,7 +362,7 @@ describe('ChessRepository', () => {
     const removable = repository.createPlayer('Removable');
     expect(repository.deletePlayer(removable.id)).toEqual(removable);
     expect(() => repository.getPlayer(removable.id)).toThrow(NotFoundError);
-    expect(db.prepare('SELECT COUNT(*) AS count FROM PlayerRatingEvent WHERE playerId = ?')
+    expect(db.prepare('SELECT COUNT(*) AS count FROM RatingEventResource WHERE playerId = ?')
       .get(removable.id)).toEqual({ count: 0 });
 
     const referenced = repository.createPlayer('Referenced');
@@ -368,18 +370,18 @@ describe('ChessRepository', () => {
     repository.createGame(referenced.id, opponent.id);
     expect(() => repository.deletePlayer(referenced.id)).toThrow(ConflictError);
     expect(repository.getPlayer(referenced.id)).toEqual(referenced);
-    expect(db.prepare('SELECT COUNT(*) AS count FROM PlayerRatingEvent WHERE playerId = ?')
+    expect(db.prepare('SELECT COUNT(*) AS count FROM RatingEventResource WHERE playerId = ?')
       .get(referenced.id)).toEqual({ count: 1 });
 
     const historical = repository.createPlayer('Historical');
     db.prepare(`
-      INSERT INTO PlayerRatingEvent(
+      INSERT INTO RatingEventResource(
         playerId, previousRating, rating, delta, recordedAt, reason
       ) VALUES (?, 700, 700, 0, ?, 'migration')
     `).run(historical.id, '2026-01-01T00:00:00.000Z');
     expect(() => repository.deletePlayer(historical.id)).toThrow(ConflictError);
     expect(repository.getPlayer(historical.id)).toEqual(historical);
-    expect(db.prepare('SELECT COUNT(*) AS count FROM PlayerRatingEvent WHERE playerId = ?')
+    expect(db.prepare('SELECT COUNT(*) AS count FROM RatingEventResource WHERE playerId = ?')
       .get(historical.id)).toEqual({ count: 2 });
     db.close();
   });
@@ -418,7 +420,7 @@ describe('ChessRepository', () => {
     repository.upsertPlayer(1003, 'Dave');
     repository.upsertPlayer(1004, 'Eve');
     db.exec(`
-      INSERT INTO ChessGame(tableNumber, createdAt, blackPlayerId, whitePlayerId)
+      INSERT INTO GameResource(tableNumber, createdAt, blackPlayerId, whitePlayerId)
       VALUES
         (2, '2026-01-03T00:00:00.000Z', 1003, NULL),
         (3, '2026-01-01T00:00:00.000Z', NULL, 1004);
@@ -597,7 +599,7 @@ describe('ChessRepository', () => {
     expect(session.pairingMode).toBe('club-session-pairing-1');
     expect(db.prepare(`
       SELECT cohort, GROUP_CONCAT(playerId, ',') AS players
-      FROM ClubEventPairingCohort WHERE eventId = ?
+      FROM PairingCohortResource WHERE eventId = ?
       GROUP BY cohort ORDER BY cohort
     `).all(session.id)).toEqual([
       { cohort: 'A', players: '1000,1001' },
@@ -615,7 +617,7 @@ describe('ChessRepository', () => {
     repository.upsertPlayer(1008, 'Late Player');
     repository.checkInPlayer({ id: 1008, name: 'Late Player' }, () => 0);
     expect(db.prepare(`
-      SELECT cohort FROM ClubEventPairingCohort WHERE eventId = ? AND playerId = 1008
+      SELECT cohort FROM PairingCohortResource WHERE eventId = ? AND playerId = 1008
     `).get(session.id)).toEqual({ cohort: 'A' });
     db.close();
   });
@@ -671,7 +673,7 @@ describe('ChessRepository', () => {
     const session = repository.createClubSession('Seat Options');
     const checkedInAt = '2026-10-02T12:00:00.000Z';
     const addMember = db.prepare(`
-      INSERT INTO ClubEventPlayer(eventId, playerId, checkedInAt) VALUES (?, ?, ?)
+      INSERT INTO CheckInResource(eventId, playerId, checkedInAt) VALUES (?, ?, ?)
     `);
     for (const id of [1000, 1001, 1002, 1003, 1005]) {
       addMember.run(session.id, id, checkedInAt);
@@ -788,23 +790,23 @@ describe('ChessRepository', () => {
     repository.upsertPlayer(1001, 'Bob');
     repository.upsertPlayer(1002, 'Carol');
     db.prepare(`
-      INSERT INTO ChessGame(tableNumber, createdAt, blackPlayerId, whitePlayerId)
+      INSERT INTO GameResource(tableNumber, createdAt, blackPlayerId, whitePlayerId)
       VALUES (1, '2026-01-01T00:00:00.000Z', 1000, NULL)
     `).run();
     expect(() => db.exec(`
-      INSERT INTO ChessGame(tableNumber, createdAt, blackPlayerId, whitePlayerId)
+      INSERT INTO GameResource(tableNumber, createdAt, blackPlayerId, whitePlayerId)
       VALUES (2, '2026-01-01T00:00:01.000Z', NULL, 1000)
     `)).toThrow(/already belongs/);
     expect(() => db.exec(`
-      INSERT INTO ChessGame(tableNumber, createdAt, blackPlayerId, whitePlayerId)
+      INSERT INTO GameResource(tableNumber, createdAt, blackPlayerId, whitePlayerId)
       VALUES (2, '2026-01-01T00:00:01.000Z', NULL, NULL)
     `)).not.toThrow();
     expect(() => db.exec(`
-      INSERT INTO ChessGame(tableNumber, createdAt, blackPlayerId, whitePlayerId)
+      INSERT INTO GameResource(tableNumber, createdAt, blackPlayerId, whitePlayerId)
       VALUES (2, '2026-01-01T00:00:01.000Z', 1001, 1001)
     `)).toThrow(/CHECK/);
     expect(() => db.exec(`
-      INSERT INTO ChessGame(tableNumber, createdAt, blackPlayerId, whitePlayerId)
+      INSERT INTO GameResource(tableNumber, createdAt, blackPlayerId, whitePlayerId)
       VALUES (3, '2026-01-01T00:00:01.000Z', 1999, NULL)
     `)).toThrow(/FOREIGN KEY/);
     db.close();
@@ -814,13 +816,13 @@ describe('ChessRepository', () => {
     const { db, repository, path } = fixture();
     repository.upsertPlayer(1000, 'Alice');
     db.exec(`
-      INSERT INTO ChessGame(
+      INSERT INTO GameResource(
         tableNumber, createdAt, blackPlayerId, cancelledAt, cancellationReason
       ) VALUES (
         1, '2026-01-01T00:00:00.000Z', 1000,
         '2026-01-01T01:00:00.000Z', 'legacy cancellation'
       );
-      INSERT INTO ChessGame(tableNumber, createdAt, blackPlayerId)
+      INSERT INTO GameResource(tableNumber, createdAt, blackPlayerId)
       VALUES (1, '2026-01-02T00:00:00.000Z', 1000);
     `);
     db.close();
@@ -850,7 +852,7 @@ describe('ChessRepository', () => {
       '1-0',
       () => { throw new Error('Idempotent finalization must not read the clock.'); },
     )).toEqual(finalized);
-    expect(db.prepare('SELECT COUNT(*) AS count FROM PlayerRatingEvent WHERE gameId = ?')
+    expect(db.prepare('SELECT COUNT(*) AS count FROM RatingEventResource WHERE gameId = ?')
       .get(game.id)).toEqual({ count: 2 });
     expect(repository.getPlayer(1000).rating).toBe(684);
     expect(repository.getPlayer(1001).rating).toBe(716);
@@ -903,7 +905,7 @@ describe('ChessRepository', () => {
     });
     expect(repository.updateGameSeat(game.id, 'black', 1002)).toEqual(assigned);
     expect(repository.getPlayer(1002).rating).toBe(700);
-    expect(db.prepare('SELECT COUNT(*) AS count FROM PlayerRatingEvent WHERE gameId = ?').get(game.id))
+    expect(db.prepare('SELECT COUNT(*) AS count FROM RatingEventResource WHERE gameId = ?').get(game.id))
       .toEqual({ count: 0 });
     expect(() => repository.updateGameSeat(game.id, 'white', 1002)).toThrow(ValidationError);
     const occupied = repository.createGame(1000, 1003);
@@ -916,7 +918,7 @@ describe('ChessRepository', () => {
     expect(repository.listJoinedGames('ongoing').map(({ id }) => id)).toEqual([game.id]);
     expect(() => repository.getGame(occupied.id)).toThrow(NotFoundError);
     expect(() => repository.cancelGame(occupied.id)).toThrow(NotFoundError);
-    expect(db.prepare('SELECT COUNT(*) AS count FROM PlayerRatingEvent WHERE gameId = ?').get(occupied.id))
+    expect(db.prepare('SELECT COUNT(*) AS count FROM RatingEventResource WHERE gameId = ?').get(occupied.id))
       .toEqual({ count: 0 });
     db.close();
   });
@@ -944,7 +946,7 @@ describe('ChessRepository', () => {
       ]);
     expect(repository.cancelGame(game.id).cancelledAt).toBe(cancelled.cancelledAt);
     expect(db.prepare(`
-      SELECT reason, COUNT(*) AS count FROM PlayerRatingEvent
+      SELECT reason, COUNT(*) AS count FROM RatingEventResource
       WHERE gameId = ? GROUP BY reason ORDER BY reason
     `).all(game.id)).toEqual([
       { reason: 'compensation', count: 2 },
@@ -973,7 +975,7 @@ describe('ChessRepository', () => {
     expect(() => repository.cancelGame(first.id)).toThrow(/Alice and Bob have played other games/);
     expect(repository.getGame(first.id).cancelledAt).toBeNull();
     expect(db.prepare(`
-      SELECT COUNT(*) AS count FROM PlayerRatingEvent WHERE gameId = ? AND reason = 'compensation'
+      SELECT COUNT(*) AS count FROM RatingEventResource WHERE gameId = ? AND reason = 'compensation'
     `).get(first.id)).toEqual({ count: 0 });
     db.close();
   });
@@ -1000,11 +1002,11 @@ describe('ChessRepository', () => {
       .toEqual([700, 700]);
 
     db.prepare(`
-      INSERT INTO PlayerRatingEvent(
+      INSERT INTO RatingEventResource(
         playerId, previousRating, rating, delta, recordedAt, reason
       ) VALUES (1006, 700, 900, 200, '2026-01-01T00:00:00.000Z', 'migration')
     `).run();
-    db.prepare('UPDATE Player SET rating = 900 WHERE id = 1006').run();
+    db.prepare('UPDATE PlayerResource SET rating = 900 WHERE id = 1006').run();
     finish(1006, 1007, '1-0');
     expect([repository.getPlayer(1006).rating, repository.getPlayer(1007).rating])
       .toEqual([876, 724]);

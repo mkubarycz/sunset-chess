@@ -1,14 +1,14 @@
 {
   "name": "sunset-chess",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build && tsc -p tsconfig.server.json",
     "start": "node --experimental-sqlite dist-server/index.js",
     "start:server": "tsx --experimental-sqlite server/index.ts",
-    "deploy:docker": "docker --context desktop-linux compose up --build --detach",
+    "deploy:docker": "docker compose --file compose.yaml up --build --detach",
     "lint": "eslint .",
     "test": "vitest run"
   },

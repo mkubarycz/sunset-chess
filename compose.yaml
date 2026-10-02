@@ -1,11 +1,15 @@
+name: sunset-chess
+
 services:
   sunset-chess:
     build: .
-    image: sunset-chess:local
+    image: sunset-chess:1.2
     container_name: working-memory-sunset-chess
+    restart: unless-stopped
     labels:
       com.kubarycz.working-memory.managed: "true"
       com.kubarycz.working-memory.claim: sunset-chess
+      com.kubarycz.working-memory.title: "Sunset Chess"
     ports:
       - "127.0.0.1:4175:4175"
     volumes:
