@@ -307,6 +307,7 @@ body {
   text-align: center;
   pointer-events: none;
 }
+.result-acknowledgement-draw { font-size: .78em; }
 .payload-label { position: absolute; z-index: 2; left: 0; top: 0; width: min(240px, calc(100% - 16px)); max-height: 58px; overflow: hidden; padding: 8px 10px; border: 1px solid var(--amber-bright); border-radius: var(--radius-sm); color: #17100b; background: rgba(255,246,229,.97); box-shadow: 0 5px 18px rgba(0,0,0,.45); font-size: .86rem; font-weight: 750; line-height: 1.35; overflow-wrap: anywhere; pointer-events: none; will-change: transform; }
 .payload-label.raw { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .76rem; }
 
@@ -425,6 +426,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .rating-delta.positive { color: var(--success); }
 .rating-delta.negative { color: var(--error); }
 .rating-delta.neutral { color: #aeb8bf; }
+.rating-delta.draw { color: var(--success); }
 .player-side strong { overflow-wrap: anywhere; }
 .player-rating { flex: 0 0 auto; font-size: .72em; font-weight: 750; opacity: .78; }
 .side-label { grid-row: 1 / span 2; align-self: center; font-size: .54rem; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }
@@ -438,7 +440,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .black-rank .mini-square { color: #160f1a; }
 .white-rank .mini-square { color: #fff8e9; text-shadow: 0 1px 1px rgba(0,0,0,.7); }
 .player-side.winner { box-shadow: inset 4px 0 var(--amber); }
-.player-side.draw { opacity: .9; }
+.player-side.draw { box-shadow: inset 4px 0 var(--success); }
 .game-management-dialog { width: min(460px, calc(100vw - 28px)); }
 .seat-management-dialog { width: min(680px, calc(100vw - 28px)); min-height: min(560px, calc(100dvh - 28px)); }
 .seat-scan-hint, .seat-scan-message { margin: 5px 0 0; color: var(--muted); }

@@ -93,6 +93,21 @@ describe('GameCard', () => {
     expect(screen.queryByText(/White player|Black player/)).not.toBeInTheDocument()
   })
 
+  it('presents both players equally in green for a draw', () => {
+    render(<GameCard game={{
+      ...game,
+      result: '1/2-1/2',
+      finishedAt: '2026-01-01T01:00:00.000Z',
+      blackRatingDelta: 2,
+      whiteRatingDelta: -2,
+    }} />)
+
+    expect(screen.getByText('D +2')).toHaveClass('draw')
+    expect(screen.getByText('D -2')).toHaveClass('draw')
+    expect(screen.getByLabelText('Black player: Noir, rating 700')).toHaveClass('draw')
+    expect(screen.getByLabelText('White player: Blanca, rating 700')).toHaveClass('draw')
+  })
+
   it('displays each player rating from the beginning of the game', () => {
     render(<GameCard game={{
       ...game,

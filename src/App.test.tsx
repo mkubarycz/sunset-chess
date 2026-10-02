@@ -1460,7 +1460,7 @@ describe('scanner and player producer', () => {
     for (let time = 10_150; time <= 12_450; time += 150) {
       await scanDetection(time, { data: payload, location })
     }
-    expect(await screen.findByText('Waiting for an opponent at Table 1')).toBeInTheDocument()
+    expect(await screen.findByText('Ada checks into Table 1. Waiting for an opponent.')).toBeInTheDocument()
     expect(checkInPlayer).toHaveBeenCalledTimes(1)
     await waitFor(() => expect(fetchGames).toHaveBeenCalledTimes(2))
     const ongoingGames = screen.getByRole('region', { name: 'Ongoing games', hidden: true })
@@ -1567,7 +1567,7 @@ describe('scanner and player producer', () => {
       now = 1_000 + elapsed
       await act(async () => camera.callbacks.shift()?.(now))
     }
-    expect(await screen.findByText('Waiting for an opponent at Table 1')).toBeInTheDocument()
+    expect(await screen.findByText('Ada checks into Table 1. Waiting for an opponent.')).toBeInTheDocument()
     expect(screen.getByTestId('camera-interaction-layer')).toHaveClass('is-visible')
     expect(animate).not.toHaveBeenCalled()
     vi.mocked(nativeDetector.detect).mockResolvedValue([])
@@ -1646,7 +1646,7 @@ describe('scanner and player producer', () => {
       now = 1_000 + elapsed
       await act(async () => camera.callbacks.shift()?.(now))
     }
-    expect(await screen.findByText('Waiting for an opponent at Table 1')).toBeInTheDocument()
+    expect(await screen.findByText('Ada checks into Table 1. Waiting for an opponent.')).toBeInTheDocument()
     expect(list.scrollTop).toBe(120)
     vi.mocked(nativeDetector.detect).mockResolvedValue([])
     for (let elapsed = 2_400; elapsed <= 5_000; elapsed += 100) {

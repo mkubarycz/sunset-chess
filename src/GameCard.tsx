@@ -87,7 +87,9 @@ function PlayerSide({
         {player && <span className="player-rating">{displayedRating}</span>}
       </span>
       {player && result && !cancelled && ratingDelta != null && (
-        <span className={`rating-delta ${ratingDelta > 0 ? 'positive' : ratingDelta < 0 ? 'negative' : 'neutral'}`}>
+        <span className={`rating-delta ${
+          isDraw ? 'draw' : ratingDelta > 0 ? 'positive' : ratingDelta < 0 ? 'negative' : 'neutral'
+        }`}>
           {outcome} {ratingDelta > 0 ? '+' : ''}{ratingDelta}
         </span>
       )}

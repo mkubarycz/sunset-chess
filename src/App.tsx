@@ -170,6 +170,7 @@ import {
 import {
   findAuthoritativeResult,
   formatResultAcknowledgement,
+  formatResultNotice,
   RESULT_ACKNOWLEDGEMENT_MS,
 } from './resultAcknowledgement'
 import './App.css'
@@ -696,7 +697,7 @@ export default function App({
           setPiecePresent(false)
         }
       }, resultAcknowledgementMs)
-      setCheckInNotice('Result recorded. Ratings updated.')
+      setCheckInNotice(formatResultNotice(authoritative))
       reentryLatchRef.current = blockReentryLatch()
       trackingRefs.current.clear()
       visualTrackerRef.current.clear()
@@ -781,13 +782,12 @@ export default function App({
     setCheckInNotice(`Checking in ${detectedPlayer.name}…`)
     void checkInPlayer(detectedPlayer, controller.signal).then((result) => {
       if (controller.signal.aborted || generation !== cameraGenerationRef.current) return
-      const side = result.side === 'black' ? 'Black' : 'White'
       if (result.status === 'paired') {
-        setCheckInNotice(
-          `${detectedPlayer.name} checked in — Table ${result.game.tableNumber}, ${side}`,
-        )
+        setCheckInNotice(`${detectedPlayer.name} checks into Table ${result.game.tableNumber}`)
       } else if (result.status === 'waiting') {
-        setCheckInNotice(`Waiting for an opponent at Table ${result.game.tableNumber}`)
+        setCheckInNotice(
+          `${detectedPlayer.name} checks into Table ${result.game.tableNumber}. Waiting for an opponent.`,
+        )
       } else {
         setCheckInNotice(
           `${detectedPlayer.name} is already checked in at Table ${result.game.tableNumber}`,
@@ -2966,7 +2966,13 @@ export default function App({
         )}
         {interactionVisible && resultAcknowledgement && (
           <p className="result-acknowledgement" role="status" aria-live="assertive">
-            {resultAcknowledgement}
+            {resultAcknowledgement.includes(' DRAW ')
+              ? <>
+                  {resultAcknowledgement.split(' DRAW ')[0]}{' '}
+                  <span className="result-acknowledgement-draw">DRAW</span>{' '}
+                  {resultAcknowledgement.split(' DRAW ')[1]}
+                </>
+              : resultAcknowledgement}
           </p>
         )}
         {interactionVisible && !resultAcknowledgement && !gameContext?.resultReady && <div className="scan-corners" aria-hidden="true" />}

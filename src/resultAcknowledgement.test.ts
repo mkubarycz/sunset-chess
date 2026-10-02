@@ -3,6 +3,7 @@ import type { OngoingGame } from './GameCard'
 import {
   findAuthoritativeResult,
   formatResultAcknowledgement,
+  formatResultNotice,
   RESULT_ACKNOWLEDGEMENT_MS,
 } from './resultAcknowledgement'
 
@@ -27,13 +28,19 @@ describe('result acknowledgement', () => {
     expect(formatResultAcknowledgement(completed()))
       .toBe('White Bishop 707(+14) def. Black Knight 698(-14)')
     expect(formatResultAcknowledgement(completed('1/2-1/2')))
-      .toBe('White Bishop 707(+2) drew Black Knight 698(-2)')
+      .toBe('White Bishop 707(+2) DRAW Black Knight 698(-2)')
     expect(formatResultAcknowledgement({
       ...completed('0-1'),
       whiteRatingDelta: -14,
       blackRatingDelta: 14,
     })).toBe('Black Knight 698(+14) def. White Bishop 707(-14)')
     expect(RESULT_ACKNOWLEDGEMENT_MS).toBe(3_000)
+  })
+
+  it('formats concise result activity messages', () => {
+    expect(formatResultNotice(completed())).toBe('White Bishop def. Black Knight')
+    expect(formatResultNotice(completed('1/2-1/2'))).toBe('White Bishop DRAW Black Knight')
+    expect(formatResultNotice(completed('0-1'))).toBe('Black Knight def. White Bishop')
   })
 
   it('prefers the returned authoritative game and otherwise uses the matching refresh only', () => {

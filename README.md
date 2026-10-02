@@ -76,6 +76,9 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
   acknowledgement, then the acknowledgement and camera fade together. The
   completed pair stays re-entry blocked, while a newly scanned player restores
   the camera and normal interaction immediately.
+- The green activity notice uses concise result and check-in summaries. Draw
+  acknowledgements use an emphasized `DRAW`, and completed draw cards give both
+  players the same green treatment.
 - Two unrelated detected players retain stable left/right ownership. Each lane
   independently shows its ongoing game card or enables its own check-in
   ActionZone; score reporting remains available only when both pieces belong to
