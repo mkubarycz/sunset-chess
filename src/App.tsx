@@ -79,6 +79,7 @@ import {
   updateHold,
   updateLaneBinding,
   updateReentryLatch,
+  REENTRY_DEBOUNCE_MS,
   RESULT_HOLD_RETENTION_MS,
   type ActionZone,
   type CheckInState,
@@ -172,6 +173,7 @@ import {
   formatResultAcknowledgement,
   formatResultNotice,
   RESULT_ACKNOWLEDGEMENT_MS,
+  type FormattedResultAcknowledgement,
 } from './resultAcknowledgement'
 import './App.css'
 
@@ -398,7 +400,8 @@ export default function App({
   const [gameContext, setGameContext] = useState<GameContext | null>(null)
   const [overlayMessage, setOverlayMessage] = useState('')
   const [independentLaneContexts, setIndependentLaneContexts] = useState<IndependentLaneContext[]>([])
-  const [resultAcknowledgement, setResultAcknowledgement] = useState('')
+  const [resultAcknowledgement, setResultAcknowledgement] =
+    useState<FormattedResultAcknowledgement | null>(null)
   const [resultCameraSuppressed, setResultCameraSuppressed] = useState(false)
   const [piecePresent, setPiecePresent] = useState(false)
   const [diagnosticUi, setDiagnosticUi] = useState<{
@@ -530,6 +533,8 @@ export default function App({
   const resultAcknowledgementTimerRef = useRef<number | null>(null)
   const resultAcknowledgementSequenceRef = useRef(0)
   const resultSuppressedPlayerIdsRef = useRef(new Set<number>())
+  const resultSuppressionAbsentSinceRef = useRef<number | null>(null)
+  const resultSuppressionReleaseEnabledRef = useRef(false)
   const gameContextRef = useRef<GameContext | null>(null)
   const resultHoldRef = useRef<HoldState>(emptyHoldState())
   const resultAssignmentRef = useRef<ResultAssignment | null>(null)
@@ -606,8 +611,10 @@ export default function App({
       window.clearTimeout(resultAcknowledgementTimerRef.current)
       resultAcknowledgementTimerRef.current = null
     }
-    setResultAcknowledgement('')
+    setResultAcknowledgement(null)
     resultSuppressedPlayerIdsRef.current.clear()
+    resultSuppressionAbsentSinceRef.current = null
+    resultSuppressionReleaseEnabledRef.current = false
     setResultCameraSuppressed(false)
   }, [])
 
@@ -681,6 +688,8 @@ export default function App({
         authoritative.blackPlayerId,
         authoritative.whitePlayerId,
       ].filter((playerId): playerId is number => playerId !== null))
+      resultSuppressionAbsentSinceRef.current = null
+      resultSuppressionReleaseEnabledRef.current = false
       const sequence = ++resultAcknowledgementSequenceRef.current
       if (resultAcknowledgementTimerRef.current !== null) {
         window.clearTimeout(resultAcknowledgementTimerRef.current)
@@ -689,7 +698,8 @@ export default function App({
       resultAcknowledgementTimerRef.current = window.setTimeout(() => {
         if (resultAcknowledgementSequenceRef.current !== sequence) return
         resultAcknowledgementTimerRef.current = null
-        setResultAcknowledgement('')
+        setResultAcknowledgement(null)
+        resultSuppressionReleaseEnabledRef.current = true
         const suppressCompletedPlayers = resultSuppressedPlayerIdsRef.current.size > 0
         setResultCameraSuppressed(suppressCompletedPlayers)
         if (suppressCompletedPlayers) {
@@ -1243,25 +1253,44 @@ export default function App({
     }))
     const presentPlayerIds = new Set(presentPlayerDetections.map(({ playerId }) => playerId))
     const freshPlayerIds = new Set(freshPlayerDetections.map(({ playerId }) => playerId))
-    const newIdentityAfterResult = [...freshPlayerIds].some(
+    let resultSuppressionActive = resultSuppressedPlayerIdsRef.current.size > 0
+    const suppressedPlayerPresent = [...presentPlayerIds].some(
+      (playerId) => resultSuppressedPlayerIdsRef.current.has(playerId),
+    )
+    if (resultSuppressionActive && suppressedPlayerPresent) {
+      resultSuppressionAbsentSinceRef.current = null
+    } else if (resultSuppressionActive && resultSuppressionReleaseEnabledRef.current) {
+      if (resultSuppressionAbsentSinceRef.current === null) {
+        resultSuppressionAbsentSinceRef.current = now
+      } else if (now - resultSuppressionAbsentSinceRef.current >= REENTRY_DEBOUNCE_MS) {
+        resultSuppressedPlayerIdsRef.current.clear()
+        resultSuppressionAbsentSinceRef.current = null
+        resultSuppressionReleaseEnabledRef.current = false
+        resultSuppressionActive = false
+        setResultCameraSuppressed(false)
+      }
+    }
+    const unsuppressedPlayerPresent = [...presentPlayerIds].some(
       (playerId) => !resultSuppressedPlayerIdsRef.current.has(playerId),
     )
-    if (resultSuppressedPlayerIdsRef.current.size > 0 && newIdentityAfterResult) {
-      resultSuppressedPlayerIdsRef.current.clear()
-      reentryLatchRef.current = openReentryLatch()
-      setResultCameraSuppressed(false)
+    if (resultSuppressionActive) {
+      setResultCameraSuppressed(!unsuppressedPlayerPresent)
     }
     const resultGeometryFreshPlayerIds = new Set(visible.flatMap(({
       detection, evidenceAgeMs,
     }) => {
       if (evidenceAgeMs > TRACKING_COAST_MS) return []
-      return resolvedPlayerDetection(detection).map(({ playerId }) => playerId)
+      return resolvedPlayerDetection(detection)
+        .map(({ playerId }) => playerId)
+        .filter((playerId) => !resultSuppressedPlayerIdsRef.current.has(playerId))
     }))
     const resultActionAnchorFreshPlayerIds = new Set(visible.flatMap(({
       detection, ageMs,
     }) => {
       if (ageMs > TRACKING_ACTION_ANCHOR_MAX_AGE_MS) return []
-      return resolvedPlayerDetection(detection).map(({ playerId }) => playerId)
+      return resolvedPlayerDetection(detection)
+        .map(({ playerId }) => playerId)
+        .filter((playerId) => !resultSuppressedPlayerIdsRef.current.has(playerId))
     }))
     const detectedPiece = visible.some(({ detection }) => isPlayerPiece(detection.data))
     const presence = updatePresenceHysteresis(
@@ -1291,17 +1320,29 @@ export default function App({
       now,
     )
     if (previousReentryLatch.blocked && !reentryLatchRef.current.blocked) {
-      resultSuppressedPlayerIdsRef.current.clear()
-      setResultCameraSuppressed(false)
+      if (resultSuppressedPlayerIdsRef.current.size === 0) setResultCameraSuppressed(false)
     }
-    const tooManyPlayers = freshPlayerDetections.length > 2
+    const eligibleFreshPlayerIds = new Set(
+      [...freshPlayerIds].filter(
+        (playerId) => !resultSuppressedPlayerIdsRef.current.has(playerId),
+      ),
+    )
+    const eligibleHoldQualifiedPlayerIds = new Set(
+      [...holdQualifiedPlayerIds].filter(
+        (playerId) => !resultSuppressedPlayerIdsRef.current.has(playerId),
+      ),
+    )
+    const tooManyPlayers = eligibleFreshPlayerIds.size > 2
     const relevantPresentPlayers = presentPlayerDetections.length <= 2
       ? presentPlayerDetections
       : presentPlayerDetections.filter(({ playerId }) =>
         freshPlayerIds.has(playerId) || laneBindingRef.current.lanes[playerId] !== undefined)
+    const eligiblePresentPlayers = relevantPresentPlayers.filter(
+      ({ playerId }) => !resultSuppressedPlayerIdsRef.current.has(playerId),
+    )
     const laneBinding = updateLaneBinding(
       laneBindingRef.current,
-      tooManyPlayers ? [] : relevantPresentPlayers,
+      tooManyPlayers ? [] : eligiblePresentPlayers,
       width,
     )
     laneBindingRef.current = laneBinding.state
@@ -1310,9 +1351,11 @@ export default function App({
       resultAssignmentRef.current = null
       resultAuthorityRef.current = emptyResultAuthorityUpdate()
     }
-    const interactionPlayers = reentryLatchRef.current.blocked || tooManyPlayers
+    const interactionPlayers = tooManyPlayers
       ? []
-      : relevantPresentPlayers
+      : reentryLatchRef.current.blocked && !resultSuppressionActive
+        ? []
+        : eligiblePresentPlayers
     const laneContexts = matchIndependentLaneContexts(
       interactionPlayers,
       gamesRef.current,
@@ -1342,15 +1385,17 @@ export default function App({
       checkInRequestRef.current.forEach((controller) => controller.abort())
       checkInRequestRef.current.clear()
     }
-    const blockedPlayerIds = reentryLatchRef.current.blocked
-      ? presentPlayerIds
-      : new Set<number>()
-    const checkInPlayers = relevantPresentPlayers
+    const blockedPlayerIds = resultSuppressionActive
+      ? new Set(resultSuppressedPlayerIdsRef.current)
+      : reentryLatchRef.current.blocked
+        ? presentPlayerIds
+        : new Set<number>()
+    const checkInPlayers = eligiblePresentPlayers
     const checkInOptions = {
       enabled: !matchedGame && !tooManyPlayers,
       blockedPlayerIds,
       resetKey: String(cameraGenerationRef.current),
-      freshPlayerIds: holdQualifiedPlayerIds,
+      freshPlayerIds: eligibleHoldQualifiedPlayerIds,
     }
     const independentCheckIn = independentMode
       ? updateIndependentCheckInZones(
@@ -2966,13 +3011,11 @@ export default function App({
         )}
         {interactionVisible && resultAcknowledgement && (
           <p className="result-acknowledgement" role="status" aria-live="assertive">
-            {resultAcknowledgement.includes(' DRAW ')
-              ? <>
-                  {resultAcknowledgement.split(' DRAW ')[0]}{' '}
-                  <span className="result-acknowledgement-draw">DRAW</span>{' '}
-                  {resultAcknowledgement.split(' DRAW ')[1]}
-                </>
-              : resultAcknowledgement}
+            {resultAcknowledgement.first}{' '}
+            {resultAcknowledgement.connector === 'DRAW'
+              ? <span className="result-acknowledgement-draw">DRAW</span>
+              : 'def.'}
+            {' '}{resultAcknowledgement.second}
           </p>
         )}
         {interactionVisible && !resultAcknowledgement && !gameContext?.resultReady && <div className="scan-corners" aria-hidden="true" />}

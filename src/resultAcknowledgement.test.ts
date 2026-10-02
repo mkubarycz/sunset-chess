@@ -26,14 +26,26 @@ function completed(result: OngoingGame['result'] = '1-0'): OngoingGame {
 describe('result acknowledgement', () => {
   it('formats decisive and draw summaries from authoritative post-result values', () => {
     expect(formatResultAcknowledgement(completed()))
-      .toBe('White Bishop 707(+14) def. Black Knight 698(-14)')
+      .toEqual({
+        first: 'White Bishop 707(+14)',
+        connector: 'def.',
+        second: 'Black Knight 698(-14)',
+      })
     expect(formatResultAcknowledgement(completed('1/2-1/2')))
-      .toBe('White Bishop 707(+2) DRAW Black Knight 698(-2)')
+      .toEqual({
+        first: 'White Bishop 707(+2)',
+        connector: 'DRAW',
+        second: 'Black Knight 698(-2)',
+      })
     expect(formatResultAcknowledgement({
       ...completed('0-1'),
       whiteRatingDelta: -14,
       blackRatingDelta: 14,
-    })).toBe('Black Knight 698(+14) def. White Bishop 707(-14)')
+    })).toEqual({
+      first: 'Black Knight 698(+14)',
+      connector: 'def.',
+      second: 'White Bishop 707(-14)',
+    })
     expect(RESULT_ACKNOWLEDGEMENT_MS).toBe(3_000)
   })
 
@@ -41,6 +53,17 @@ describe('result acknowledgement', () => {
     expect(formatResultNotice(completed())).toBe('White Bishop def. Black Knight')
     expect(formatResultNotice(completed('1/2-1/2'))).toBe('White Bishop DRAW Black Knight')
     expect(formatResultNotice(completed('0-1'))).toBe('Black Knight def. White Bishop')
+  })
+
+  it('preserves player names containing the draw connector text', () => {
+    expect(formatResultAcknowledgement({
+      ...completed(),
+      whitePlayer: { id: 1, name: 'A DRAW B DRAW C', rating: 707 },
+    })).toEqual({
+      first: 'A DRAW B DRAW C 707(+14)',
+      connector: 'def.',
+      second: 'Black Knight 698(-14)',
+    })
   })
 
   it('prefers the returned authoritative game and otherwise uses the matching refresh only', () => {

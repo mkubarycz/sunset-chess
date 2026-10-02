@@ -969,7 +969,27 @@ describe('scanner and player producer', () => {
     expect(checkInPlayer).not.toHaveBeenCalled()
     expect(await screen.findByText('White 714(+14) def. Black 686(-14)')).toBeInTheDocument()
     expect(screen.getByTestId('camera-interaction-layer')).toHaveClass('is-visible')
-    for (let index = 0; index < 23; index += 1) {
+    const completedPlayerDetection = {
+      rawValue: payload(1001, 'White'),
+      cornerPoints: [
+        { x: 40, y: 130 }, { x: 60, y: 130 },
+        { x: 60, y: 150 }, { x: 40, y: 150 },
+      ],
+    }
+    const newPlayerDetection = {
+      rawValue: payload(1002, 'New Player'),
+      cornerPoints: [
+        { x: 340, y: 130 }, { x: 360, y: 130 },
+        { x: 360, y: 150 }, { x: 340, y: 150 },
+      ],
+    }
+    detections = [completedPlayerDetection, newPlayerDetection]
+    for (let index = 0; index < 2; index += 1) {
+      now += 100
+      await act(async () => camera.callbacks.shift()?.(now))
+    }
+    detections = [completedPlayerDetection]
+    for (let index = 0; index < 10; index += 1) {
       now += 100
       await act(async () => camera.callbacks.shift()?.(now))
     }
@@ -977,26 +997,33 @@ describe('scanner and player producer', () => {
     expect(checkInPlayer).not.toHaveBeenCalled()
     await waitFor(() =>
       expect(screen.queryByText('White 714(+14) def. Black 686(-14)'))
-        .not.toBeInTheDocument())
-    expect(screen.getByTestId('camera-interaction-layer')).toHaveClass('is-hidden')
-
-    detections = [{
-      rawValue: payload(1002, 'New Player'),
-      cornerPoints: [
-        { x: 340, y: 130 }, { x: 360, y: 130 },
-        { x: 360, y: 150 }, { x: 340, y: 150 },
-      ],
-    }]
+          .not.toBeInTheDocument())
+    detections = [completedPlayerDetection, newPlayerDetection]
     for (let index = 0; index < 2; index += 1) {
       now += 100
       await act(async () => camera.callbacks.shift()?.(now))
     }
     expect(screen.getByTestId('camera-interaction-layer')).toHaveClass('is-visible')
+    detections = [completedPlayerDetection]
+    for (let index = 0; index < 23; index += 1) {
+      now += 100
+      await act(async () => camera.callbacks.shift()?.(now))
+    }
+    expect(checkInPlayer).not.toHaveBeenCalledWith(
+      expect.objectContaining({ playerId: 1001 }),
+      expect.any(AbortSignal),
+    )
+
+    detections = [completedPlayerDetection, newPlayerDetection]
     for (let index = 0; index < 23; index += 1) {
       now += 100
       await act(async () => camera.callbacks.shift()?.(now))
     }
     await waitFor(() => expect(checkInPlayer).toHaveBeenCalledTimes(1))
+    expect(checkInPlayer).toHaveBeenCalledWith(
+      expect.objectContaining({ playerId: 1002 }),
+      expect.any(AbortSignal),
+    )
   })
 
   it('keeps two asynchronously resolved compact identities distinct and submits Draw + Draw', async () => {

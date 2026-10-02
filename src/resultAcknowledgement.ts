@@ -2,11 +2,17 @@ import type { OngoingGame } from './GameCard'
 
 export const RESULT_ACKNOWLEDGEMENT_MS = 3_000
 
+export interface FormattedResultAcknowledgement {
+  first: string
+  connector: 'def.' | 'DRAW'
+  second: string
+}
+
 function signed(value: number): string {
   return `${value >= 0 ? '+' : ''}${value}`
 }
 
-export function formatResultAcknowledgement(game: OngoingGame): string {
+export function formatResultAcknowledgement(game: OngoingGame): FormattedResultAcknowledgement {
   const white = game.whitePlayer
   const black = game.blackPlayer
   const whiteDelta = game.whiteRatingDelta
@@ -16,10 +22,12 @@ export function formatResultAcknowledgement(game: OngoingGame): string {
   }
   const whiteText = `${white.name} ${white.rating}(${signed(whiteDelta)})`
   const blackText = `${black.name} ${black.rating}(${signed(blackDelta)})`
-  if (game.result === '1/2-1/2') return `${whiteText} DRAW ${blackText}`
+  if (game.result === '1/2-1/2') {
+    return { first: whiteText, connector: 'DRAW', second: blackText }
+  }
   return game.result === '1-0'
-    ? `${whiteText} def. ${blackText}`
-    : `${blackText} def. ${whiteText}`
+    ? { first: whiteText, connector: 'def.', second: blackText }
+    : { first: blackText, connector: 'def.', second: whiteText }
 }
 
 export function formatResultNotice(game: OngoingGame): string {
