@@ -6,6 +6,8 @@ export const PlayerCreateInputSchema = z.object({
   id: z.number().int().min(1000).max(2000).optional()
     .describe('Optional known QR identity; omitted allocates an available ID.'),
   name: z.string().trim().min(1).max(80).describe('Player display name.'),
+  scanningIdentifier: z.string().min(1).max(2048).nullable().optional()
+    .describe('Optional QR scanning identifier; null falls back to the player ID.'),
 }).strict().describe('Generic player creation input.');
 export const PlayerPostOutputSchema = createOutputSchema();
 

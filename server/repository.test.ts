@@ -23,6 +23,38 @@ afterEach(() => {
 });
 
 describe('ChessRepository', () => {
+  it('resolves effective scanning identifiers and atomically transfers collisions', () => {
+    const { repository } = fixture();
+    repository.upsertPlayer(1000, 'Alice');
+    repository.upsertPlayer(1001, 'Bob');
+
+    expect(repository.getPlayerByScanningIdentifier('1000')).toMatchObject({
+      id: 1000,
+      scanningIdentifier: null,
+    });
+    expect(repository.assignPlayerScanningIdentifier(1000, 'club-card-a').player)
+      .toMatchObject({ id: 1000, scanningIdentifier: 'club-card-a' });
+    expect(() => repository.getPlayerByScanningIdentifier('1000')).toThrow('No player');
+    expect(repository.getPlayerByScanningIdentifier('club-card-a').id).toBe(1000);
+
+    expect(() => repository.assignPlayerScanningIdentifier(1001, 'club-card-a'))
+      .toThrow('already assigned to Alice');
+    const transferred = repository.assignPlayerScanningIdentifier(1001, 'club-card-a', true);
+    expect(transferred.player).toMatchObject({ id: 1001, scanningIdentifier: 'club-card-a' });
+    expect(transferred.previousOwner).toMatchObject({ id: 1000, scanningIdentifier: '1001' });
+    expect(repository.getPlayerByScanningIdentifier('club-card-a').id).toBe(1001);
+    expect(repository.getPlayerByScanningIdentifier('1001').id).toBe(1000);
+  });
+
+  it('prevents a new player ID from colliding with an explicit scanning identifier', () => {
+    const { repository } = fixture();
+    repository.upsertPlayer(1000, 'Alice');
+    repository.assignPlayerScanningIdentifier(1000, '1001');
+    expect(() => repository.upsertPlayer(1001, 'Bob')).toThrow(
+      'already used as a scanning identifier',
+    );
+  });
+
   it('renames a player without changing ID, Elo, or baseline deletion eligibility', () => {
     const { repository } = fixture();
     const created = repository.upsertPlayer(1000, 'Alice');
@@ -30,7 +62,9 @@ describe('ChessRepository', () => {
       ...created,
       name: 'Alicia',
     });
-    expect(repository.listPlayers()).toEqual([{ id: 1000, name: 'Alicia', rating: 700 }]);
+    expect(repository.listPlayers()).toEqual([{
+      id: 1000, name: 'Alicia', rating: 700, scanningIdentifier: null,
+    }]);
     expect(repository.deletePlayer(1000).name).toBe('Alicia');
     expect(() => repository.updatePlayerName(1000, 'Nobody')).toThrow('was not found');
   });
@@ -123,14 +157,14 @@ describe('ChessRepository', () => {
     const reopened = openDatabase(path);
     const persisted = new ChessRepository(reopened);
     expect(persisted.listPlayers()).toEqual([
-      { id: 1000, name: 'Alice', rating: 700 },
-      { id: 1001, name: 'Bob', rating: 700 },
+      { id: 1000, name: 'Alice', rating: 700, scanningIdentifier: null },
+      { id: 1001, name: 'Bob', rating: 700, scanningIdentifier: null },
     ]);
     expect(persisted.getGame(game.id)).toEqual(game);
     expect(reopened.prepare('SELECT count(*) AS count FROM schema_migrations').get())
-      .toEqual({ count: 10 });
+      .toEqual({ count: 11 });
     expect(db.prepare('SELECT count(*) AS count FROM schema_migrations').get())
-      .toEqual({ count: 10 });
+      .toEqual({ count: 11 });
     reopened.close();
     db.close();
   });
@@ -175,7 +209,7 @@ describe('ChessRepository', () => {
     migrated.close();
     const reopened = openDatabase(path);
     expect(reopened.prepare('SELECT count(*) AS count FROM GameResource').get()).toEqual({ count: 1 });
-    expect(reopened.prepare('SELECT count(*) AS count FROM schema_migrations').get()).toEqual({ count: 10 });
+    expect(reopened.prepare('SELECT count(*) AS count FROM schema_migrations').get()).toEqual({ count: 11 });
     reopened.close();
   });
 
@@ -339,10 +373,14 @@ describe('ChessRepository', () => {
       limits.push(limit);
       return limit - 1;
     });
-    expect(repository.createPlayer('  Last  ')).toEqual({ id: 2000, name: 'Last', rating: 700 });
+    expect(repository.createPlayer('  Last  ')).toEqual({
+      id: 2000, name: 'Last', rating: 700, scanningIdentifier: null,
+    });
     expect(limits).toEqual([1001]);
     repository.upsertPlayer(1500, 'Taken');
-    expect(repository.createPlayer('Next')).toEqual({ id: 1999, name: 'Next', rating: 700 });
+    expect(repository.createPlayer('Next')).toEqual({
+      id: 1999, name: 'Next', rating: 700, scanningIdentifier: null,
+    });
     expect(limits).toEqual([1001, 999]);
 
     const insert = db.prepare('INSERT OR IGNORE INTO PlayerResource(id, name) VALUES (?, ?)');
@@ -353,7 +391,7 @@ describe('ChessRepository', () => {
 
     const low = fixture();
     expect(new ChessRepository(low.db, () => 0).createPlayer('First'))
-      .toEqual({ id: 1000, name: 'First', rating: 700 });
+      .toEqual({ id: 1000, name: 'First', rating: 700, scanningIdentifier: null });
     low.db.close();
   });
 

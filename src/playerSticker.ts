@@ -4,6 +4,7 @@ import { encodePlayerReference } from './qrPayload'
 export interface StickerPlayer {
   id: number
   name: string
+  scanningIdentifier?: string | null
 }
 
 function escapeHtml(value: string): string {
@@ -25,7 +26,9 @@ export async function printRoundPlayerSticker(
   if (!printWindow) throw new Error('The print window was blocked. Allow popups and try again.')
 
   try {
-    const qrDataUrl = await encodeQr(encodePlayerReference(player.id))
+    const qrDataUrl = await encodeQr(
+      player.scanningIdentifier ?? encodePlayerReference(player.id),
+    )
     const name = escapeHtml(player.name)
     printWindow.document.open()
     printWindow.document.write(`<!doctype html>

@@ -243,6 +243,13 @@ body {
 .action-zone.action-winner { border-color: var(--success); color: #dfffea; }
 .action-zone.action-draw { border-color: var(--draw); }
 .action-zone.action-loser { border-color: var(--error); color: #ffe1e1; }
+.action-zone.action-assign,
+.action-zone.action-transfer { border-color: var(--amber-bright); color: var(--ivory); }
+.action-zone.action-assign.status-holding,
+.action-zone.action-transfer.status-holding {
+  border-color: var(--success);
+  background: rgba(20, 73, 49, .86);
+}
 .action-zone.status-disabled.action-winner,
 .action-zone.status-disabled.action-draw,
 .action-zone.status-disabled.action-loser { border-color: #6f7880; color: #ccd2d6; }
@@ -556,7 +563,15 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .player-card-identity { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 16px; padding-right: 54px; }
 .player-edit-form { min-width: 0; margin: 0; }
 .player-edit-form input { width: 100%; min-width: 0; border: 1px solid #65717c; border-radius: var(--radius-sm); padding: 11px 12px; color: var(--ivory); background: var(--ink-950); font-size: 1.05rem; font-weight: 750; }
-.player-card-meta { margin: 0; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.player-card-meta {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+  margin: 0;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.player-card-meta span:last-child { color: var(--muted); font-size: .72rem; }
 .player-card-meta span { color: var(--muted); font-size: .78rem; font-weight: 800; }
 .player-save-status { min-height: 1em; margin: 5px 0 0; color: var(--muted); font-size: .68rem; }
 .player-card-section { margin-top: 22px; }
@@ -650,3 +665,22 @@ button:disabled { cursor: not-allowed; opacity: .5; }
   body[data-print-mode="sticker"] .qr-card h3,
   body[data-print-mode="sticker"] .qr-card p { display: none; }
 }
+.player-code-assignment {
+  position: absolute;
+  z-index: 8;
+  left: 50%;
+  bottom: clamp(2rem, 8vh, 6rem);
+  width: min(34rem, calc(100vw - 2rem));
+  transform: translateX(-50%);
+  padding: 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  box-shadow: 0 1rem 3rem rgb(0 0 0 / 35%);
+}
+
+.player-code-assignment h2 {
+  margin-top: 0;
+}
+
+.player-code-save-success { color: var(--success); }

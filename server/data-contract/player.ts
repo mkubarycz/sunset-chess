@@ -3,6 +3,8 @@ import type { ResourceDescriptor } from './types.js';
 
 export const PlayerSpecSchema = z.object({
   name: z.string().trim().min(1).max(80).describe('Player display name.'),
+  scanningIdentifier: z.string().min(1).max(2048).nullable()
+    .describe('QR scanning identifier; null falls back to the player resource ID.'),
 });
 
 export const PlayerStatusSchema = z.object({
@@ -14,7 +16,11 @@ export const playerResource: ResourceDescriptor = {
   spec: PlayerSpecSchema,
   status: PlayerStatusSchema,
   relationships: { ratingEvents: 'rating-event[]', checkIns: 'check-in[]', games: 'game[]' },
-  constraints: ['ID is an integer from 1000 through 2000.', 'Name is 1–80 trimmed characters.'],
+  constraints: [
+    'ID is an integer from 1000 through 2000.',
+    'Name is 1–80 trimmed characters.',
+    'A non-null scanning identifier is unique; null resolves to the player ID.',
+  ],
   lifecycle: [
     'Created with a baseline rating event.',
     'Deletable only before game or non-baseline rating history exists.',
@@ -22,7 +28,7 @@ export const playerResource: ResourceDescriptor = {
   effects: ['Create allocates an unused random ID when none is supplied.'],
   fields: {
     generated: ['metadata.id', 'metadata.createdAt', 'status.rating'],
-    mutable: ['spec.name'],
+    mutable: ['spec.name', 'spec.scanningIdentifier'],
     immutable: [],
   },
 };

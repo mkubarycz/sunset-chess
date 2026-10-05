@@ -16,6 +16,7 @@ import {
   resultZoneRect,
   screenLane,
   shareOngoingGame,
+  transferZoneRect,
   updateCheckInZones,
   updateHold,
   updateIndependentCheckInZones,
@@ -55,6 +56,23 @@ const player = (playerId: number, x: number, y = 150, name = `P${playerId}`): Pl
 })
 
 describe('generic ActionZone holds and lane assignment', () => {
+  it('places code-transfer confirmation in a bounded upper-right square', () => {
+    for (const [width, height] of [[960, 540], [400, 300], [320, 480]] as const) {
+      const zone = transferZoneRect(width, height)
+      expect(zone.width).toBe(zone.height)
+      expect(zone.x).toBeGreaterThan(width / 2)
+      expect(zone.y).toBeLessThan(height / 2)
+      expect(zone.x + zone.width).toBeLessThan(width)
+      expect(zone.y + zone.height).toBeLessThanOrEqual(height)
+    }
+    expect(transferZoneRect(960, 540)).toEqual({
+      x: 724.8,
+      y: 43.2,
+      width: 129.6,
+      height: 129.6,
+    })
+  })
+
   it('holds for exactly 1.5 seconds, completes once, and resets on assignment loss/change', () => {
     let update = updateHold(emptyHoldState(), 'a', 100)
     expect(update.progress).toBe(0)

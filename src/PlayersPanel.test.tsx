@@ -8,6 +8,7 @@ afterEach(() => vi.unstubAllGlobals())
 
 const player = {
   rank: 1, id: 1000, name: 'Alice', currentRating: 716,
+  scanningIdentifier: 'club-card-alice',
   gamesPlayed: 1, wins: 1, losses: 0, draws: 0, lastPlayedAt: '2026-01-02T12:00:00.000Z',
 }
 const profile = {
@@ -53,6 +54,7 @@ describe('PlayersPanel', () => {
     expect(dialog).toContainElement(screen.getByLabelText('Player name'))
     expect(within(dialog).queryByRole('heading', { name: /Edit Alice/ })).not.toBeInTheDocument()
     expect(within(dialog).getByText('#1000')).toBeVisible()
+    expect(within(dialog).getByText('Scan code: club-card-alice')).toBeVisible()
     const ongoingGames = screen.getByRole('region', { name: 'Ongoing games for Alice' })
     expect(ongoingGames.querySelectorAll('.game-card')).toHaveLength(1)
     expect(within(ongoingGames).getByRole('article', {
@@ -105,20 +107,20 @@ describe('PlayersPanel', () => {
     expect(within(strip).queryByText('Table 11')).not.toBeInTheDocument()
   })
 
-  it('supports keyboard gear-menu navigation, dismissal, printing, and focus restoration', async () => {
+  it('supports keyboard gear-menu navigation, scanning, and focus restoration', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true, json: async () => ({ players: [player] }),
     }))
-    const printSticker = vi.fn().mockResolvedValue(undefined)
-    render(<PlayersPanel refreshKey={0} onMutate={vi.fn()} printSticker={printSticker} />)
+    const onScanCode = vi.fn()
+    render(<PlayersPanel refreshKey={0} onMutate={vi.fn()} onScanCode={onScanCode} />)
     const trigger = await screen.findByRole('button', { name: 'Actions for Alice' })
     await userEvent.click(trigger)
     const menu = screen.getByRole('menu', { name: 'Actions for Alice' })
     await waitFor(() => expect(within(menu).getByRole('menuitem', { name: 'Edit' })).toHaveFocus())
     fireEvent.keyDown(menu, { key: 'ArrowDown' })
-    expect(within(menu).getByRole('menuitem', { name: 'Print sticker' })).toHaveFocus()
+    expect(within(menu).getByRole('menuitem', { name: 'Scan Code' })).toHaveFocus()
     await userEvent.keyboard('{Enter}')
-    expect(printSticker).toHaveBeenCalledWith(player)
+    expect(onScanCode).toHaveBeenCalledWith(player)
     await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
     await waitFor(() => expect(trigger).toHaveFocus())
 
@@ -204,14 +206,14 @@ describe('PlayersPanel', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 
-  it('announces sticker generation failures', async () => {
+  it('offers scanning from the player action menu', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true, json: async () => ({ players: [player] }),
     }))
-    render(<PlayersPanel refreshKey={0} onMutate={vi.fn()}
-      printSticker={vi.fn().mockRejectedValue(new Error('The print window was blocked.'))} />)
+    const onScanCode = vi.fn()
+    render(<PlayersPanel refreshKey={0} onMutate={vi.fn()} onScanCode={onScanCode} />)
     await userEvent.click(await screen.findByRole('button', { name: 'Actions for Alice' }))
-    await userEvent.click(screen.getByRole('menuitem', { name: 'Print sticker' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('blocked')
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Scan Code' }))
+    expect(onScanCode).toHaveBeenCalledWith(player)
   })
 })

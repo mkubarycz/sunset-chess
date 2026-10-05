@@ -422,11 +422,22 @@ New player QR codes contain only a compact, versioned uppercase alphanumeric
 reference such as `SC1:YA` for player 1234. The server persists the player and
 authoritatively allocates a collision-safe random available ID from 1000–2000
 before the browser creates or displays this QR. A persistence failure displays
-an error and no QR. Compact scans resolve the name through `GET /api/players/:id`;
+an error and no QR. Compact scans resolve the name through
+`GET /api/players/resolve?scanningIdentifier=...`;
 successful lookups are cached, concurrent lookups are deduplicated, stale camera
 generation requests are aborted/ignored, and unresolved IDs never check in with
 a blank or invented name. Distinct raw compact payloads remain distinct tracking
 identities while asynchronous lookups complete.
+
+Player records may have a unique scanning identifier independent of their
+database ID. A null identifier falls back to the player ID, so existing compact
+codes continue to work. The player card's **Scan Code** action opens the existing
+camera scanner and requires holding the scanned code in the upper-right
+confirmation zone before assigning it. If another player already owns that code,
+the confirmation names both players and transfers it through the same gesture.
+After confirmation, the scanner locks, acknowledges the save, and fades back to
+the still-open player card. Transfers swap effective codes without deleting or
+merging either record.
 
 Existing version-1 JSON player codes remain self-contained and compatible:
 
@@ -764,7 +775,7 @@ The Compose definition applies the same ownership labels, port mapping, and
 named volume expected by the Working Memory desktop launcher. Use this command
 instead of a manual `docker run`; an unlabeled container is intentionally
 rejected by the launcher. Container recreation and restart preserve the
-database. The canonical deployment uses image `sunset-chess:1.2`, container
+database. The canonical deployment uses image `sunset-chess:1.3`, container
 `working-memory-sunset-chess`, claim and Compose project `sunset-chess`, port
 4175, and named volume `working-memory-sunset-chess-data`. To reset it,
 stop/remove the container and explicitly remove the volume yourself; the

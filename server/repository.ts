@@ -7,6 +7,7 @@ export interface PlayerResource {
   id: number;
   name: string;
   rating: number;
+  scanningIdentifier: string | null;
 }
 export type Player = PlayerResource;
 
@@ -30,8 +31,8 @@ export type ChessGame = GameResource;
 
 export interface JoinedChessGame extends GameResource {
   canCancel: boolean;
-  blackPlayer: PlayerResource | null;
-  whitePlayer: PlayerResource | null;
+  blackPlayer: Omit<PlayerResource, 'scanningIdentifier'> | null;
+  whitePlayer: Omit<PlayerResource, 'scanningIdentifier'> | null;
   blackStartingRating: number | null;
   whiteStartingRating: number | null;
   blackRatingDelta: number | null;
@@ -55,6 +56,7 @@ export interface LeaderboardEntry {
   sessionWins: number;
   sessionLosses: number;
   sessionDraws: number;
+  scanningIdentifier: string | null;
 }
 
 export interface ClubSession {
@@ -156,8 +158,16 @@ function validatePlayerInput(id: number, rawName: string): string {
   if (!Number.isInteger(id) || id < 1000 || id > 2000) {
     throw new ValidationError('Player id must be between 1000 and 2000.');
   }
+
   if (!name || name.length > 80) throw new ValidationError('Player name must contain 1 to 80 characters.');
   return name;
+}
+
+function validateScanningIdentifier(value: string): string {
+  if (value.length < 1 || value.length > 2048) {
+    throw new ValidationError('Scanning identifier must contain 1 to 2048 characters.');
+  }
+  return value;
 }
 
 export class ChessRepository {
@@ -376,7 +386,7 @@ export class ChessRepository {
   listPlayers(): PlayerResource[] {
     this.assertRatingProjectionIntegrity();
     return this.db.prepare(`
-      SELECT p.id, p.name, COALESCE((
+      SELECT p.id, p.name, p.scanningIdentifier, COALESCE((
         SELECT rating FROM RatingEventResource
         WHERE playerId = p.id ORDER BY id DESC LIMIT 1
       ), 700) AS rating
@@ -421,7 +431,7 @@ export class ChessRepository {
 
   getPlayer(id: number): PlayerResource {
     const row = this.db.prepare(`
-      SELECT p.id, p.name, p.rating AS cachedRating, COALESCE((
+      SELECT p.id, p.name, p.scanningIdentifier, p.rating AS cachedRating, COALESCE((
         SELECT rating FROM RatingEventResource
         WHERE playerId = p.id ORDER BY id DESC LIMIT 1
       ), 700) AS rating
@@ -431,7 +441,100 @@ export class ChessRepository {
     if (row.cachedRating !== row.rating) {
       throw new Error(`Rating projection divergence for player ${id}: cache ${row.cachedRating}, ledger ${row.rating}.`);
     }
-    return { id: row.id, name: row.name, rating: row.rating };
+    return {
+      id: row.id,
+      name: row.name,
+      rating: row.rating,
+      scanningIdentifier: row.scanningIdentifier,
+    };
+  }
+
+  getPlayerByScanningIdentifier(scanningIdentifier: string): PlayerResource {
+    const identifier = validateScanningIdentifier(scanningIdentifier);
+    const row = this.db.prepare(`
+      SELECT id
+      FROM PlayerResource
+      WHERE scanningIdentifier = ?
+        OR (scanningIdentifier IS NULL AND CAST(id AS TEXT) = ?)
+      LIMIT 1
+    `).get(identifier, identifier) as { id: number } | undefined;
+    if (!row) {
+      throw new NotFoundError(`No player is assigned to scanning identifier ${identifier}.`);
+    }
+    return this.getPlayer(row.id);
+  }
+
+  assignPlayerScanningIdentifier(
+    id: number,
+    scanningIdentifier: string,
+    transfer = false,
+  ): { player: PlayerResource; previousOwner: PlayerResource | null } {
+    const identifier = validateScanningIdentifier(scanningIdentifier);
+    const player = this.getPlayer(id);
+    let previousOwner: PlayerResource | null = null;
+    try {
+      previousOwner = this.getPlayerByScanningIdentifier(identifier);
+    } catch (error) {
+      if (!(error instanceof NotFoundError)) throw error;
+    }
+
+    if (previousOwner?.id === id) return { player, previousOwner: null };
+    if (previousOwner && !transfer) {
+      throw new ConflictError(
+        `Scanning identifier is already assigned to ${previousOwner.name}.`,
+      );
+    }
+
+    const previousIdentifier = player.scanningIdentifier ?? String(player.id);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      if (previousOwner) {
+        const temporaryIdentifier = `transfer:${crypto.randomUUID()}`;
+        this.db.prepare(`
+          UPDATE PlayerResource SET scanningIdentifier = ? WHERE id = ?
+        `).run(temporaryIdentifier, previousOwner.id);
+        this.db.prepare(`
+          UPDATE PlayerResource SET scanningIdentifier = ? WHERE id = ?
+        `).run(identifier, id);
+        this.db.prepare(`
+          UPDATE PlayerResource SET scanningIdentifier = ? WHERE id = ?
+        `).run(previousIdentifier, previousOwner.id);
+      } else {
+        this.db.prepare(`
+          UPDATE PlayerResource SET scanningIdentifier = ? WHERE id = ?
+        `).run(identifier, id);
+      }
+      const updated = this.getPlayer(id);
+      const updatedPreviousOwner = previousOwner ? this.getPlayer(previousOwner.id) : null;
+      this.db.exec('COMMIT');
+      return { player: updated, previousOwner: updatedPreviousOwner };
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec('ROLLBACK');
+      if (sqliteMessage(error).includes('UNIQUE constraint failed')) {
+        throw new ConflictError('Scanning identifier is already assigned to another player.');
+      }
+      throw error;
+    }
+  }
+
+  clearPlayerScanningIdentifier(id: number): PlayerResource {
+    const player = this.getPlayer(id);
+    if (player.scanningIdentifier === null) return player;
+    let fallbackOwner: PlayerResource | null = null;
+    try {
+      fallbackOwner = this.getPlayerByScanningIdentifier(String(id));
+    } catch (error) {
+      if (!(error instanceof NotFoundError)) throw error;
+    }
+    if (fallbackOwner && fallbackOwner.id !== id) {
+      throw new ConflictError(
+        `Player ${id}'s fallback identifier is assigned to ${fallbackOwner.name}.`,
+      );
+    }
+    this.db.prepare(`
+      UPDATE PlayerResource SET scanningIdentifier = NULL WHERE id = ?
+    `).run(id);
+    return this.getPlayer(id);
   }
 
   assertRatingProjectionIntegrity(): void {
@@ -467,6 +570,12 @@ export class ChessRepository {
 
   upsertPlayer(id: number, rawName: string): PlayerResource {
     const name = validatePlayerInput(id, rawName);
+    const identifierOwner = this.db.prepare(`
+      SELECT id FROM PlayerResource WHERE scanningIdentifier = ?
+    `).get(String(id)) as { id: number } | undefined;
+    if (identifierOwner && identifierOwner.id !== id) {
+      throw new ConflictError(`Player ID ${id} is already used as a scanning identifier.`);
+    }
     this.db.exec('BEGIN IMMEDIATE');
     try {
       this.db.prepare(`
@@ -492,6 +601,12 @@ export class ChessRepository {
         this.db.prepare('SELECT id FROM PlayerResource WHERE id BETWEEN 1000 AND 2000').all()
           .map((row) => (row as { id: number }).id),
       );
+      for (const { scanningIdentifier } of this.db.prepare(`
+        SELECT scanningIdentifier FROM PlayerResource
+        WHERE scanningIdentifier GLOB '[0-9]*'
+      `).all() as unknown as Array<{ scanningIdentifier: string }>) {
+        if (/^\d+$/.test(scanningIdentifier)) used.add(Number(scanningIdentifier));
+      }
       const available = Array.from({ length: 1001 }, (_, index) => index + 1000)
         .filter((id) => !used.has(id));
       if (available.length === 0) {
@@ -506,7 +621,7 @@ export class ChessRepository {
       this.db.prepare('INSERT INTO PlayerResource(id, name) VALUES (?, ?)').run(id, name);
       this.ensureBaseline(id);
       this.db.exec('COMMIT');
-      return { id, name, rating: INITIAL_RATING };
+      return { id, name, rating: INITIAL_RATING, scanningIdentifier: null };
     } catch (error) {
       this.db.exec('ROLLBACK');
       throw error;
@@ -1370,7 +1485,7 @@ export class ChessRepository {
           GROUP BY p.id`;
       return this.db.prepare(`
         WITH records AS (
-          SELECT p.id, p.name, p.rating AS currentRating,
+          SELECT p.id, p.name, p.scanningIdentifier, p.rating AS currentRating,
             COUNT(g.id) AS gamesPlayed,
             SUM(CASE
               WHEN (g.whitePlayerId = p.id AND g.result = '1-0')

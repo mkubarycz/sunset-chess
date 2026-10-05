@@ -92,7 +92,7 @@ describe('Sunset Chess HTTP and MCP', () => {
         };
       }>;
     };
-    expect(contract.application.version).toBe('1.2.0');
+    expect(contract.application.version).toBe('1.3.0');
     expect(contract.resources).toHaveProperty('check-in');
     expect(Object.keys(contract.resources.game.schemas.createInput?.properties ?? {}).sort())
       .toEqual(['blackPlayerId', 'eventId', 'whitePlayerId']);
@@ -158,7 +158,7 @@ describe('Sunset Chess HTTP and MCP', () => {
 
     const discovered = await app.client.callTool({ name: 'contract-discover', arguments: {} });
     expect(discovered.structuredContent).toMatchObject({
-      application: { version: '1.2.0' },
+      application: { version: '1.3.0' },
       resources: { player: expect.any(Object) },
     });
     const queried = await app.client.callTool({
@@ -500,7 +500,58 @@ describe('Sunset Chess HTTP and MCP', () => {
       status: 'waiting',
       game: { tableNumber: 1 },
     });
-    expect(app.repository.getPlayer(1000)).toEqual({ id: 1000, name, rating: 700 });
+    expect(app.repository.getPlayer(1000)).toEqual({
+      id: 1000, name, rating: 700, scanningIdentifier: null,
+    });
+    await app.close();
+  });
+
+  it('resolves and transfers scanning identifiers without changing player IDs', async () => {
+    const app = await fixture();
+    app.repository.upsertPlayer(1000, 'Alice');
+    app.repository.upsertPlayer(1001, 'Bob');
+
+    const resolveCode = (identifier: string) => fetch(
+      `http://127.0.0.1:${app.port}/api/players/resolve?scanningIdentifier=${
+        encodeURIComponent(identifier)
+      }`,
+    );
+    expect(await (await resolveCode('1000')).json()).toMatchObject({
+      player: { id: 1000, name: 'Alice', scanningIdentifier: null },
+    });
+
+    const conflict = await fetch(
+      `http://127.0.0.1:${app.port}/api/players/1001/scanning-identifier`,
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ scanningIdentifier: '1000' }),
+      },
+    );
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toMatchObject({
+      existingPlayer: { id: 1000, name: 'Alice' },
+    });
+
+    const transfer = await fetch(
+      `http://127.0.0.1:${app.port}/api/players/1001/scanning-identifier`,
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ scanningIdentifier: '1000', transfer: true }),
+      },
+    );
+    expect(transfer.status).toBe(200);
+    expect(await transfer.json()).toMatchObject({
+      player: { id: 1001, name: 'Bob', scanningIdentifier: '1000' },
+      previousOwner: { id: 1000, name: 'Alice', scanningIdentifier: '1001' },
+    });
+    expect(await (await resolveCode('1000')).json()).toMatchObject({
+      player: { id: 1001, name: 'Bob' },
+    });
+    expect(await (await resolveCode('1001')).json()).toMatchObject({
+      player: { id: 1000, name: 'Alice' },
+    });
     await app.close();
   });
 
@@ -548,7 +599,9 @@ describe('Sunset Chess HTTP and MCP', () => {
       .toEqual(['blackPlayerId', 'whitePlayerId']);
     const aliceResult = await app.client.callTool({ name: 'player-create', arguments: { name: 'Alice' } });
     const alice = (aliceResult.structuredContent as { player: { id: number; name: string } }).player;
-    expect(alice).toEqual({ id: expect.any(Number), name: 'Alice', rating: 700 });
+    expect(alice).toEqual({
+      id: expect.any(Number), name: 'Alice', rating: 700, scanningIdentifier: null,
+    });
     await app.client.callTool({ name: 'player-upsert', arguments: { id: 1001, name: 'Bob' } });
     const created = await app.client.callTool({
       name: 'game-create',
@@ -581,7 +634,7 @@ describe('Sunset Chess HTTP and MCP', () => {
         whiteStartingRating: 700,
         blackRatingDelta: null,
         whiteRatingDelta: null,
-        blackPlayer: alice,
+        blackPlayer: { id: alice.id, name: 'Alice', rating: 700 },
         whitePlayer: { id: 1001, name: 'Bob', rating: 700 },
       }],
       recentGames: [],

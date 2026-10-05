@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { printRoundPlayerSticker } from './playerSticker'
 import { PlayerCardDialog, type LeaderboardEntry } from './PlayerCardDialog'
 
 async function responseBody(response: Response) {
@@ -14,11 +13,11 @@ async function responseBody(response: Response) {
 export function PlayersPanel({
   refreshKey,
   onMutate,
-  printSticker = printRoundPlayerSticker,
+  onScanCode,
 }: {
   refreshKey: number
   onMutate: () => void
-  printSticker?: (player: LeaderboardEntry) => Promise<void>
+  onScanCode?: (player: LeaderboardEntry) => void
 }) {
   const [players, setPlayers] = useState<LeaderboardEntry[]>([])
   const [listError, setListError] = useState('')
@@ -102,14 +101,10 @@ export function PlayersPanel({
     window.requestAnimationFrame(() => returnFocusRef.current?.focus())
   }
 
-  const doPrint = async (player: LeaderboardEntry) => {
+  const scanCode = (player: LeaderboardEntry) => {
     closeMenu()
     setListError('')
-    try {
-      await printSticker(player)
-    } catch (reason) {
-      setListError(reason instanceof Error ? reason.message : 'Could not generate the round sticker.')
-    }
+    onScanCode?.(player)
   }
 
   const onMenuKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -184,7 +179,7 @@ export function PlayersPanel({
         <div className="player-action-menu" role="menu" aria-label={`Actions for ${menuPlayer.name}`}
           ref={menuRef} style={menuPosition} onKeyDown={onMenuKeyDown}>
           <button type="button" role="menuitem" onClick={(event) => openEditor(menuPlayer, menuTriggerRefs.current.get(menuPlayer.id) ?? event.currentTarget)}>Edit</button>
-          <button type="button" role="menuitem" onClick={() => void doPrint(menuPlayer)}>Print sticker</button>
+          <button type="button" role="menuitem" onClick={() => scanCode(menuPlayer)}>Scan Code</button>
           <button type="button" role="menuitem" className="danger"
             onClick={(event) => openEditor(menuPlayer, menuTriggerRefs.current.get(menuPlayer.id) ?? event.currentTarget, true)}>Delete</button>
         </div>,
@@ -192,6 +187,7 @@ export function PlayersPanel({
       )}
       {selected && <PlayerCardDialog key={selected.id} player={selected} onClose={closeEditor}
         confirmDeleteInitially={confirmDeleteInitially}
+        onScanCode={onScanCode}
         onMutate={async () => {
           await refresh()
           onMutate()

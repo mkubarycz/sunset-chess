@@ -63,6 +63,7 @@ import {
 } from './cameraConfiguration'
 import {
   createResultZones,
+  detectionCenter,
   blockReentryLatch,
   emptyCheckInState,
   emptyLaneCheckInStates,
@@ -72,7 +73,9 @@ import {
   matchIndependentLaneContexts,
   matchGameContext,
   openReentryLatch,
+  pointInRect,
   shareOngoingGame,
+  transferZoneRect,
   updateCheckInZones,
   updateIndependentCheckInZones,
   updateHold,
@@ -149,6 +152,7 @@ import {
 } from './trackingTrail'
 import { encodeQrDataUrl } from './qrArtwork'
 import { Leaderboard } from './Leaderboard'
+import type { LeaderboardEntry } from './PlayerCardDialog'
 import { SunsetChessLogo } from './SunsetChessLogo'
 import { DashboardTabs } from './DashboardTabs'
 import { ModalDialog } from './ModalDialog'
@@ -253,10 +257,20 @@ async function defaultDeletePlayer(playerId: number, signal: AbortSignal): Promi
 }
 
 async function defaultResolvePlayer(playerId: number, signal: AbortSignal): Promise<PlayerPayload> {
-  const response = await fetch(`/api/players/${playerId}`, {
+  return defaultResolveScanningIdentifier(String(playerId), signal)
+}
+
+async function defaultResolveScanningIdentifier(
+  scanningIdentifier: string,
+  signal: AbortSignal,
+): Promise<PlayerPayload> {
+  const response = await fetch(
+    `/api/players/resolve?scanningIdentifier=${encodeURIComponent(scanningIdentifier)}`,
+    {
     signal,
     headers: { accept: 'application/json' },
-  })
+    },
+  )
   const body = await response.json() as { player?: { id: number; name: string }; error?: string }
   if (!response.ok || !body.player) {
     const error = new Error(body.error || `Player lookup failed (${response.status}).`) as Error & {
@@ -291,6 +305,10 @@ interface AppProps {
   createPlayer?: (name: string, signal: AbortSignal) => Promise<PlayerPayload>
   deletePlayer?: (playerId: number, signal: AbortSignal) => Promise<void>
   resolvePlayer?: (playerId: number, signal: AbortSignal) => Promise<PlayerPayload>
+  resolveScanningIdentifier?: (
+    scanningIdentifier: string,
+    signal: AbortSignal,
+  ) => Promise<PlayerPayload>
   fetchGames?: (signal: AbortSignal) => Promise<GameFeed | OngoingGame[]>
   createEmptyGame?: (signal: AbortSignal, eventId?: number) => Promise<OngoingGame>
   fetchSessions?: (signal: AbortSignal) => Promise<ClubSession[]>
@@ -340,6 +358,13 @@ type CheckInTransition = {
 function isPlayerPiece(data: string): boolean {
   const parsed = parseQrPayload(data)
   return parsed.kind === 'player' || parsed.kind === 'player-reference'
+}
+
+function scanningIdentifierFromQr(data: string): string {
+  const parsed = parseQrPayload(data)
+  if (parsed.kind === 'player') return String(parsed.player.playerId)
+  if (parsed.kind === 'player-reference') return String(parsed.reference.playerId)
+  return parsed.value
 }
 
 function actionZonesKey(zones: readonly ActionZone[]): string {
@@ -486,6 +511,7 @@ export default function App({
   createPlayer = defaultCreatePlayer,
   deletePlayer = defaultDeletePlayer,
   resolvePlayer = defaultResolvePlayer,
+  resolveScanningIdentifier = defaultResolveScanningIdentifier,
   fetchGames = defaultFetchGames,
   createEmptyGame = defaultCreateEmptyGame,
   fetchSessions = defaultFetchSessions,
@@ -544,6 +570,17 @@ export default function App({
   const [seatScanZones, setSeatScanZones] = useState<ActionZone[]>([])
   const [qualifiedSeatScan, setQualifiedSeatScan] =
     useState<AuthoritativePlayerScan | null>(null)
+  const [playerScanTarget, setPlayerScanTarget] = useState<LeaderboardEntry | null>(null)
+  const [playerScanCandidate, setPlayerScanCandidate] = useState<{
+    data: string
+    identifier: string
+    existingPlayer: { id: number; name: string } | null
+    lookupComplete: boolean
+  } | null>(null)
+  const [playerScanBusy, setPlayerScanBusy] = useState(false)
+  const [playerScanError, setPlayerScanError] = useState('')
+  const [playerScanSuccess, setPlayerScanSuccess] = useState('')
+  const [playerTransferZone, setPlayerTransferZone] = useState<ActionZone | null>(null)
   const [diagnosticUi, setDiagnosticUi] = useState<{
     phase: 'idle' | 'recording' | 'ready' | 'error'
     id: string
@@ -568,6 +605,12 @@ export default function App({
   const seatScanStateRef = useRef<CheckInState>(emptyCheckInState())
   const seatScanZonesRef = useRef<ActionZone[]>([])
   const qualifiedSeatScanRef = useRef<AuthoritativePlayerScan | null>(null)
+  const playerScanTargetRef = useRef<LeaderboardEntry | null>(null)
+  const playerScanCandidateRef = useRef<typeof playerScanCandidate>(null)
+  const playerTransferHoldRef = useRef<HoldState>(emptyHoldState())
+  const playerTransferZoneRef = useRef<ActionZone | null>(null)
+  const assignScannedPlayerCodeRef = useRef<() => void>(() => undefined)
+  const playerScanCompletingRef = useRef(false)
   const seatScanSequenceRef = useRef(0)
   const overlayRef = useRef<HTMLCanvasElement>(null)
   const captureRef = useRef<HTMLCanvasElement | null>(null)
@@ -662,9 +705,9 @@ export default function App({
   const nativePendingGenerationRef = useRef<number | null>(null)
   const qrRequestRef = useRef(0)
   const playerCreationRef = useRef<AbortController | null>(null)
-  const playerCacheRef = useRef(new Map<number, PlayerPayload>())
-  const playerLookupRef = useRef(new Map<number, AbortController>())
-  const playerLookupErrorRef = useRef(new Map<number, {
+  const playerCacheRef = useRef(new Map<string, PlayerPayload>())
+  const playerLookupRef = useRef(new Map<string, AbortController>())
+  const playerLookupErrorRef = useRef(new Map<string, {
     attempts: number
     message: string
     retryAt: number
@@ -1102,49 +1145,58 @@ export default function App({
     })
   }, [clearResultAcknowledgement, clearResultMode, fetchGames, finalizeGame, refreshGames, resultAcknowledgementMs])
 
-  const requestPlayerResolution = useCallback((playerId: number, generation: number) => {
-    const previousFailure = playerLookupErrorRef.current.get(playerId)
+  const requestPlayerResolution = useCallback((scanningIdentifier: string, generation: number) => {
+    const previousFailure = playerLookupErrorRef.current.get(scanningIdentifier)
     if (
-      playerCacheRef.current.has(playerId)
-      || playerLookupRef.current.has(playerId)
+      playerCacheRef.current.has(scanningIdentifier)
+      || playerLookupRef.current.has(scanningIdentifier)
       || (previousFailure && Date.now() < previousFailure.retryAt)
     ) return
     const controller = new AbortController()
     const attempt = (previousFailure?.attempts ?? 0) + 1
-    playerLookupRef.current.set(playerId, controller)
-    void resolvePlayer(playerId, controller.signal).then((resolved) => {
+    playerLookupRef.current.set(scanningIdentifier, controller)
+    const numericIdentifier = /^\d+$/.test(scanningIdentifier)
+      ? Number(scanningIdentifier)
+      : null
+    const resolution = numericIdentifier !== null
+      ? resolvePlayer(numericIdentifier, controller.signal)
+      : resolveScanningIdentifier(scanningIdentifier, controller.signal)
+    void resolution.then((resolved) => {
       if (
         controller.signal.aborted
         || generation !== cameraGenerationRef.current
-        || resolved.playerId !== playerId
       ) return
-      playerCacheRef.current.set(playerId, resolved)
-      playerLookupErrorRef.current.delete(playerId)
+      playerCacheRef.current.set(scanningIdentifier, resolved)
+      playerLookupErrorRef.current.delete(scanningIdentifier)
       if (playerLookupErrorRef.current.size === 0) setCheckInError(false)
       setCheckInNotice((current) =>
-        current.startsWith(`Player #${playerId} could not be resolved.`) ? '' : current)
+        current.includes('could not be resolved.') ? '' : current)
       setResolverRevision((value) => value + 1)
     }).catch((error) => {
       if (controller.signal.aborted || generation !== cameraGenerationRef.current) return
-      const message = error instanceof Error ? error.message : `Player #${playerId} could not be resolved.`
+      const message = error instanceof Error ? error.message : 'Scanned player could not be resolved.'
       const retryable = retryablePlayerLookupError(error)
       const cooldown = retryable
         ? Math.min(PLAYER_LOOKUP_RETRY_BASE_MS * (2 ** (attempt - 1)), PLAYER_LOOKUP_RETRY_MAX_MS)
         : Number.POSITIVE_INFINITY
-      playerLookupErrorRef.current.set(playerId, {
+      playerLookupErrorRef.current.set(scanningIdentifier, {
         attempts: attempt,
         message,
         retryAt: Date.now() + cooldown,
       })
       setCheckInError(true)
-      setCheckInNotice(`Player #${playerId} could not be resolved. ${message}`)
+      setCheckInNotice(
+        /^\d+$/.test(scanningIdentifier)
+          ? `Player #${scanningIdentifier} could not be resolved. ${message}`
+          : `Scanned player could not be resolved. ${message}`,
+      )
       setResolverRevision((value) => value + 1)
     }).finally(() => {
-      if (playerLookupRef.current.get(playerId) === controller) {
-        playerLookupRef.current.delete(playerId)
+      if (playerLookupRef.current.get(scanningIdentifier) === controller) {
+        playerLookupRef.current.delete(scanningIdentifier)
       }
     })
-  }, [resolvePlayer])
+  }, [resolvePlayer, resolveScanningIdentifier])
 
   const submitCheckIn = useCallback((
     detectedPlayer: PlayerPayload,
@@ -1607,14 +1659,98 @@ export default function App({
       }
     }
 
+    const scanTarget = playerScanTargetRef.current
+    const scanCandidate = playerScanCandidateRef.current
+    const transferOwner = scanCandidate?.existingPlayer
+    if (
+      scanTarget
+      && scanCandidate?.lookupComplete
+      && !playerScanCompletingRef.current
+    ) {
+      const rect = transferZoneRect(width, height)
+      const trackedCode = visible.find(({ detection }) => detection.data === scanCandidate.data)
+      const occupant = trackedCode
+        ? {
+            playerId: scanTarget.id,
+            name: scanTarget.name,
+            detection: trackedCode.detection,
+          }
+        : null
+      const qualified = Boolean(
+        trackedCode?.holdQualified
+        && pointInRect(detectionCenter(trackedCode.detection), rect),
+      )
+      const hold = updateHold(
+        playerTransferHoldRef.current,
+        `${scanTarget.id}:${scanCandidate.identifier}:transfer`,
+        now,
+        undefined,
+        { qualified, retentionMs: RESULT_HOLD_RETENTION_MS },
+      )
+      playerTransferHoldRef.current = hold.state
+      const transferZone: ActionZone = {
+        id: 'player-code-transfer',
+        action: transferOwner && transferOwner.id !== scanTarget.id ? 'transfer' : 'assign',
+        lane: 'right',
+        rect,
+        label: transferOwner && transferOwner.id !== scanTarget.id
+          ? 'Transfer Code'
+          : 'Assign Code',
+        instructions: transferOwner && transferOwner.id !== scanTarget.id
+          ? `Hold code here to transfer from ${transferOwner.name}`
+          : `Hold code here to confirm for ${scanTarget.name}`,
+        occupant,
+        status: hold.state.completed
+          ? 'complete'
+          : hold.paused ? 'paused' : qualified ? 'holding' : 'idle',
+        holdDurationMs: 1_500,
+        progress: hold.progress,
+        accessibility: {
+          label: transferOwner && transferOwner.id !== scanTarget.id
+            ? `Transfer code from ${transferOwner.name} to ${scanTarget.name}`
+            : `Assign code to ${scanTarget.name}`,
+          live: 'polite',
+        },
+        completion: {
+          completed: hold.state.completed,
+          resetKey: `${scanTarget.id}:${scanCandidate.identifier}`,
+        },
+      }
+      if (
+        !playerTransferZoneRef.current
+        || actionZonesKey([transferZone]) !== actionZonesKey([playerTransferZoneRef.current])
+      ) {
+        playerTransferZoneRef.current = transferZone
+        setPlayerTransferZone(transferZone)
+      }
+      const progress = actionProgressRefs.current.get(transferZone.id)
+      if (progress) {
+        progress.style.transform = `scaleX(${transferZone.progress})`
+        progress.setAttribute('aria-valuenow', String(Math.round(transferZone.progress * 100)))
+      }
+      if (hold.completedNow) queueMicrotask(() => assignScannedPlayerCodeRef.current())
+      cadenceRef.current.paints += visible.length > 0 ? 1 : 0
+      return
+    }
+    if (playerTransferZoneRef.current) {
+      playerTransferHoldRef.current = emptyHoldState()
+      playerTransferZoneRef.current = null
+      setPlayerTransferZone(null)
+    }
+    if (scanTarget) {
+      cadenceRef.current.paints += visible.length > 0 ? 1 : 0
+      return
+    }
+
     const resolvedPlayerDetection = (detection: QrDetection): PlayerDetection[] => {
       const parsed = parseQrPayload(detection.data)
       if (parsed.kind === 'player') return [{ ...parsed.player, detection }]
-      if (parsed.kind !== 'player-reference') return []
-      const playerId = parsed.reference.playerId
-      const cached = playerCacheRef.current.get(playerId)
+      const scanningIdentifier = parsed.kind === 'player-reference'
+        ? String(parsed.reference.playerId)
+        : parsed.value
+      const cached = playerCacheRef.current.get(scanningIdentifier)
       if (cached) return [{ ...cached, detection }]
-      requestPlayerResolution(playerId, cameraGenerationRef.current)
+      requestPlayerResolution(scanningIdentifier, cameraGenerationRef.current)
       return []
     }
     const presentPlayerDetections = visible.flatMap(({ detection }) =>
@@ -2956,7 +3092,7 @@ export default function App({
     if (presence.playerId === currentReference) {
       if (presence.leftAt !== null
         && Date.now() - presence.leftAt >= PLAYER_LOOKUP_REENTRY_RESET_MS) {
-        playerLookupErrorRef.current.delete(currentReference)
+        playerLookupErrorRef.current.delete(String(currentReference))
       }
       presence.leftAt = null
       return
@@ -2964,6 +3100,65 @@ export default function App({
     presence.playerId = currentReference
     presence.leftAt = null
   }, [remembered])
+
+  useEffect(() => {
+    playerScanTargetRef.current = playerScanTarget
+  }, [playerScanTarget])
+
+  useEffect(() => {
+    playerScanCandidateRef.current = playerScanCandidate
+    playerTransferHoldRef.current = emptyHoldState()
+    playerTransferZoneRef.current = null
+    setPlayerTransferZone(null)
+  }, [playerScanCandidate])
+
+  useEffect(() => {
+    if (!playerScanTarget || !remembered || playerScanCompletingRef.current) return
+    const data = remembered.detection.data
+    setPlayerScanCandidate((current) => current?.data === data
+      ? current
+      : {
+          data,
+          identifier: scanningIdentifierFromQr(data),
+          existingPlayer: null,
+          lookupComplete: false,
+        })
+    setPlayerScanError('')
+    setPlayerScanSuccess('')
+  }, [playerScanTarget, remembered])
+
+  useEffect(() => {
+    if (!playerScanCandidate || playerScanCandidate.lookupComplete) return
+    const controller = new AbortController()
+    void fetch(
+      `/api/players/resolve?scanningIdentifier=${
+        encodeURIComponent(playerScanCandidate.identifier)
+      }`,
+      { signal: controller.signal, headers: { accept: 'application/json' } },
+    ).then(async (response) => {
+      const body = await response.json() as {
+        player?: { id: number; name: string }
+        error?: string
+      }
+      if (response.status === 404) {
+        setPlayerScanCandidate((current) => current?.data === playerScanCandidate.data
+          ? { ...current, existingPlayer: null, lookupComplete: true }
+          : current)
+        return
+      }
+      if (!response.ok || !body.player) {
+        throw new Error(body.error || `Code lookup failed (${response.status}).`)
+      }
+      setPlayerScanCandidate((current) => current?.data === playerScanCandidate.data
+        ? { ...current, existingPlayer: body.player ?? null, lookupComplete: true }
+        : current)
+    }).catch((error) => {
+      if (!(error instanceof DOMException && error.name === 'AbortError')) {
+        setPlayerScanError(error instanceof Error ? error.message : 'Could not look up the scanned code.')
+      }
+    })
+    return () => controller.abort()
+  }, [playerScanCandidate])
 
   useEffect(() => {
     diagnosticMountedRef.current = true
@@ -2997,7 +3192,7 @@ export default function App({
       const url = await qrEncoder(encoded)
       if (controller.signal.aborted || request !== qrRequestRef.current) return
       displayed = true
-      playerCacheRef.current.set(next.playerId, next)
+      playerCacheRef.current.set(String(next.playerId), next)
       setPlayer(next)
       setQrDataUrl(url)
       setLeaderboardRefresh((value) => value + 1)
@@ -3018,29 +3213,128 @@ export default function App({
             `${prefix}Player #${createdPlayer.playerId} cleanup failed: ${cleanupError}`,
           )
         }
+
       }
       if (playerCreationRef.current === controller) playerCreationRef.current = null
     }
   }
 
+  const beginPlayerCodeScan = (scanTarget: LeaderboardEntry) => {
+    playerScanCompletingRef.current = false
+    setPlayerScanTarget(scanTarget)
+    setPlayerScanCandidate(null)
+    setPlayerScanError('')
+    setPlayerScanSuccess('')
+    setPlayerTransferZone(null)
+    rememberedRef.current = null
+    setRemembered(null)
+    void startCamera()
+  }
+
+  const cancelPlayerCodeScan = () => {
+    playerScanCompletingRef.current = false
+    setPlayerScanTarget(null)
+    setPlayerScanCandidate(null)
+    setPlayerScanError('')
+    setPlayerScanSuccess('')
+    setPlayerTransferZone(null)
+    stopCamera(true)
+    setCameraState('inactive')
+  }
+
+  const assignScannedPlayerCode = async () => {
+    if (
+      !playerScanTarget
+      || !playerScanCandidate?.lookupComplete
+      || playerScanBusy
+      || playerScanCompletingRef.current
+    ) return
+    playerScanCompletingRef.current = true
+    setPlayerScanBusy(true)
+    setPlayerScanError('')
+    if (playerScanCandidate.existingPlayer?.id === playerScanTarget.id) {
+      const successMessage = `Code confirmed for ${playerScanTarget.name}.`
+      setPlayerScanSuccess(successMessage)
+      setCheckInNotice(successMessage)
+      playerTransferHoldRef.current = emptyHoldState()
+      playerTransferZoneRef.current = null
+      setPlayerTransferZone(null)
+      await new Promise((resolve) => window.setTimeout(resolve, 900))
+      cancelPlayerCodeScan()
+      setPlayerScanBusy(false)
+      return
+    }
+    try {
+      const response = await fetch(
+        `/api/players/${playerScanTarget.id}/scanning-identifier`,
+        {
+          method: 'PUT',
+          headers: { accept: 'application/json', 'content-type': 'application/json' },
+          body: JSON.stringify({
+            scanningIdentifier: playerScanCandidate.identifier,
+            transfer: playerScanCandidate.existingPlayer !== null,
+          }),
+        },
+      )
+      const body = await response.json() as {
+        player?: { id: number; name: string }
+        existingPlayer?: { id: number; name: string }
+        previousOwner?: { id: number; name: string }
+        error?: string
+      }
+      if (response.status === 409 && body.existingPlayer) {
+        playerScanCompletingRef.current = false
+        setPlayerScanCandidate((current) => current
+          ? { ...current, existingPlayer: body.existingPlayer ?? null, lookupComplete: true }
+          : current)
+        return
+      }
+      if (!response.ok || !body.player) {
+        throw new Error(body.error || `Code assignment failed (${response.status}).`)
+      }
+      playerCacheRef.current.clear()
+      setLeaderboardRefresh((value) => value + 1)
+      setCheckInError(false)
+      const successMessage = body.previousOwner
+        ? `Code transferred from ${body.previousOwner.name} to ${body.player.name}.`
+        : `Code saved to ${body.player.name}.`
+      setPlayerScanSuccess(successMessage)
+      setCheckInNotice(successMessage)
+      playerTransferHoldRef.current = emptyHoldState()
+      playerTransferZoneRef.current = null
+      setPlayerTransferZone(null)
+      await new Promise((resolve) => window.setTimeout(resolve, 900))
+      cancelPlayerCodeScan()
+    } catch (error) {
+      playerScanCompletingRef.current = false
+      setPlayerScanError(error instanceof Error ? error.message : 'Could not assign the scanned code.')
+    } finally {
+      setPlayerScanBusy(false)
+    }
+  }
+  assignScannedPlayerCodeRef.current = () => {
+    void assignScannedPlayerCode()
+  }
+
   const copy = stateCopy[cameraState]
   const parsedRaw = remembered ? parseQrPayload(remembered.detection.data) : null
   const parsed = parsedRaw?.kind === 'player-reference'
-    ? playerCacheRef.current.has(parsedRaw.reference.playerId)
+    ? playerCacheRef.current.has(String(parsedRaw.reference.playerId))
       ? {
           kind: 'player' as const,
-          player: playerCacheRef.current.get(parsedRaw.reference.playerId)!,
-          label: `${playerCacheRef.current.get(parsedRaw.reference.playerId)!.name} · #${parsedRaw.reference.playerId}`,
+          player: playerCacheRef.current.get(String(parsedRaw.reference.playerId))!,
+          label: `${playerCacheRef.current.get(String(parsedRaw.reference.playerId))!.name} · #${parsedRaw.reference.playerId}`,
         }
       : parsedRaw
     : parsedRaw
   const diagnosticRecording = diagnosticUi.phase === 'recording'
   const interactionVisible = cameraState === 'active'
-    && (seatScanTarget
+    && (Boolean(playerScanTarget)
+      || (seatScanTarget
       ? seatScanZones.length > 0 || seatScanFeedback !== null
       : (piecePresent && !resultCameraSuppressed)
         || diagnosticRecording
-        || Boolean(resultAcknowledgement))
+        || Boolean(resultAcknowledgement)))
   const cameraUnavailable = cameraState === 'insecure' || cameraState === 'unavailable'
   const cameraButtonLabel = cameraState === 'active'
     ? 'Stop Camera'
@@ -3055,6 +3349,9 @@ export default function App({
       : ''
   )
   const handleStopCamera = () => {
+    setPlayerScanTarget(null)
+    setPlayerScanCandidate(null)
+    setPlayerScanError('')
     stopCamera(true)
     drawOverlay()
     setCameraNotice('')
@@ -3395,6 +3692,7 @@ export default function App({
           >{{
             leaderboard: <div className="workspace-with-games">
               <Leaderboard refreshKey={leaderboardRefresh} variant="rail"
+                onScanCode={beginPlayerCodeScan}
                 onCheckIn={handleManualSessionCheckIn}
                 onOpenGame={handleOpenPlayerGame}
                 onMoveWaitingPlayer={handleMoveWaitingPlayer}
@@ -3409,6 +3707,7 @@ export default function App({
             ...(activeSession && sessionViewId ? {
               [sessionViewId]: <div className="workspace-with-games">
                 <Leaderboard refreshKey={leaderboardRefresh} variant="rail"
+                  onScanCode={beginPlayerCodeScan}
                   eventId={activeSession.id} title="Session Standings"
                   onCheckIn={handleManualSessionCheckIn}
                   onOpenGame={handleOpenPlayerGame}
@@ -3467,6 +3766,8 @@ export default function App({
                 <i className={`status-dot ${cameraState}`} />
                 {diagnosticRecording
                   ? 'Recording diagnostic'
+                  : playerScanTarget
+                    ? `Scanning code for ${playerScanTarget.name}`
                   : seatScanFeedback?.status === 'success'
                     ? 'Player assigned'
                     : seatScanFeedback?.status === 'error'
@@ -3481,7 +3782,7 @@ export default function App({
             </div>}
           </>
         )}
-        {interactionVisible && !seatScanTarget && !resultAcknowledgement && parsed && (
+        {interactionVisible && !playerScanTarget && !seatScanTarget && !resultAcknowledgement && parsed && (
           <div
             className={`payload-label ${parsed.kind}`}
             ref={payloadLabelRef}
@@ -3509,7 +3810,61 @@ export default function App({
             ))}
           </div>
         )}
-        {interactionVisible && !seatScanTarget && !resultAcknowledgement
+        {interactionVisible && playerScanTarget && (
+          <div className="player-code-assignment" role="dialog"
+            aria-label={`Assign scanned code to ${playerScanTarget.name}`}>
+            <h2>Scan Code for {playerScanTarget.name}</h2>
+            {playerScanSuccess ? (
+              <p className="player-code-save-success" role="status">
+                <strong>{playerScanSuccess}</strong>
+              </p>
+            ) : !playerScanCandidate ? (
+              <p>Hold the QR code inside the camera view.</p>
+            ) : !playerScanCandidate.lookupComplete ? (
+              <p>Checking who currently owns this code…</p>
+            ) : playerScanCandidate.existingPlayer?.id === playerScanTarget.id ? (
+              <p>
+                This code is already assigned to <strong>{playerScanTarget.name}</strong>.
+                Hold it in the upper-right zone to confirm.
+              </p>
+            ) : playerScanCandidate.existingPlayer ? (
+              <p>
+                This code belongs to <strong>{playerScanCandidate.existingPlayer.name}</strong>.
+                Transfer it to <strong>{playerScanTarget.name}</strong>?{' '}
+                {playerScanCandidate.existingPlayer.name} will receive{' '}
+                {playerScanTarget.name}&apos;s current code.
+              </p>
+            ) : (
+              <p>
+                Hold the code in the upper-right zone to assign it to{' '}
+                <strong>{playerScanTarget.name}</strong>.
+              </p>
+            )}
+            {playerScanError && <p className="games-message error" role="alert">{playerScanError}</p>}
+            <div className="player-card-actions">
+              {!playerScanSuccess && (
+                <button type="button" className="secondary" disabled={playerScanBusy}
+                  onClick={cancelPlayerCodeScan}>Cancel</button>
+              )}
+            </div>
+          </div>
+        )}
+        {interactionVisible && playerTransferZone && (
+          <div className="action-zones" role="group" aria-label="Confirm player code assignment">
+            <ActionZoneView
+              zone={playerTransferZone}
+              zoneRef={(element) => {
+                if (element) actionZoneRefs.current.set(playerTransferZone.id, element)
+                else actionZoneRefs.current.delete(playerTransferZone.id)
+              }}
+              progressRef={(element) => {
+                if (element) actionProgressRefs.current.set(playerTransferZone.id, element)
+                else actionProgressRefs.current.delete(playerTransferZone.id)
+              }}
+            />
+          </div>
+        )}
+        {interactionVisible && !playerScanTarget && !seatScanTarget && !resultAcknowledgement
           && gameContext?.opponent && (
           <div
             className="camera-game-context"
@@ -3526,7 +3881,7 @@ export default function App({
             />
           </div>
         )}
-        {interactionVisible && !seatScanTarget && !resultAcknowledgement && independentLaneContexts.length > 0 && (
+        {interactionVisible && !playerScanTarget && !seatScanTarget && !resultAcknowledgement && independentLaneContexts.length > 0 && (
           <div className="camera-lane-contexts" role="group" aria-label="Detected player game contexts">
             {independentLaneContexts.flatMap(({ lane, player: detectedPlayer, game }) =>
               game ? [(
@@ -3543,7 +3898,7 @@ export default function App({
               )] : [])}
           </div>
         )}
-        {interactionVisible && !seatScanTarget && !resultAcknowledgement && actionZones.length > 0 && (
+        {interactionVisible && !playerScanTarget && !seatScanTarget && !resultAcknowledgement && actionZones.length > 0 && (
           <div
             className="action-zones"
             role="group"
@@ -3569,7 +3924,7 @@ export default function App({
             ))}
           </div>
         )}
-        {interactionVisible && !seatScanTarget && !resultAcknowledgement && overlayMessage && (
+        {interactionVisible && !playerScanTarget && !seatScanTarget && !resultAcknowledgement && overlayMessage && (
           <p className="action-zone-message" role="status" aria-live="polite">{overlayMessage}</p>
         )}
         {interactionVisible && resultAcknowledgement && (
