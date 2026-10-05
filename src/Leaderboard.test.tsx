@@ -8,7 +8,7 @@ afterEach(() => vi.unstubAllGlobals())
 describe('Leaderboard', () => {
   it('renders rankings and opens an accessible history profile that closes with Escape', async () => {
     const onAddPlayer = vi.fn()
-    const printSticker = vi.fn().mockResolvedValue(undefined)
+    const onScanCode = vi.fn()
     const responses = [
       {
         leaderboard: [
@@ -42,7 +42,7 @@ describe('Leaderboard', () => {
       ok: true,
       json: () => Promise.resolve(responses.shift()),
     })))
-    render(<Leaderboard refreshKey={0} onAddPlayer={onAddPlayer} printSticker={printSticker} />)
+    render(<Leaderboard refreshKey={0} onAddPlayer={onAddPlayer} onScanCode={onScanCode} />)
     fireEvent.click(screen.getByRole('button', { name: 'Add player' }))
     expect(onAddPlayer).toHaveBeenCalledOnce()
     expect(await screen.findByRole('table', { name: 'Elo rankings' })).toBeInTheDocument()
@@ -73,8 +73,8 @@ describe('Leaderboard', () => {
       name: 'Table 1: Alice plays black, Bob plays white',
     })).toBeVisible()
     expect(screen.getByRole('table', { name: 'Elo history for Bob' })).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: 'Print sticker' }))
-    await waitFor(() => expect(printSticker).toHaveBeenCalledWith(expect.objectContaining({
+    fireEvent.click(screen.getByRole('button', { name: 'Scan Code' }))
+    await waitFor(() => expect(onScanCode).toHaveBeenCalledWith(expect.objectContaining({
       id: 1001,
       name: 'Bob',
     })))

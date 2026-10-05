@@ -16,7 +16,7 @@ export const ApplicationContractSchema = z.object({
   application: z.object({
     id: z.literal('sunset-chess'),
     name: z.literal('Sunset Chess'),
-    version: z.literal('1.2.0'),
+    version: z.literal('1.3.0'),
     description: z.string(),
   }),
   envelope: z.object({
@@ -68,7 +68,7 @@ export const sunsetChessContract = ApplicationContractSchema.parse({
   application: {
     id: 'sunset-chess',
     name: 'Sunset Chess',
-    version: '1.2.0',
+    version: '1.3.0',
     description: 'Resource-oriented club chess pairing, game, and Elo ledger application.',
   },
   envelope: {

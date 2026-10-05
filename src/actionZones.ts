@@ -22,7 +22,7 @@ export const RESULT_ZONE_HYSTERESIS_RATIO = .08
 export const RESULT_ZONE_HYSTERESIS_MIN_PX = 6
 
 export type ResultChoice = 'winner' | 'draw' | 'loser'
-export type ActionZoneAction = 'check-in' | ResultChoice
+export type ActionZoneAction = 'assign' | 'check-in' | 'transfer' | ResultChoice
 export type ActionZoneLane = 'left' | 'right'
 export type ActionZoneStatus = 'idle' | 'active' | 'holding' | 'paused' | 'complete' | 'error' | 'disabled'
 
@@ -209,6 +209,18 @@ export function actionZoneHorizontalInset(width: number): number {
     ACTION_ZONE_HORIZONTAL_INSET_MIN_PX,
     ACTION_ZONE_HORIZONTAL_INSET_MAX_PX,
   )
+}
+
+export function transferZoneRect(width: number, height: number): Rect {
+  const horizontalInset = actionZoneHorizontalInset(width)
+  const verticalInset = clamp(height * .08, 24, 72)
+  const side = clamp(Math.min(width, height) * .24, 112, 180)
+  return {
+    x: width - horizontalInset - side,
+    y: verticalInset,
+    width: side,
+    height: side,
+  }
 }
 
 export function screenLane(point: Point, width: number): ActionZoneLane {

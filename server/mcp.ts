@@ -40,7 +40,7 @@ function domainResult(action: () => unknown) {
 }
 
 export function createMcpServer(repository: ChessRepository): McpServer {
-  const server = new McpServer({ name: 'sunset-chess', version: '1.2.0' });
+  const server = new McpServer({ name: 'sunset-chess', version: '1.3.0' });
   const resources = new ResourceService(repository);
   server.registerTool('contract-discover', {
     description: 'Discover the self-describing Sunset Chess application/resource contract, including schemas, relationships, capabilities, constraints, lifecycle rules, effects, errors, and events.',

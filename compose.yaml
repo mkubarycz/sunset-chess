@@ -3,7 +3,7 @@ name: sunset-chess
 services:
   sunset-chess:
     build: .
-    image: sunset-chess:1.2
+    image: sunset-chess:1.3
     container_name: working-memory-sunset-chess
     restart: unless-stopped
     labels:

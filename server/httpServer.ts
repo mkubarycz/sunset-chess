@@ -6,7 +6,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { z } from 'zod';
 import { sunsetChessContract } from './data-contract/index.js';
 import { checkDatabase } from './database.js';
-import { DomainError, ValidationError } from './errors.js';
+import { DomainError, NotFoundError, ValidationError } from './errors.js';
 import { createMcpServer } from './mcp.js';
 import type { ChessRepository } from './repository.js';
 import { ResourceService } from './resources.js';
@@ -380,6 +380,83 @@ export function createSunsetServer(
         } catch (error) {
           if (error instanceof DomainError) {
             return sendJson(res, error.code === 'not_found' ? 404 : error.code === 'conflict' ? 409 : 400, {
+              error: error.message,
+              code: error.code,
+            });
+          }
+          throw error;
+        }
+      }
+      if (url.pathname === '/api/players/resolve') {
+        if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed.' });
+        const scanningIdentifier = url.searchParams.get('scanningIdentifier');
+        if (scanningIdentifier === null) {
+          return sendJson(res, 400, { error: 'scanningIdentifier is required.' });
+        }
+        try {
+          return sendJson(res, 200, {
+            player: repository.getPlayerByScanningIdentifier(scanningIdentifier),
+          });
+        } catch (error) {
+          if (error instanceof DomainError) {
+            return sendJson(res, error.code === 'not_found' ? 404 : 400, {
+              error: error.message,
+              code: error.code,
+            });
+          }
+          throw error;
+        }
+      }
+      const playerScanningIdentifierMatch =
+        url.pathname.match(/^\/api\/players\/(\d+)\/scanning-identifier$/);
+      if (playerScanningIdentifierMatch) {
+        if (req.method !== 'PUT') return sendJson(res, 405, { error: 'Method not allowed.' });
+        if (req.headers['content-type']?.split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
+          return sendJson(res, 400, { error: 'Content-Type must be application/json.' });
+        }
+        let body: unknown;
+        try {
+          body = await parseJson(req, 4096);
+        } catch (error) {
+          return sendJson(res, 400, {
+            error: error instanceof Error ? error.message : 'Invalid JSON body.',
+          });
+        }
+        const record = body as { scanningIdentifier?: unknown; transfer?: unknown } | null;
+        if (!record || typeof record !== 'object' || Array.isArray(record)
+          || !Object.keys(record).every((key) => key === 'scanningIdentifier' || key === 'transfer')
+          || typeof record.scanningIdentifier !== 'string'
+          || (record.transfer !== undefined && typeof record.transfer !== 'boolean')) {
+          return sendJson(res, 400, {
+            error: 'Body must contain a string scanningIdentifier and optional boolean transfer.',
+          });
+        }
+        const playerId = Number(playerScanningIdentifierMatch[1]);
+        try {
+          const existing = (() => {
+            try {
+              return repository.getPlayerByScanningIdentifier(record.scanningIdentifier as string);
+            } catch (error) {
+              if (error instanceof NotFoundError) return null;
+              throw error;
+            }
+          })();
+          if (existing && existing.id !== playerId && record.transfer !== true) {
+            return sendJson(res, 409, {
+              error: `Scanning identifier is already assigned to ${existing.name}.`,
+              code: 'conflict',
+              existingPlayer: existing,
+            });
+          }
+          return sendJson(res, 200, repository.assignPlayerScanningIdentifier(
+            playerId,
+            record.scanningIdentifier,
+            record.transfer === true,
+          ));
+        } catch (error) {
+          if (error instanceof DomainError) {
+            return sendJson(res, error.code === 'not_found' ? 404
+              : error.code === 'conflict' ? 409 : 400, {
               error: error.message,
               code: error.code,
             });

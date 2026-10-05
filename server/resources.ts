@@ -114,9 +114,15 @@ export class ResourceService {
     switch (kind) {
       case 'player': {
         const parsed = parseContractInput(PlayerCreateInputSchema, record);
-        const player = parsed.id === undefined
+        let player = parsed.id === undefined
           ? this.repository.createPlayer(parsed.name)
           : this.repository.upsertPlayer(parsed.id, parsed.name);
+        if (parsed.scanningIdentifier !== undefined && parsed.scanningIdentifier !== null) {
+          player = this.repository.assignPlayerScanningIdentifier(
+            player.id,
+            parsed.scanningIdentifier,
+          ).player;
+        }
         return { resource: this.player(player) };
       }
       case 'club-session': {
@@ -151,7 +157,22 @@ export class ResourceService {
     const record = this.record(input);
     if (kind === 'player') {
       const parsed = parseContractInput(PlayerUpdateInputSchema, record);
-      return this.player(this.repository.updatePlayerName(numericId, parsed.name));
+      let player = this.repository.getPlayer(numericId);
+      if (parsed.name !== undefined) {
+        player = this.repository.updatePlayerName(numericId, parsed.name);
+      }
+      if (parsed.scanningIdentifier !== undefined) {
+        if (parsed.scanningIdentifier === null) {
+          this.repository.clearPlayerScanningIdentifier(numericId);
+          player = this.repository.getPlayer(numericId);
+        } else {
+          player = this.repository.assignPlayerScanningIdentifier(
+            numericId,
+            parsed.scanningIdentifier,
+          ).player;
+        }
+      }
+      return this.player(player);
     }
     if (kind === 'club-session') {
       const parsed = parseContractInput(ClubSessionUpdateInputSchema, record);
@@ -180,7 +201,10 @@ export class ResourceService {
 
   private player(player: Player): ResourceEnvelope {
     const createdAt = this.repository.listRatingEvents(player.id)[0]?.recordedAt ?? EPOCH;
-    return this.envelope('player', String(player.id), createdAt, { name: player.name }, {
+    return this.envelope('player', String(player.id), createdAt, {
+      name: player.name,
+      scanningIdentifier: player.scanningIdentifier,
+    }, {
       rating: player.rating,
     }, {});
   }

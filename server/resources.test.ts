@@ -210,10 +210,10 @@ describe('Sunset Chess application contract', () => {
     }
   });
 
-  it('physically migrates to first-class resource tables at schema v10', () => {
+  it('physically migrates to first-class resource tables at the latest schema', () => {
     const { db } = fixture();
     expect(db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get())
-      .toEqual({ version: 10 });
+      .toEqual({ version: 11 });
     const tables = (db.prepare(`
       SELECT name FROM sqlite_master
       WHERE type = 'table' AND name LIKE '%Resource'
@@ -277,7 +277,9 @@ describe('Sunset Chess application contract', () => {
 
     const migrated = openDatabase(path);
     const migratedRepository = new ChessRepository(migrated);
-    expect(migratedRepository.getPlayer(1000)).toEqual({ id: 1000, name: 'Alice', rating: 700 });
+    expect(migratedRepository.getPlayer(1000)).toEqual({
+      id: 1000, name: 'Alice', rating: 700, scanningIdentifier: null,
+    });
     expect(migratedRepository.getClubSession(session.id)).toMatchObject({
       id: session.id,
       name: 'Migration Night',

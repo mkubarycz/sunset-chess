@@ -466,6 +466,18 @@ const migrations = [
       ON PairingCohortResource(eventId, cohort, snapshotRating DESC, playerId);
     `,
   },
+  {
+    version: 11,
+    sql: `
+      ALTER TABLE PlayerResource ADD COLUMN scanningIdentifier TEXT
+        CHECK (
+          scanningIdentifier IS NULL
+          OR length(scanningIdentifier) BETWEEN 1 AND 2048
+        );
+      CREATE UNIQUE INDEX PlayerResource_scanning_identifier
+      ON PlayerResource(scanningIdentifier) WHERE scanningIdentifier IS NOT NULL;
+    `,
+  },
 ] as const;
 
 function backfillRatingLedger(db: DatabaseSync, recordedAt: string): void {

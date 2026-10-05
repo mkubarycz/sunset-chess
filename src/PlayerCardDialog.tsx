@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { GameCard, type OngoingGame } from './GameCard'
 import { ModalDialog } from './ModalDialog'
-import { printRoundPlayerSticker } from './playerSticker'
 import { normalizePlayerName } from './qrPayload'
 
 export interface LeaderboardEntry {
@@ -21,6 +20,7 @@ export interface LeaderboardEntry {
   sessionWins?: number
   sessionLosses?: number
   sessionDraws?: number
+  scanningIdentifier?: string | null
 }
 
 export interface RatingEvent {
@@ -94,18 +94,23 @@ function ordinal(value: number) {
   return `${value}th`
 }
 
+function displayedScanningIdentifier(player: LeaderboardEntry): string {
+  const identifier = player.scanningIdentifier ?? String(player.id)
+  return identifier.length > 40 ? `${identifier.slice(0, 39)}…` : identifier
+}
+
 export function PlayerCardDialog({
   player,
   onClose,
   onMutate,
   confirmDeleteInitially = false,
-  printSticker = printRoundPlayerSticker,
+  onScanCode,
 }: {
   player: LeaderboardEntry
   onClose: () => void
   onMutate: () => void | Promise<void>
   confirmDeleteInitially?: boolean
-  printSticker?: (player: LeaderboardEntry) => Promise<void>
+  onScanCode?: (player: LeaderboardEntry) => void
 }) {
   const [profile, setProfile] = useState<PlayerProfile | null>(null)
   const [profileError, setProfileError] = useState('')
@@ -205,14 +210,14 @@ export function PlayerCardDialog({
     }
   }
 
-  const print = async () => {
+  const scanCode = async () => {
     setBusy(true)
     setProfileError('')
     try {
       if (!await saveName()) return
-      await printSticker({ ...player, name: savedNameRef.current })
+      onScanCode?.({ ...player, name: savedNameRef.current })
     } catch (reason) {
-      setProfileError(reason instanceof Error ? reason.message : 'Could not generate the round sticker.')
+      setProfileError(reason instanceof Error ? reason.message : 'Could not open the code scanner.')
     } finally {
       setBusy(false)
     }
@@ -232,6 +237,9 @@ export function PlayerCardDialog({
           </form>
           <p className="player-card-meta">
             <span>#{player.id}</span>
+            <span title={profile?.scanningIdentifier ?? player.scanningIdentifier ?? String(player.id)}>
+              Scan code: {displayedScanningIdentifier(profile ?? player)}
+            </span>
           </p>
         </div>
         {savingName && <p className="player-save-status" role="status">Saving name…</p>}
@@ -261,7 +269,8 @@ export function PlayerCardDialog({
               ? <p>No completed games yet. Baseline Elo is 700.</p>
               : <div className="profile-game-strip" role="region" aria-label={`Recent games for ${profile.name}`} tabIndex={0}>
                   {profile.recentGames.slice(0, 10).map((game) => (
-                    <GameCard key={game.id} game={profileGameToGameCard(profile, game)} management={false} />
+                    <GameCard key={game.id} game={profileGameToGameCard(profile, game)}
+                      management={false} selectable={false} />
                   ))}
                 </div>
             }
@@ -293,8 +302,8 @@ export function PlayerCardDialog({
           {!confirmDelete
             ? <div className="player-card-actions">
                 <button type="button" className="secondary" disabled={busy || savingName}
-                  onClick={() => void print()}>
-                  Print sticker
+                  onClick={() => void scanCode()}>
+                  Scan Code
                 </button>
                 <button type="button" className="danger" onClick={() => setConfirmDelete(true)}>
                   Delete player

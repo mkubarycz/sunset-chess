@@ -8,7 +8,7 @@ export function Leaderboard({
   variant = 'default',
   onAddPlayer,
   addPlayerLabel = 'Add player',
-  printSticker,
+  onScanCode,
   onCheckIn,
   onOpenGame,
   onMoveWaitingPlayer,
@@ -20,7 +20,7 @@ export function Leaderboard({
   variant?: 'default' | 'rail'
   onAddPlayer?: (trigger: HTMLButtonElement) => void
   addPlayerLabel?: string
-  printSticker?: (player: LeaderboardEntry) => Promise<void>
+  onScanCode?: (player: LeaderboardEntry) => void
   onCheckIn?: (player: LeaderboardEntry) => Promise<void>
   onOpenGame?: (player: LeaderboardEntry) => void
   onMoveWaitingPlayer?: (player: LeaderboardEntry, destinationGameId: number) => Promise<void>
@@ -220,8 +220,8 @@ export function Leaderboard({
           </div>
         )}
       </section>
-      {selected && <PlayerCardDialog key={selected.id} player={selected} onClose={close}
-        onMutate={() => refresh()} printSticker={printSticker} />}
+      {selected && <PlayerCardDialog key={`${selected.id}:${refreshKey}`} player={selected} onClose={close}
+        onMutate={() => refresh()} onScanCode={onScanCode} />}
       {movingPlayer && (
         <ModalDialog title={`Move ${movingPlayer.name} to another table`}
           className=" move-player-dialog"
