@@ -155,6 +155,7 @@ import { Leaderboard } from './Leaderboard'
 import type { LeaderboardEntry } from './PlayerCardDialog'
 import { SunsetChessLogo } from './SunsetChessLogo'
 import { DashboardTabs } from './DashboardTabs'
+import { useDashboardNavigation } from './useDashboardNavigation'
 import { ModalDialog } from './ModalDialog'
 import { SettingsMenu } from './SettingsMenu'
 import { SessionCard, type ClubSession } from './SessionCard'
@@ -324,6 +325,7 @@ interface AppProps {
     playerId: number,
     destinationGameId: number,
     signal: AbortSignal,
+    overrideStarted?: boolean,
   ) => Promise<OngoingGame>
   finalizeGame?: (
     gameId: number,
@@ -488,16 +490,19 @@ async function defaultMoveWaitingPlayer(
   playerId: number,
   destinationGameId: number,
   signal: AbortSignal,
+  overrideStarted = false,
 ): Promise<OngoingGame> {
   const response = await fetch(`/api/players/${playerId}/move`, {
     method: 'POST',
     signal,
     headers: { accept: 'application/json', 'content-type': 'application/json' },
-    body: JSON.stringify({ destinationGameId }),
+    body: JSON.stringify({ destinationGameId, ...(overrideStarted ? { overrideStarted: true } : {}) }),
   })
-  const body = await response.json() as { game?: OngoingGame; error?: string }
+  const body = await response.json() as { game?: OngoingGame; error?: string; requiresStartedOverride?: boolean }
   if (!response.ok || !body.game) {
-    throw new Error(body.error || `Player move failed (${response.status}).`)
+    throw Object.assign(new Error(body.error || `Player move failed (${response.status}).`), {
+      requiresStartedOverride: body.requiresStartedOverride === true,
+    })
   }
   return body.game
 }
@@ -531,7 +536,6 @@ export default function App({
   )
   const initialPreferences = useMemo(() => loadUiPreferences(), [])
   const [preferences, setPreferences] = useState<UiPreferences>(initialPreferences.preferences)
-  const [selectedView, setSelectedView] = useState<string>(initialPreferences.preferences.selectedTab)
   const [settingsError, setSettingsError] = useState(initialPreferences.error)
   const [remembered, setRemembered] = useState<RememberedDetection | null>(null)
   const [name, setName] = useState('')
@@ -548,6 +552,11 @@ export default function App({
   const [createGameError, setCreateGameError] = useState('')
   const [leaderboardRefresh, setLeaderboardRefresh] = useState(0)
   const [sessions, setSessions] = useState<ClubSession[]>([])
+  const [sessionsLoaded, setSessionsLoaded] = useState(false)
+  const { selectedView, navigationError, navigate } = useDashboardNavigation(
+    initialPreferences.preferences.selectedTab,
+    sessionsLoaded ? sessions.find((session) => session.active)?.id ?? null : undefined,
+  )
   const [sessionsError, setSessionsError] = useState('')
   const [creatingSession, setCreatingSession] = useState(false)
   const [sessionConfigOpen, setSessionConfigOpen] = useState(false)
@@ -556,6 +565,7 @@ export default function App({
   const [checkInError, setCheckInError] = useState(false)
   const [cameraNotice, setCameraNotice] = useState('')
   const [featuredGame, setFeaturedGame] = useState<GameIdentity | null>(null)
+  const [gameToOpen, setGameToOpen] = useState<OngoingGame | null>(null)
   const [checkInTransitions, setCheckInTransitions] = useState<CheckInTransition[]>([])
   const [actionZones, setActionZones] = useState<ActionZone[]>([])
   const [gameContext, setGameContext] = useState<GameContext | null>(null)
@@ -742,13 +752,6 @@ export default function App({
     () => featuredFirst(games, featuredGame),
     [featuredGame, games],
   )
-  const unavailablePlayerIds = useMemo(
-    () => games
-      .filter((game) => game.blackPlayerId !== null && game.whitePlayerId !== null)
-      .flatMap((game) => [game.blackPlayerId, game.whitePlayerId])
-      .filter((playerId): playerId is number => playerId !== null),
-    [games],
-  )
 
   const updatePreferences = useCallback((patch: Partial<UiPreferences>) => {
     setPreferences((current) => {
@@ -880,12 +883,12 @@ export default function App({
       const next = await fetchSessions(signal ?? new AbortController().signal)
       if (signal?.aborted) return
       setSessions(next)
+      setSessionsLoaded(true)
       setSessionsError('')
       const active = next.find((session) => session.active)
       if (!active) {
         setSessionConfigOpen(false)
         setSessionPlayerDialogOpen(false)
-        setSelectedView((current) => current.startsWith('session-') ? 'leaderboard' : current)
       }
     } catch (error) {
       if (!signal?.aborted) {
@@ -908,14 +911,15 @@ export default function App({
     try {
       const session = await createClubSession(controller.signal)
       setSessions((current) => [session, ...current.map((item) => ({ ...item, active: false }))])
-      setSelectedView(`session-${session.id}`)
+      setSessionsLoaded(true)
+      navigate(`session-${session.id}`)
       setLeaderboardRefresh((value) => value + 1)
     } catch (error) {
       setSessionsError(error instanceof Error ? error.message : 'Could not create a club session.')
     } finally {
       setCreatingSession(false)
     }
-  }, [createClubSession, creatingSession])
+  }, [createClubSession, creatingSession, navigate])
 
   const handleRenameClubSession = useCallback(async (id: number, name: string) => {
     const updated = await renameClubSession(id, name)
@@ -966,12 +970,12 @@ export default function App({
     setSessionConfigOpen(false)
     setSessionPlayerDialogOpen(false)
     setSessions((current) => current.map((session) => session.id === id ? closed : session))
-    setSelectedView('leaderboard')
+    navigate('leaderboard', 'replace')
     setLeaderboardRefresh((value) => value + 1)
     await refreshGames(true)
-  }, [closeClubSession, refreshGames])
+  }, [closeClubSession, navigate, refreshGames])
 
-  const handleManualSessionCheckIn = useCallback(async (player: SelectablePlayer) => {
+  const handleManualSessionCheckIn = useCallback(async (player: SelectablePlayer, openTable = false) => {
     const controller = new AbortController()
     setCheckInError(false)
     setCheckInNotice(`Checking in ${player.name}…`)
@@ -993,6 +997,7 @@ export default function App({
       setFeaturedGame({ id: result.game.id, createdAt: result.game.createdAt })
       await refreshGames(true)
       await refreshSessions()
+      if (openTable) setGameToOpen(result.game)
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : 'Check-in failed.'
       setCheckInError(true)
@@ -1004,12 +1009,15 @@ export default function App({
   const handleMoveWaitingPlayer = useCallback(async (
     player: SelectablePlayer,
     destinationGameId: number,
+    overrideStarted = false,
   ) => {
     const controller = new AbortController()
     setCheckInError(false)
     setCheckInNotice(`Moving ${player.name}…`)
     try {
-      const moved = await moveWaitingPlayer(player.id, destinationGameId, controller.signal)
+      const moved = overrideStarted
+        ? await moveWaitingPlayer(player.id, destinationGameId, controller.signal, true)
+        : await moveWaitingPlayer(player.id, destinationGameId, controller.signal)
       setCheckInNotice(`${player.name} moved to Table ${moved.tableNumber}.`)
       setFeaturedGame({ id: moved.id, createdAt: moved.createdAt })
       await refreshGames(true)
@@ -1029,10 +1037,17 @@ export default function App({
       return
     }
     setFeaturedGame({ id: activeGame.id, createdAt: activeGame.createdAt })
-    gameCardRefs.current.get(gameIdentityKey(activeGame))
-      ?.querySelector<HTMLButtonElement>('.game-card-hit')
-      ?.click()
+    setGameToOpen(activeGame)
   }, [games])
+
+  useLayoutEffect(() => {
+    if (!gameToOpen) return
+    const trigger = gameCardRefs.current.get(gameIdentityKey(gameToOpen))
+      ?.querySelector<HTMLButtonElement>('.game-card-hit')
+    setGameToOpen(null)
+    if (trigger) trigger.click()
+    else setGamesError(`Could not open Table ${gameToOpen.tableNumber} game details. Refresh games and try again.`)
+  }, [gameToOpen])
 
   const handleGameMutate = useCallback(async () => {
     clearResultMode()
@@ -3523,7 +3538,6 @@ export default function App({
                   key={gameIdentityKey(game)}
                   game={game}
                   onMutate={handleGameMutate}
-                  unavailablePlayerIds={unavailablePlayerIds}
                   authoritativePlayerScan={qualifiedSeatScan}
                   onSeatScanTargetChange={handleSeatScanTargetChange}
                   onSeatScanFeedback={handleSeatScanFeedback}
@@ -3676,6 +3690,9 @@ export default function App({
               {checkInNotice}
             </p>
           )}
+          {!sessionsLoaded && selectedView.startsWith('session-') && <p role="status">Loading Club Session…</p>}
+          {navigationError && <p role="alert" aria-label="Dashboard navigation error"
+            className="games-message error">{navigationError}</p>}
           <DashboardTabs
             selected={selectedView}
             tabs={dashboardTabs}
@@ -3684,7 +3701,7 @@ export default function App({
               : undefined}
             onCreate={!activeSession && !creatingSession ? () => void handleCreateClubSession() : undefined}
             onSelect={(view) => {
-              setSelectedView(view)
+              navigate(view)
               if (view === 'leaderboard' || view === 'recent-games') {
                 updatePreferences({ selectedTab: view })
               }
@@ -3693,7 +3710,7 @@ export default function App({
             leaderboard: <div className="workspace-with-games">
               <Leaderboard refreshKey={leaderboardRefresh} variant="rail"
                 onScanCode={beginPlayerCodeScan}
-                onCheckIn={handleManualSessionCheckIn}
+                onCheckIn={(player) => handleManualSessionCheckIn(player, true)}
                 onOpenGame={handleOpenPlayerGame}
                 onMoveWaitingPlayer={handleMoveWaitingPlayer}
                 waitingGames={games}
@@ -3709,7 +3726,7 @@ export default function App({
                 <Leaderboard refreshKey={leaderboardRefresh} variant="rail"
                   onScanCode={beginPlayerCodeScan}
                   eventId={activeSession.id} title="Session Standings"
-                  onCheckIn={handleManualSessionCheckIn}
+                  onCheckIn={(player) => handleManualSessionCheckIn(player, true)}
                   onOpenGame={handleOpenPlayerGame}
                   onMoveWaitingPlayer={handleMoveWaitingPlayer}
                   waitingGames={games}

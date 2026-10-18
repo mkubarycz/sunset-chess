@@ -5,6 +5,7 @@ import { normalizePlayerName } from './qrPayload'
 
 export interface LeaderboardEntry {
   rank: number
+  cohort?: 'A' | 'B' | 'C' | 'D' | null
   id: number
   name: string
   currentRating: number
@@ -101,12 +102,14 @@ function displayedScanningIdentifier(player: LeaderboardEntry): string {
 
 export function PlayerCardDialog({
   player,
+  refreshKey = 0,
   onClose,
   onMutate,
   confirmDeleteInitially = false,
   onScanCode,
 }: {
   player: LeaderboardEntry
+  refreshKey?: number
   onClose: () => void
   onMutate: () => void | Promise<void>
   confirmDeleteInitially?: boolean
@@ -122,29 +125,33 @@ export function PlayerCardDialog({
   const savedNameRef = useRef(player.name)
   const savePromiseRef = useRef<Promise<boolean> | null>(null)
 
-  const loadProfile = useCallback(async (signal?: AbortSignal) => {
+  const loadProfile = useCallback(async (signal?: AbortSignal, preserveDraft = false) => {
+    if (preserveDraft && savePromiseRef.current) return
     const response = await fetch(`/api/players/${player.id}/profile?recentLimit=10`, {
       signal,
       headers: { accept: 'application/json' },
     })
     const body = await responseBody(response)
+    if (signal?.aborted || (preserveDraft && savePromiseRef.current)) return body.profile
     if (!response.ok || !body.profile) throw new Error(body.error || 'Could not load player profile.')
-    setProfile(body.profile)
-    setEditName(body.profile.name)
-    savedNameRef.current = body.profile.name
+    const nextProfile = body.profile
+    const previousName = savedNameRef.current
+    setProfile(nextProfile)
+    setEditName((current) => preserveDraft && current !== previousName ? current : nextProfile.name)
+    savedNameRef.current = nextProfile.name
     setProfileError('')
     return body.profile
   }, [player.id])
 
   useEffect(() => {
     const controller = new AbortController()
-    void Promise.resolve().then(() => loadProfile(controller.signal)).catch((reason) => {
+    void Promise.resolve().then(() => loadProfile(controller.signal, true)).catch((reason) => {
       if (!controller.signal.aborted) {
         setProfileError(reason instanceof Error ? reason.message : 'Could not load player profile.')
       }
     })
     return () => controller.abort()
-  }, [confirmDeleteInitially, loadProfile, player.name])
+  }, [confirmDeleteInitially, loadProfile, player.name, refreshKey])
 
   const saveName = () => {
     if (savePromiseRef.current) return savePromiseRef.current

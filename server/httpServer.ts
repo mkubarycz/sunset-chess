@@ -6,7 +6,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { z } from 'zod';
 import { sunsetChessContract } from './data-contract/index.js';
 import { checkDatabase } from './database.js';
-import { DomainError, NotFoundError, ValidationError } from './errors.js';
+import { DomainError, NotFoundError, StartedGameError, ValidationError } from './errors.js';
 import { createMcpServer } from './mcp.js';
 import type { ChessRepository } from './repository.js';
 import { ResourceService } from './resources.js';
@@ -365,16 +365,19 @@ export function createSunsetServer(
             error: error instanceof Error ? error.message : 'Invalid JSON body.',
           });
         }
-        if (!body || typeof body !== 'object' || Array.isArray(body)
-          || Object.keys(body).length !== 1
-          || !Number.isInteger((body as { destinationGameId?: unknown }).destinationGameId)) {
-          return sendJson(res, 400, { error: 'Body must contain only destinationGameId as an integer.' });
-        }
+        const parsed = z.object({
+          destinationGameId: z.number().int().positive(),
+          overrideStarted: z.boolean().optional(),
+        }).strict().safeParse(body);
+        if (!parsed.success) return sendJson(res, 400, {
+          error: 'Body must contain destinationGameId as a positive integer and optionally boolean overrideStarted.',
+        });
         try {
           return sendJson(res, 200, {
             game: repository.moveWaitingPlayer(
               Number(playerMoveMatch[1]),
-              (body as { destinationGameId: number }).destinationGameId,
+              parsed.data.destinationGameId,
+              parsed.data.overrideStarted,
             ),
           });
         } catch (error) {
@@ -382,6 +385,7 @@ export function createSunsetServer(
             return sendJson(res, error.code === 'not_found' ? 404 : error.code === 'conflict' ? 409 : 400, {
               error: error.message,
               code: error.code,
+              requiresStartedOverride: error instanceof StartedGameError,
             });
           }
           throw error;
@@ -571,6 +575,60 @@ export function createSunsetServer(
           throw error;
         }
       }
+      const startMatch = url.pathname.match(/^\/api\/games\/(\d+)\/start$/);
+      if (startMatch) {
+        if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed.' });
+        let start = true;
+        if (req.headers['content-type'] !== undefined || Number(req.headers['content-length'] ?? 0) > 0
+          || req.headers['transfer-encoding'] !== undefined) {
+          if (req.headers['content-type']?.split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
+            return sendJson(res, 400, { error: 'Content-Type must be application/json.' });
+          }
+          let body: unknown;
+          try {
+            body = await parseJson(req, 1024);
+          } catch (error) {
+            return sendJson(res, 400, { error: error instanceof Error ? error.message : 'Invalid JSON body.' });
+          }
+          const parsed = z.object({ start: z.boolean() }).strict().safeParse(body);
+          if (!parsed.success) return sendJson(res, 400, { error: 'Body must contain only boolean start.' });
+          start = parsed.data.start;
+        }
+        const id = Number(startMatch[1]);
+        repository.updateGameResource(id, { start });
+        return sendJson(res, 200, {
+          game: repository.listJoinedGames().find((game) => game.id === id),
+        });
+      }
+      const switchMatch = url.pathname.match(/^\/api\/games\/(\d+)\/switch-sides$/);
+      if (switchMatch) {
+        if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed.' });
+        if (req.headers['content-type']?.split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
+          return sendJson(res, 400, { error: 'Content-Type must be application/json.' });
+        }
+        let body: unknown;
+        try {
+          body = await parseJson(req, 1024);
+        } catch (error) {
+          return sendJson(res, 400, { error: error instanceof Error ? error.message : 'Invalid JSON body.' });
+        }
+        const parsed = z.object({ overrideStarted: z.boolean().optional() }).strict().safeParse(body);
+        if (!parsed.success) return sendJson(res, 400, { error: 'Body may contain only boolean overrideStarted.' });
+        const id = Number(switchMatch[1]);
+        try {
+          repository.updateGameResource(id, { swapSides: true, overrideStarted: parsed.data.overrideStarted });
+          const game = repository.listJoinedGames().find((candidate) => candidate.id === id);
+          if (!game) throw new Error('Switched game could not be reloaded.');
+          return sendJson(res, 200, { game });
+        } catch (error) {
+          if (error instanceof DomainError) {
+            return sendJson(res, error.code === 'not_found' ? 404 : error.code === 'conflict' ? 409 : 400, {
+              error: error.message, code: error.code, requiresStartedOverride: error instanceof StartedGameError,
+            });
+          }
+          throw error;
+        }
+      }
       const seatMatch = url.pathname.match(/^\/api\/games\/(\d+)\/seats\/(black|white)$/);
       if (seatMatch) {
         if (req.method !== 'PATCH') return sendJson(res, 405, { error: 'Method not allowed.' });
@@ -583,24 +641,27 @@ export function createSunsetServer(
         } catch (error) {
           return sendJson(res, 400, { error: error instanceof Error ? error.message : 'Invalid JSON body.' });
         }
-        if (!body || typeof body !== 'object' || Array.isArray(body)
-          || Object.keys(body).length !== 1 || !('playerId' in body)
-          || ((body as { playerId: unknown }).playerId !== null
-            && !Number.isInteger((body as { playerId: unknown }).playerId))) {
-          return sendJson(res, 400, { error: 'Body must contain only playerId as an integer or null.' });
-        }
+        const parsed = z.object({
+          playerId: z.number().int().min(1000).max(2000).nullable(),
+          overrideStarted: z.boolean().optional(),
+        }).strict().safeParse(body);
+        if (!parsed.success) return sendJson(res, 400, {
+          error: 'Body must contain playerId as an integer between 1000 and 2000 or null, and optionally boolean overrideStarted.',
+        });
         try {
-          return sendJson(res, 200, {
-            game: repository.updateGameSeat(
+          repository.updateGameSeat(
               Number(seatMatch[1]),
               seatMatch[2] as 'black' | 'white',
-              (body as { playerId: number | null }).playerId,
-            ),
+              parsed.data.playerId,
+              parsed.data.overrideStarted,
+            );
+          return sendJson(res, 200, {
+            game: repository.listJoinedGames().find((game) => game.id === Number(seatMatch[1])),
           });
         } catch (error) {
           if (error instanceof DomainError) {
             return sendJson(res, error.code === 'not_found' ? 404 : error.code === 'conflict' ? 409 : 400, {
-              error: error.message, code: error.code,
+              error: error.message, code: error.code, requiresStartedOverride: error instanceof StartedGameError,
             });
           }
           throw error;
@@ -610,6 +671,8 @@ export function createSunsetServer(
       if (gameMatch) {
         if (req.method !== 'DELETE') return sendJson(res, 405, { error: 'Method not allowed.' });
         let reason: string | undefined;
+        let overrideStarted = false;
+        let unfinishedOnly = false;
         if (req.headers['content-length'] !== undefined && req.headers['content-length'] !== '0') {
           if (req.headers['content-type']?.split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
             return sendJson(res, 400, { error: 'Content-Type must be application/json.' });
@@ -621,14 +684,20 @@ export function createSunsetServer(
             return sendJson(res, 400, { error: error instanceof Error ? error.message : 'Invalid JSON body.' });
           }
           if (!body || typeof body !== 'object' || Array.isArray(body)
-            || Object.keys(body).some((key) => key !== 'reason')
-            || ('reason' in body && typeof (body as { reason: unknown }).reason !== 'string')) {
-            return sendJson(res, 400, { error: 'Body may contain only a string reason.' });
+            || Object.keys(body).some((key) => key !== 'reason' && key !== 'overrideStarted' && key !== 'unfinishedOnly')
+            || ('reason' in body && typeof (body as { reason: unknown }).reason !== 'string')
+            || ('overrideStarted' in body && typeof (body as { overrideStarted: unknown }).overrideStarted !== 'boolean')
+            || ('unfinishedOnly' in body && typeof (body as { unfinishedOnly: unknown }).unfinishedOnly !== 'boolean')) {
+            return sendJson(res, 400, { error: 'Body may contain only a string reason and boolean overrideStarted and unfinishedOnly.' });
           }
           reason = (body as { reason?: string }).reason;
+          overrideStarted = (body as { overrideStarted?: boolean }).overrideStarted ?? false;
+          unfinishedOnly = (body as { unfinishedOnly?: boolean }).unfinishedOnly ?? false;
         }
         try {
-          return sendJson(res, 200, { game: repository.cancelGame(Number(gameMatch[1]), reason) });
+          return sendJson(res, 200, {
+            game: repository.cancelGame(Number(gameMatch[1]), reason, undefined, overrideStarted, unfinishedOnly),
+          });
         } catch (error) {
           if (error instanceof DomainError) {
             return sendJson(res, error.code === 'not_found' ? 404 : error.code === 'conflict' ? 409 : 400, {

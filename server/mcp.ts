@@ -40,7 +40,7 @@ function domainResult(action: () => unknown) {
 }
 
 export function createMcpServer(repository: ChessRepository): McpServer {
-  const server = new McpServer({ name: 'sunset-chess', version: '1.3.0' });
+  const server = new McpServer({ name: 'sunset-chess', version: '1.4.0' });
   const resources = new ResourceService(repository);
   server.registerTool('contract-discover', {
     description: 'Discover the self-describing Sunset Chess application/resource contract, including schemas, relationships, capabilities, constraints, lifecycle rules, effects, errors, and events.',
@@ -77,7 +77,7 @@ export function createMcpServer(repository: ChessRepository): McpServer {
       id: z.string().min(1),
       spec: z.record(z.string(), z.unknown()),
     },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   }, async ({ kind, id, spec }) =>
     domainResult(() => ({ resource: resources.update(kind, id, spec) })));
   server.registerTool('resource-delete', {
@@ -166,10 +166,10 @@ export function createMcpServer(repository: ChessRepository): McpServer {
     domainResult(() => repository.checkInPlayer({ id, name })));
   server.registerTool('waiting-player-move', {
     description: 'Move a player who is waiting alone to another waiting table in the same event and close the table they vacated.',
-    inputSchema: { playerId, destinationGameId: gameId },
+    inputSchema: { playerId, destinationGameId: gameId, overrideStarted: z.boolean().optional() },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-  }, async ({ playerId: id, destinationGameId }) =>
-    domainResult(() => ({ game: repository.moveWaitingPlayer(id, destinationGameId) })));
+  }, async ({ playerId: id, destinationGameId, overrideStarted }) =>
+    domainResult(() => ({ game: repository.moveWaitingPlayer(id, destinationGameId, overrideStarted) })));
   server.registerTool('player-delete', {
     description: 'Delete an unreferenced player.',
     inputSchema: { id: playerId },
@@ -193,20 +193,25 @@ export function createMcpServer(repository: ChessRepository): McpServer {
     domainResult(() => ({ game: repository.createGame(blackPlayerId, whitePlayerId) })));
   server.registerTool('game-cancel', {
     description: 'Delete an unfinished game or audit-cancel a finished game when latest for both players.',
-    inputSchema: { id: gameId, reason: z.string().trim().min(1).max(500).optional() },
+    inputSchema: { id: gameId, reason: z.string().trim().min(1).max(500).optional(), overrideStarted: z.boolean().optional() },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-  }, async ({ id, reason }) => domainResult(() => ({ game: repository.cancelGame(id, reason) })));
+  }, async ({ id, reason, overrideStarted }) => domainResult(() => ({ game: repository.cancelGame(id, reason, undefined, overrideStarted) })));
   server.registerTool('game-delete', {
     description: 'Backward-compatible alias that deletes an unfinished game or audit-cancels a finished game.',
-    inputSchema: { id: gameId },
+    inputSchema: { id: gameId, overrideStarted: z.boolean().optional() },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-  }, async ({ id }) => domainResult(() => ({ game: repository.deleteGame(id) })));
+  }, async ({ id, overrideStarted }) => domainResult(() => ({ game: repository.deleteGame(id, overrideStarted) })));
+  server.registerTool('game-start', {
+    description: 'Set an unfinished game to Playing (start true, default) or back to Paired (start false). Playing requires both seats; Paired clears startedAt and unlocks seat edits.',
+    inputSchema: { id: gameId, start: z.boolean().optional() },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ id, start }) => domainResult(() => ({ game: repository.updateGameResource(id, { start: start ?? true }) })));
   server.registerTool('game-seat-update', {
-    description: 'Remove or replace one seat on a non-cancelled unfinished game.',
-    inputSchema: { id: gameId, side: z.enum(['black', 'white']), playerId: playerId.nullable() },
+    description: 'Assign from the full roster, checking in the player and moving them from another same-event table. Explicit overrideStarted consent is required if either game has Started.',
+    inputSchema: { id: gameId, side: z.enum(['black', 'white']), playerId: playerId.nullable(), overrideStarted: z.boolean().optional() },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-  }, async ({ id, side, playerId: replacementId }) =>
-    domainResult(() => ({ game: repository.updateGameSeat(id, side, replacementId) })));
+  }, async ({ id, side, playerId: replacementId, overrideStarted }) =>
+    domainResult(() => ({ game: repository.updateGameSeat(id, side, replacementId, overrideStarted) })));
   server.registerTool('game-result-set', {
     description: 'Finalize a fully seated game with a canonical PGN result and atomically update both player Elo ratings exactly once.',
     inputSchema: { id: gameId, result: gameResult },

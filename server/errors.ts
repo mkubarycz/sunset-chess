@@ -26,6 +26,8 @@ export class ConflictError extends DomainError {
   }
 }
 
+export class StartedGameError extends ConflictError {}
+
 export class CapabilityNotSupportedError extends DomainError {
   constructor(message: string) {
     super('capability_not_supported', message);

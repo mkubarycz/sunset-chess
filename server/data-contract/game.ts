@@ -6,7 +6,8 @@ export const GameSpecSchema = z.object({
 });
 
 export const GameStatusSchema = z.object({
-  lifecycle: z.enum(['waiting', 'playing', 'finished', 'cancelled']),
+  lifecycle: z.enum(['waiting', 'playing', 'started', 'finished', 'cancelled']),
+  startedAt: z.string().datetime().nullable(),
   result: z.enum(['1-0', '0-1', '1/2-1/2']).nullable(),
   finishedAt: z.string().datetime().nullable(),
   cancelledAt: z.string().datetime().nullable(),
@@ -26,10 +27,12 @@ export const gameResource: ResourceDescriptor = {
     'A player occupies at most one active game.',
     'Active table numbers are unique.',
     'Players must differ.',
+    'Seat edits and cancellation of Started games require explicit override consent.',
   ],
   lifecycle: [
-    'waiting -> playing -> finished',
-    'waiting|playing -> cancelled',
+    'waiting -> playing -> started -> finished',
+    'playing -> finished (result reporting does not require explicit Start).',
+    'waiting|playing|started -> cancelled',
     'finished -> cancelled only when rating compensation is safe.',
   ],
   effects: ['Finalization appends two rating ledger events and updates both projections atomically.'],
@@ -40,6 +43,7 @@ export const gameResource: ResourceDescriptor = {
       'spec.tableNumber',
       'status.lifecycle',
       'status.finishedAt',
+      'status.startedAt',
       'status.cancelledAt',
     ],
     mutable: [

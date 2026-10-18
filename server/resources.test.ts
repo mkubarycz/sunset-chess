@@ -67,7 +67,7 @@ describe('Sunset Chess application contract', () => {
     expect(Object.keys((game.schemas.updateInput as {
       properties: Record<string, unknown>;
     }).properties).sort()).toEqual([
-      'blackPlayerId', 'cancel', 'cancellationReason', 'result', 'whitePlayerId',
+      'blackPlayerId', 'cancel', 'cancellationReason', 'overrideStarted', 'result', 'start', 'swapSides', 'whitePlayerId',
     ]);
     expect(game.fields.generated).toContain('spec.tableNumber');
     expect(game.fields.generated).toEqual(expect.arrayContaining([
@@ -213,7 +213,7 @@ describe('Sunset Chess application contract', () => {
   it('physically migrates to first-class resource tables at the latest schema', () => {
     const { db } = fixture();
     expect(db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get())
-      .toEqual({ version: 11 });
+      .toEqual({ version: 12 });
     const tables = (db.prepare(`
       SELECT name FROM sqlite_master
       WHERE type = 'table' AND name LIKE '%Resource'

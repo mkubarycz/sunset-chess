@@ -80,6 +80,228 @@ async function fixture() {
 }
 
 describe('Sunset Chess HTTP and MCP', () => {
+  it('requires and supports Started consent in the existing waiting-player move workflow', async () => {
+    const app = await fixture();
+    try {
+      for (let id = 1000; id < 1004; id += 1) app.repository.upsertPlayer(id, `Player ${id}`);
+      const source = app.repository.createGame(1000, 1001, null);
+      const target = app.repository.createGame(1002, 1003, null);
+      for (const game of [source, target]) {
+        app.repository.updateGameResource(game.id, { start: true });
+        app.repository.updateGameSeat(game.id, 'white', null, true);
+      }
+      const url = `http://127.0.0.1:${app.port}/api/players/1000/move`;
+      const denied = await fetch(url, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ destinationGameId: target.id }),
+      });
+      expect(denied.status).toBe(409);
+      expect(await denied.json()).toMatchObject({ requiresStartedOverride: true });
+      expect((await fetch(url, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ destinationGameId: target.id, overrideStarted: true }),
+      })).status).toBe(200);
+      expect(() => app.repository.getGame(source.id)).toThrow(NotFoundError);
+      expect(app.repository.getGame(target.id)).toMatchObject({
+        blackPlayerId: 1002, whitePlayerId: 1000, startedAt: expect.any(String),
+      });
+      expect(app.repository.listCheckIns(undefined, 1000)).toEqual([
+        expect.objectContaining({ gameId: target.id, placement: 'paired', side: 'white' }),
+      ]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('sets Playing back to Paired through HTTP, MCP and generic resources without resetting results', async () => {
+    const app = await fixture();
+    try {
+      const base = `http://127.0.0.1:${app.port}`;
+      app.repository.upsertPlayer(1000, 'Alice');
+      app.repository.upsertPlayer(1001, 'Bob');
+      const game = app.repository.createGame(1000, 1001, null);
+      const url = `${base}/api/games/${game.id}/start`;
+      const post = (body: unknown) => fetch(url, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      });
+      expect((await fetch(url, { method: 'POST' })).status).toBe(200);
+      const started = app.repository.getGame(game.id);
+      for (const body of [{ start: 'false' }, {}, { start: false, result: '1-0' }]) {
+        expect((await post(body)).status).toBe(400);
+      }
+      expect(app.repository.getGame(game.id)).toEqual(started);
+      const paired = await post({ start: false });
+      expect(paired.status).toBe(200);
+      expect(await paired.json()).toMatchObject({ game: {
+        startedAt: null, blackPlayerId: 1000, whitePlayerId: 1001, result: null,
+      } });
+      expect((await app.client.callTool({ name: 'game-start', arguments: { id: game.id } })).isError).not.toBe(true);
+      expect((await app.client.callTool({
+        name: 'game-start', arguments: { id: game.id, start: false },
+      })).isError).not.toBe(true);
+      expect(app.repository.getGame(game.id).startedAt).toBeNull();
+      expect((await post({ start: true })).status).toBe(200);
+      expect((await fetch(`${base}/api/resources/game/${game.id}`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ start: false }),
+      })).status).toBe(200);
+      expect(app.repository.getGame(game.id).startedAt).toBeNull();
+      app.repository.finalizeGame(game.id, '1-0');
+      const completed = app.repository.getGame(game.id);
+      expect((await post({ start: false })).status).toBe(409);
+      expect((await app.client.callTool({
+        name: 'game-start', arguments: { id: game.id, start: false },
+      })).isError).toBe(true);
+      expect(app.repository.getGame(game.id)).toEqual(completed);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('immediately cancels unfinished tables but never silently cancels a newly recorded result', async () => {
+    const app = await fixture();
+    try {
+      const base = `http://127.0.0.1:${app.port}`;
+      app.repository.upsertPlayer(1000, 'Alice');
+      app.repository.upsertPlayer(1001, 'Bob');
+      const cancel = (id: number, body: unknown) => fetch(`${base}/api/games/${id}`, {
+        method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      });
+      for (const started of [false, true]) {
+        const game = app.repository.createGame(1000, 1001, null);
+        if (started) app.repository.updateGameResource(game.id, { start: true });
+        expect((await cancel(game.id, { unfinishedOnly: 'true', overrideStarted: true })).status).toBe(400);
+        expect((await cancel(game.id, { unfinishedOnly: true, overrideStarted: true })).status).toBe(200);
+        expect(() => app.repository.getGame(game.id)).toThrow(NotFoundError);
+        expect(app.repository.getPlayer(1000).rating).toBe(700);
+        expect(app.repository.getPlayerProfile(1000).ratingHistory).toHaveLength(1);
+      }
+      const empty = app.repository.createEmptyGame(undefined, null);
+      expect((await cancel(empty.id, { unfinishedOnly: true, overrideStarted: true })).status).toBe(200);
+      const game = app.repository.createGame(1000, 1001, null);
+      app.repository.finalizeGame(game.id, '1-0');
+      const finished = app.repository.getGame(game.id);
+      const history = app.repository.getPlayerProfile(1000).ratingHistory;
+      const response = await cancel(game.id, { unfinishedOnly: true, overrideStarted: true });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ error: expect.stringContaining('result has been recorded') });
+      expect(app.repository.getGame(game.id)).toEqual(finished);
+      expect(app.repository.getPlayerProfile(1000).ratingHistory).toEqual(history);
+      expect((await cancel(game.id, {})).status).toBe(200);
+      expect(app.repository.getGame(game.id).cancelledAt).not.toBeNull();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('switches colors atomically over HTTP and generic resources with Started consent', async () => {
+    const app = await fixture();
+    try {
+      const base = `http://127.0.0.1:${app.port}`;
+      app.repository.upsertPlayer(1000, 'Black player');
+      app.repository.upsertPlayer(1001, 'White player');
+      const game = app.repository.createGame(1000, 1001, null);
+      const url = `${base}/api/games/${game.id}/switch-sides`;
+      const post = (body: unknown) => fetch(url, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      });
+      expect((await fetch(url)).status).toBe(405);
+      expect((await fetch(url, { method: 'POST', body: '{}' })).status).toBe(400);
+      expect((await fetch(url, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: '{',
+      })).status).toBe(400);
+      for (const body of [{ overrideStarted: 'true' }, { playerId: 1000 }, null, []]) {
+        expect((await post(body)).status).toBe(400);
+      }
+      expect(app.repository.getGame(game.id)).toEqual(game);
+      const response = await post({});
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ game: {
+        id: game.id, blackPlayer: { id: 1001 }, whitePlayer: { id: 1000 },
+      } });
+      const started = app.repository.updateGameResource(game.id, { start: true });
+      const denied = await post({});
+      expect(denied.status).toBe(409);
+      expect(await denied.json()).toMatchObject({ requiresStartedOverride: true });
+      expect(app.repository.getGame(game.id)).toEqual(started);
+      const allowed = await post({ overrideStarted: true });
+      expect(allowed.status).toBe(200);
+      expect(await allowed.json()).toMatchObject({ game: {
+        blackPlayerId: 1000, whitePlayerId: 1001, startedAt: started.startedAt,
+      } });
+      const resourceUrl = `${base}/api/resources/game/${game.id}`;
+      const patch = (body: unknown) => fetch(resourceUrl, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      });
+      expect((await patch({ swapSides: true })).status).toBe(409);
+      expect((await patch({ swapSides: true, overrideStarted: true, blackPlayerId: 1000 })).status).toBe(400);
+      expect((await patch({ swapSides: true, overrideStarted: true })).status).toBe(200);
+      expect(app.repository.getGame(game.id)).toMatchObject({ blackPlayerId: 1001, whitePlayerId: 1000 });
+      expect((await app.client.callTool({
+        name: 'resource-update', arguments: { kind: 'game', id: String(game.id), spec: { swapSides: true } },
+      })).isError).toBe(true);
+      expect((await app.client.callTool({
+        name: 'resource-update',
+        arguments: { kind: 'game', id: String(game.id), spec: { swapSides: true, overrideStarted: true } },
+      })).isError).not.toBe(true);
+      expect(app.repository.getGame(game.id)).toMatchObject({ blackPlayerId: 1000, whitePlayerId: 1001 });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('checks in full-roster seat selections and enforces Started consent over HTTP, MCP, and generic resources', async () => {
+    const app = await fixture();
+    try {
+      const base = `http://127.0.0.1:${app.port}`;
+      for (let id = 1000; id < 1005; id += 1) app.repository.upsertPlayer(id, `Player ${id}`);
+      const session = app.repository.createClubSession('Manual pairing');
+      const source = app.repository.createGame(1000, 1001, session.id);
+      const target = app.repository.createEmptyGame(undefined, session.id);
+      const seat = (id: number, side: string, playerId: number | null, overrideStarted?: unknown) =>
+        fetch(`${base}/api/games/${id}/seats/${side}`, {
+          method: 'PATCH', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ playerId, ...(overrideStarted === undefined ? {} : { overrideStarted }) }),
+        });
+      const options = await (await fetch(`${base}/api/players?gameId=${target.id}`)).json();
+      expect(options.players).toHaveLength(5);
+      expect(options.players).toContainEqual(expect.objectContaining({ id: 1004, checkedIn: false }));
+      expect((await fetch(`${base}/api/games/${target.id}/start`, { method: 'POST' })).status).toBe(409);
+      expect((await seat(target.id, 'black', 1002)).status).toBe(200);
+      expect(app.repository.listCheckIns(session.id, 1002)).toEqual([
+        expect.objectContaining({ gameId: target.id, placement: 'waiting', side: 'black' }),
+      ]);
+      const started = await fetch(`${base}/api/games/${source.id}/start`, { method: 'POST' });
+      expect(started.status).toBe(200);
+      expect(await started.json()).toMatchObject({ game: { startedAt: expect.any(String), blackPlayer: { id: 1000 } } });
+      const denied = await seat(target.id, 'white', 1000);
+      expect(denied.status).toBe(409);
+      expect(await denied.json()).toMatchObject({ requiresStartedOverride: true, error: expect.stringContaining('already started') });
+      expect((await seat(target.id, 'white', 1000, 'true')).status).toBe(400);
+      expect((await seat(target.id, 'white', 1000, true)).status).toBe(200);
+      expect(app.repository.getGame(source.id)).toMatchObject({ blackPlayerId: null, whitePlayerId: 1001 });
+      expect(app.repository.listCheckIns(session.id, 1000)).toEqual([
+        expect.objectContaining({ gameId: target.id, side: 'white', placement: 'paired' }),
+      ]);
+      expect((await app.client.callTool({ name: 'game-start', arguments: { id: target.id } })).isError).not.toBe(true);
+      const generic = await (await fetch(`${base}/api/resources/game/${target.id}`)).json();
+      expect(generic.resource.status).toMatchObject({ lifecycle: 'started', startedAt: expect.any(String) });
+      expect((await app.client.callTool({
+        name: 'game-seat-update', arguments: { id: target.id, side: 'white', playerId: 1004 },
+      })).isError).toBe(true);
+      expect((await app.client.callTool({
+        name: 'game-seat-update', arguments: { id: target.id, side: 'white', playerId: 1004, overrideStarted: true },
+      })).isError).not.toBe(true);
+      expect((await fetch(`${base}/api/resources/game/${target.id}`, { method: 'DELETE' })).status).toBe(409);
+      expect((await fetch(`${base}/api/games/${target.id}`, { method: 'DELETE' })).status).toBe(409);
+      expect((await fetch(`${base}/api/resources/game/${target.id}`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ cancel: true, overrideStarted: true }),
+      })).status).toBe(200);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('discovers one contract and exposes conforming generic resources over HTTP and MCP', async () => {
     const app = await fixture();
     const base = `http://127.0.0.1:${app.port}`;
@@ -92,12 +314,12 @@ describe('Sunset Chess HTTP and MCP', () => {
         };
       }>;
     };
-    expect(contract.application.version).toBe('1.3.0');
+    expect(contract.application.version).toBe('1.4.0');
     expect(contract.resources).toHaveProperty('check-in');
     expect(Object.keys(contract.resources.game.schemas.createInput?.properties ?? {}).sort())
       .toEqual(['blackPlayerId', 'eventId', 'whitePlayerId']);
     expect(Object.keys(contract.resources.game.schemas.updateInput?.properties ?? {}).sort())
-      .toEqual(['blackPlayerId', 'cancel', 'cancellationReason', 'result', 'whitePlayerId']);
+      .toEqual(['blackPlayerId', 'cancel', 'cancellationReason', 'overrideStarted', 'result', 'start', 'swapSides', 'whitePlayerId']);
     expect(Object.keys(
       contract.resources['club-session'].schemas.createInput?.properties ?? {},
     ).sort()).toEqual(['name', 'pairingMode']);
@@ -158,7 +380,7 @@ describe('Sunset Chess HTTP and MCP', () => {
 
     const discovered = await app.client.callTool({ name: 'contract-discover', arguments: {} });
     expect(discovered.structuredContent).toMatchObject({
-      application: { version: '1.3.0' },
+      application: { version: '1.4.0' },
       resources: { player: expect.any(Object) },
     });
     const queried = await app.client.callTool({
@@ -345,10 +567,10 @@ describe('Sunset Chess HTTP and MCP', () => {
     });
     expect(seated.status).toBe(200);
     expect(await (await fetch(`${base}/api/players?gameId=${checkedIn.game.id}`)).json())
-      .toMatchObject({ players: [expect.objectContaining({ id: 1001, name: 'Bob' })] });
+      .toMatchObject({ players: expect.arrayContaining([expect.objectContaining({ id: 1001, name: 'Bob' })]) });
     expect(JSON.stringify(await (await fetch(
       `${base}/api/players?gameId=${checkedIn.game.id}`,
-    )).json())).not.toContain('Black King');
+    )).json())).toContain('Black King');
     const openSide = checkedIn.game.blackPlayerId === null ? 'black' : 'white';
     const moved = await fetch(`${base}/api/games/${checkedIn.game.id}/seats/${openSide}`, {
       method: 'PATCH',
@@ -361,7 +583,7 @@ describe('Sunset Chess HTTP and MCP', () => {
         id: checkedIn.game.id,
       },
     });
-    expect(() => app.repository.getGame(emptyTable.game.id)).toThrow(NotFoundError);
+    expect(app.repository.getGame(emptyTable.game.id)).toMatchObject({ blackPlayerId: null, whitePlayerId: null });
     expect((await fetch(`${base}/api/games?eventId=bad`)).status).toBe(400);
     const closed = await fetch(`${base}/api/sessions/${created.session.id}/close`, {
       method: 'POST',
@@ -562,7 +784,7 @@ describe('Sunset Chess HTTP and MCP', () => {
       'club-session-close', 'club-session-create', 'club-session-list', 'club-session-name-update',
       'club-session-pairing-mode-update', 'contract-discover',
       'game-cancel', 'game-create', 'game-delete', 'game-get', 'game-list', 'game-result-set',
-      'game-seat-update',
+      'game-seat-update', 'game-start',
       'leaderboard-list', 'player-check-in', 'player-create', 'player-delete',
       'player-get', 'player-list', 'player-name-update', 'player-profile-get', 'player-upsert',
       'resource-create', 'resource-delete', 'resource-get', 'resource-query', 'resource-update',
@@ -613,7 +835,7 @@ describe('Sunset Chess HTTP and MCP', () => {
       .not.toBe(true);
     expect((await app.client.callTool({ name: 'game-list', arguments: {} })).structuredContent)
       .toEqual({ games: [{
-        id: game.id, tableNumber: 1, createdAt: expect.any(String),
+        id: game.id, tableNumber: 1, createdAt: expect.any(String), startedAt: null,
         blackPlayerId: alice.id, whitePlayerId: 1001,
         finishedAt: null, result: null, cancelledAt: null, cancellationReason: null, eventId: null,
       }] });
@@ -622,6 +844,7 @@ describe('Sunset Chess HTTP and MCP', () => {
         id: game.id,
         tableNumber: 1,
         createdAt: expect.any(String),
+        startedAt: null,
         finishedAt: null,
         result: null,
         cancelledAt: null,

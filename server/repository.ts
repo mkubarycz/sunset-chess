@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { randomInt } from 'node:crypto';
-import { ConflictError, NotFoundError, ValidationError } from './errors.js';
+import { ConflictError, NotFoundError, StartedGameError, ValidationError } from './errors.js';
 import { calculateElo, INITIAL_RATING } from './ratings.js';
 
 export interface PlayerResource {
@@ -19,6 +19,7 @@ export interface GameResource {
   id: number;
   tableNumber: number;
   createdAt: string;
+  startedAt: string | null;
   blackPlayerId: number | null;
   whitePlayerId: number | null;
   finishedAt: string | null;
@@ -41,6 +42,7 @@ export interface JoinedChessGame extends GameResource {
 
 export interface LeaderboardEntry {
   rank: number;
+  cohort?: PairingCohortCode | null;
   id: number;
   name: string;
   currentRating: number;
@@ -126,11 +128,14 @@ export type CheckInResult = {
   checkIn: CheckIn;
 };
 export type GameResourceUpdate = {
+  swapSides?: boolean;
   blackPlayerId?: number | null;
   whitePlayerId?: number | null;
   result?: GameResult;
   cancel?: boolean;
   cancellationReason?: string;
+  start?: boolean;
+  overrideStarted?: boolean;
 };
 
 function playerRow(row: unknown): PlayerResource {
@@ -394,39 +399,97 @@ export class ChessRepository {
     `).all().map(playerRow);
   }
 
-  listSeatOptions(gameId: number): LeaderboardEntry[] {
+  listSeatOptions(gameId: number) {
     const game = this.getGame(gameId);
     if (game.result !== null || game.cancelledAt !== null) {
       throw new ConflictError('Player options are available only for an ongoing game.');
     }
-    const eligibleIds = new Set((this.db.prepare(`
-      SELECT p.id
-      FROM PlayerResource AS p
-      WHERE p.id IS NOT ? AND p.id IS NOT ?
-        AND (? IS NULL OR EXISTS (
-          SELECT 1 FROM CheckInResource AS ep
-          WHERE ep.eventId = ? AND ep.playerId = p.id
-        ))
-        AND NOT EXISTS (
-          SELECT 1 FROM GameResource AS active
-          WHERE active.result IS NULL AND active.cancelledAt IS NULL
-            AND active.id <> ?
-            AND (active.blackPlayerId = p.id OR active.whitePlayerId = p.id)
-            AND (
-              (active.blackPlayerId IS NOT NULL AND active.whitePlayerId IS NOT NULL)
-              OR active.eventId IS NOT ?
-            )
-        )
-    `).all(
-      game.blackPlayerId,
-      game.whitePlayerId,
-      game.eventId,
-      game.eventId,
-      game.id,
-      game.eventId,
-    ) as unknown as Array<{ id: number }>).map(({ id }) => id));
-    return this.listLeaderboard(200, game.eventId ?? undefined)
-      .filter(({ id }) => eligibleIds.has(id));
+    const activeGames = this.listGames().filter((candidate) => !candidate.result && !candidate.cancelledAt);
+    const checkedIn = new Set(this.listCheckIns(game.eventId ?? undefined).map(({ playerId }) => playerId));
+    const cohorts = new Map(game.eventId === null ? []
+      : this.listPairingCohorts(game.eventId).map(({ playerId, cohort }) => [playerId, cohort]));
+    const opponents = [game.blackPlayerId, game.whitePlayerId].filter((id): id is number => id !== null);
+    const placeholders = opponents.map(() => '?').join(', ');
+    const history = opponents.length === 0 ? [] : this.db.prepare(`
+      WITH encounters AS (
+        SELECT blackPlayerId AS playerId, whitePlayerId AS opponentId,
+          CASE WHEN result = '0-1' THEN 1 ELSE 0 END AS wins,
+          CASE WHEN result = '1-0' THEN 1 ELSE 0 END AS losses,
+          CASE WHEN result = '1/2-1/2' THEN 1 ELSE 0 END AS draws,
+          finishedAt
+        FROM GameResource
+        WHERE result IS NOT NULL AND cancelledAt IS NULL
+          AND whitePlayerId IN (${placeholders})
+        UNION ALL
+        SELECT whitePlayerId AS playerId, blackPlayerId AS opponentId,
+          CASE WHEN result = '1-0' THEN 1 ELSE 0 END AS wins,
+          CASE WHEN result = '0-1' THEN 1 ELSE 0 END AS losses,
+          CASE WHEN result = '1/2-1/2' THEN 1 ELSE 0 END AS draws,
+          finishedAt
+        FROM GameResource
+        WHERE result IS NOT NULL AND cancelledAt IS NULL
+          AND blackPlayerId IN (${placeholders})
+      )
+      SELECT playerId, opponentId, SUM(wins) AS wins, SUM(losses) AS losses,
+        SUM(draws) AS draws, MAX(finishedAt) AS lastPlayedAt
+      FROM encounters GROUP BY playerId, opponentId
+    `).all(...opponents, ...opponents) as Array<{
+      playerId: number; opponentId: number; wins: number; losses: number;
+      draws: number; lastPlayedAt: string | null;
+    }>;
+    const matchups = new Map(history.map((record) => [`${record.playerId}:${record.opponentId}`, record]));
+    const latestResults = this.db.prepare(`
+      WITH outcomes AS (
+        SELECT id AS gameId, blackPlayerId AS playerId, whitePlayerId AS opponentId,
+          CASE result WHEN '0-1' THEN 'win' WHEN '1-0' THEN 'loss' ELSE 'draw' END AS outcome,
+          finishedAt
+        FROM GameResource WHERE result IS NOT NULL AND cancelledAt IS NULL
+        UNION ALL
+        SELECT id AS gameId, whitePlayerId AS playerId, blackPlayerId AS opponentId,
+          CASE result WHEN '1-0' THEN 'win' WHEN '0-1' THEN 'loss' ELSE 'draw' END AS outcome,
+          finishedAt
+        FROM GameResource WHERE result IS NOT NULL AND cancelledAt IS NULL
+      ), ranked AS (
+        SELECT *, ROW_NUMBER() OVER (
+          PARTITION BY playerId ORDER BY finishedAt DESC, gameId DESC
+        ) AS position FROM outcomes
+      )
+      SELECT r.playerId, r.opponentId, p.name AS opponentName, r.outcome, r.finishedAt
+      FROM ranked r JOIN PlayerResource p ON p.id = r.opponentId WHERE r.position = 1
+    `).all() as Array<{
+      playerId: number; opponentId: number; opponentName: string;
+      outcome: 'win' | 'loss' | 'draw'; finishedAt: string;
+    }>;
+    const lastResults = new Map(latestResults.map(({ playerId, ...result }) => [playerId, result]));
+    const players = this.listPlayers();
+    const playersById = new Map(players.map((player) => [player.id, player]));
+    return players.map((player) => {
+      const assigned = activeGames.find((candidate) =>
+        candidate.blackPlayerId === player.id || candidate.whitePlayerId === player.id);
+      const assignedOpponentId = assigned?.blackPlayerId === player.id
+        ? assigned.whitePlayerId : assigned?.blackPlayerId;
+      const assignedOpponent = assignedOpponentId == null ? null : playersById.get(assignedOpponentId);
+      return {
+        id: player.id,
+        name: player.name,
+        currentRating: player.rating,
+        cohort: cohorts.get(player.id) ?? null,
+        headToHead: opponents.map((opponentId) => {
+          const record = matchups.get(`${player.id}:${opponentId}`);
+          return {
+            opponentId, wins: record?.wins ?? 0, losses: record?.losses ?? 0,
+            draws: record?.draws ?? 0, lastPlayedAt: record?.lastPlayedAt ?? null,
+          };
+        }),
+        checkedIn: checkedIn.has(player.id),
+        lastResult: lastResults.get(player.id) ?? null,
+        assignedGame: assigned ? {
+          id: assigned.id, tableNumber: assigned.tableNumber,
+          startedAt: assigned.startedAt, eventId: assigned.eventId,
+          opponent: assignedOpponent ? { id: assignedOpponent.id, name: assignedOpponent.name } : null,
+        } : null,
+      };
+    });
   }
 
   getPlayer(id: number): PlayerResource {
@@ -675,7 +738,7 @@ export class ChessRepository {
   listGames(): GameResource[] {
     return this.db.prepare(
       `SELECT id, tableNumber, createdAt, blackPlayerId, whitePlayerId, finishedAt, result,
-              cancelledAt, cancellationReason, eventId
+              cancelledAt, cancellationReason, eventId, startedAt
        FROM GameResource ORDER BY CASE WHEN result IS NULL AND cancelledAt IS NULL THEN 0 ELSE 1 END, tableNumber`,
     ).all().map(gameRow);
   }
@@ -701,7 +764,7 @@ export class ChessRepository {
     return this.db.prepare(`
       SELECT
         g.id, g.tableNumber, g.createdAt, g.finishedAt, g.result,
-        g.cancelledAt, g.cancellationReason, g.eventId,
+        g.cancelledAt, g.cancellationReason, g.eventId, g.startedAt,
         g.blackPlayerId, g.whitePlayerId,
         CASE
           WHEN g.cancelledAt IS NOT NULL THEN 0
@@ -752,6 +815,7 @@ export class ChessRepository {
         id: value.id,
         tableNumber: value.tableNumber,
         createdAt: value.createdAt,
+        startedAt: value.startedAt,
         blackPlayerId: value.blackPlayerId,
         whitePlayerId: value.whitePlayerId,
         finishedAt: value.finishedAt,
@@ -783,7 +847,7 @@ export class ChessRepository {
   getGame(id: number): GameResource {
     const row = this.db.prepare(
       `SELECT id, tableNumber, createdAt, blackPlayerId, whitePlayerId, finishedAt, result,
-              cancelledAt, cancellationReason, eventId
+              cancelledAt, cancellationReason, eventId, startedAt
        FROM GameResource WHERE id = ?`,
     ).get(id);
     if (!row) throw new NotFoundError(`Game ${id} was not found.`);
@@ -905,6 +969,7 @@ export class ChessRepository {
           SELECT id, blackPlayerId, whitePlayerId
           FROM GameResource
           WHERE result IS NULL AND cancelledAt IS NULL
+            AND startedAt IS NULL
             AND eventId IS NULL
             AND (blackPlayerId IS NULL) <> (whitePlayerId IS NULL)
           ORDER BY createdAt ASC, id ASC
@@ -931,6 +996,7 @@ export class ChessRepository {
         SELECT id
         FROM GameResource
         WHERE result IS NULL AND cancelledAt IS NULL
+          AND startedAt IS NULL
           AND (eventId IS ? OR (eventId IS NULL AND ? IS NOT NULL))
           AND blackPlayerId IS NULL AND whitePlayerId IS NULL
         ORDER BY CASE WHEN eventId IS ? THEN 0 ELSE 1 END,
@@ -1075,7 +1141,7 @@ export class ChessRepository {
           CASE WHEN g.blackPlayerId IS NULL THEN g.whitePlayerId ELSE g.blackPlayerId END AS opponentId
         FROM GameResource AS g
         WHERE g.eventId = ?
-          AND g.result IS NULL AND g.cancelledAt IS NULL
+          AND g.result IS NULL AND g.cancelledAt IS NULL AND g.startedAt IS NULL
           AND (g.blackPlayerId IS NULL) <> (g.whitePlayerId IS NULL)
       )
       SELECT candidate.id, candidate.blackPlayerId, candidate.whitePlayerId
@@ -1154,18 +1220,18 @@ export class ChessRepository {
     return game;
   }
 
-  deleteGame(id: number): GameResource {
-    return this.cancelGame(id);
+  deleteGame(id: number, overrideStarted = false): GameResource {
+    return this.cancelGame(id, undefined, undefined, overrideStarted);
   }
 
-  updateGameSeat(id: number, side: CheckInSide, playerId: number | null): GameResource {
+  updateGameSeat(id: number, side: CheckInSide, playerId: number | null, overrideStarted = false): GameResource {
     if (side !== 'black' && side !== 'white') throw new ValidationError('Side must be black or white.');
     if (playerId !== null && (!Number.isInteger(playerId) || playerId < 1000 || playerId > 2000)) {
       throw new ValidationError('playerId must be null or an integer between 1000 and 2000.');
     }
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      const updated = this.updateGameSeatInTransaction(id, side, playerId);
+      const updated = this.updateGameSeatInTransaction(id, side, playerId, overrideStarted);
       this.db.exec('COMMIT');
       return updated;
     } catch (error) {
@@ -1186,15 +1252,57 @@ export class ChessRepository {
     if (cancellationReason && cancellationReason.length > 500) {
       throw new ValidationError('Cancellation reason must be at most 500 characters.');
     }
+    if (update.swapSides && (update.blackPlayerId !== undefined || update.whitePlayerId !== undefined)) {
+      throw new ValidationError('Switching sides cannot be combined with replacement seat assignments.');
+    }
     this.db.exec('BEGIN IMMEDIATE');
     try {
+      if (update.swapSides) {
+        const game = this.getGame(id);
+        if (game.result !== null || game.cancelledAt !== null) {
+          throw new ConflictError('Only a non-cancelled unfinished game can switch sides.');
+        }
+        if (game.blackPlayerId === null && game.whitePlayerId === null) {
+          throw new ConflictError('At least one player must be seated before switching sides.');
+        }
+        this.assertStartedConsent(game, update.overrideStarted ?? false);
+        if (game.eventId !== null && !this.getClubSession(game.eventId).active) {
+          throw new ConflictError('Cannot switch sides in a closed Club Session.');
+        }
+        this.db.prepare(`
+          UPDATE GameResource SET blackPlayerId = whitePlayerId, whitePlayerId = blackPlayerId WHERE id = ?
+        `).run(id);
+        this.db.prepare(`
+          UPDATE CheckInResource SET side = CASE WHEN playerId = ? THEN 'white' ELSE 'black' END
+          WHERE gameId = ? AND playerId IN (?, ?)
+        `).run(game.blackPlayerId, id, game.blackPlayerId, game.whitePlayerId);
+      }
       if (update.blackPlayerId !== undefined) {
-        this.updateGameSeatInTransaction(id, 'black', update.blackPlayerId);
+        this.updateGameSeatInTransaction(id, 'black', update.blackPlayerId, update.overrideStarted);
       }
       if (update.whitePlayerId !== undefined) {
-        this.updateGameSeatInTransaction(id, 'white', update.whitePlayerId);
+        this.updateGameSeatInTransaction(id, 'white', update.whitePlayerId, update.overrideStarted);
       }
       let game = this.getGame(id);
+      if (update.start !== undefined) {
+        if (game.result || game.cancelledAt) {
+          throw new ConflictError('Only a non-cancelled unfinished game can change between Paired and Playing.');
+        }
+        if (update.start && (game.blackPlayerId === null || game.whitePlayerId === null)) {
+          throw new ConflictError('Both seats must be occupied in an unfinished game before starting.');
+        }
+        if (!update.start) {
+          this.db.prepare('UPDATE GameResource SET startedAt = NULL WHERE id = ?').run(id);
+          game = this.getGame(id);
+        } else if (!game.startedAt) {
+          const startedAt = now();
+          if (typeof startedAt !== 'string' || Number.isNaN(Date.parse(startedAt))) {
+            throw new Error('Clock source returned an invalid ISO timestamp.');
+          }
+          this.db.prepare('UPDATE GameResource SET startedAt = ? WHERE id = ?').run(startedAt, id);
+          game = this.getGame(id);
+        }
+      }
       if (update.result !== undefined) {
         const finishedAt = now();
         if (typeof finishedAt !== 'string' || Number.isNaN(Date.parse(finishedAt))) {
@@ -1203,7 +1311,7 @@ export class ChessRepository {
         game = this.finalizeGameInTransaction(id, update.result, finishedAt);
       }
       if (update.cancel) {
-        game = this.cancelGameInTransaction(id, cancellationReason, now);
+        game = this.cancelGameInTransaction(id, cancellationReason, now, update.overrideStarted);
       }
       this.db.exec('COMMIT');
       return game;
@@ -1220,19 +1328,22 @@ export class ChessRepository {
     id: number,
     side: CheckInSide,
     playerId: number | null,
+    overrideStarted = false,
   ): GameResource {
     const game = this.getGame(id);
     if (game.result !== null || game.cancelledAt !== null) {
       throw new ConflictError('Only a non-cancelled unfinished game can have a seat changed.');
     }
     const opponentId = side === 'black' ? game.whitePlayerId : game.blackPlayerId;
+    const currentId = side === 'black' ? game.blackPlayerId : game.whitePlayerId;
+    if (currentId === playerId) return game;
+    this.assertStartedConsent(game, overrideStarted);
+    let sourceId: number | null = null;
     if (playerId !== null) {
       this.getPlayer(playerId);
       if (playerId === opponentId) throw new ValidationError('A player cannot occupy both seats.');
-      if (game.eventId !== null && !this.db.prepare(`
-        SELECT 1 FROM CheckInResource WHERE eventId = ? AND playerId = ?
-      `).get(game.eventId, playerId)) {
-        throw new ConflictError('Player has not checked into this Club Session.');
+      if (game.eventId !== null && !this.getClubSession(game.eventId).active) {
+        throw new ConflictError('Cannot check a player into a closed Club Session.');
       }
       const existing = this.db.prepare(`
         SELECT * FROM GameResource
@@ -1241,13 +1352,19 @@ export class ChessRepository {
         LIMIT 1
       `).get(playerId, playerId) as GameResource | undefined;
       if (existing && existing.id !== game.id) {
-        if (existing.blackPlayerId !== null && existing.whitePlayerId !== null) {
-          throw new ConflictError('Replacement player belongs to another active game.');
-        }
         if (existing.eventId !== game.eventId) {
           throw new ConflictError('Players can only move between tables in the same event.');
         }
-        this.db.prepare('DELETE FROM GameResource WHERE id = ?').run(existing.id);
+        this.assertStartedConsent(existing, overrideStarted);
+        sourceId = existing.id;
+        this.db.prepare(`
+          UPDATE GameResource SET ${existing.blackPlayerId === playerId ? 'blackPlayerId' : 'whitePlayerId'} = NULL
+          WHERE id = ?
+        `).run(existing.id);
+        this.db.prepare(`
+          UPDATE CheckInResource SET gameId = NULL, placement = NULL, side = NULL
+          WHERE gameId = ? AND playerId = ?
+        `).run(existing.id, playerId);
       }
     }
     this.db.prepare(`
@@ -1255,10 +1372,41 @@ export class ChessRepository {
       SET ${side === 'black' ? 'blackPlayerId' : 'whitePlayerId'} = ?
       WHERE id = ?
     `).run(playerId, id);
+    if (currentId !== null) {
+      this.db.prepare(`
+        UPDATE CheckInResource SET gameId = NULL, placement = NULL, side = NULL
+        WHERE gameId = ? AND playerId = ?
+      `).run(id, currentId);
+    }
+    if (playerId !== null) {
+      if (game.eventId !== null) this.ensureSessionPairingCohort(game.eventId, playerId);
+      const checkIn = this.recordCheckIn(game.eventId, playerId, new Date().toISOString(), id,
+        opponentId === null ? 'waiting' : 'paired', side);
+      this.db.prepare(`
+        UPDATE CheckInResource SET gameId = ?, placement = ?, side = ? WHERE id = ?
+      `).run(id, opponentId === null ? 'waiting' : 'paired', side, checkIn.id);
+    }
+    for (const affectedId of sourceId === null ? [id] : [sourceId, id]) {
+      const affected = this.getGame(affectedId);
+      for (const seat of ['black', 'white'] as const) {
+        const seatedId = seat === 'black' ? affected.blackPlayerId : affected.whitePlayerId;
+        if (seatedId === null) continue;
+        this.db.prepare(`
+          UPDATE CheckInResource SET placement = ?, side = ? WHERE gameId = ? AND playerId = ?
+        `).run(affected.blackPlayerId !== null && affected.whitePlayerId !== null ? 'paired' : 'waiting',
+          seat, affectedId, seatedId);
+      }
+    }
     return this.getGame(id);
   }
 
-  moveWaitingPlayer(playerId: number, destinationGameId: number): JoinedChessGame {
+  private assertStartedConsent(game: GameResource, overrideStarted: boolean): void {
+    if (game.startedAt && !overrideStarted) {
+      throw new StartedGameError(`This game has already started (Table ${game.tableNumber}). Confirm an override to modify it.`);
+    }
+  }
+
+  moveWaitingPlayer(playerId: number, destinationGameId: number, overrideStarted = false): JoinedChessGame {
     if (!Number.isInteger(playerId) || playerId < 1000 || playerId > 2000) {
       throw new ValidationError('playerId must be an integer between 1000 and 2000.');
     }
@@ -1282,6 +1430,8 @@ export class ChessRepository {
         throw new ValidationError('Choose a different destination table.');
       }
       const destination = this.getGame(destinationGameId);
+      this.assertStartedConsent(source, overrideStarted);
+      this.assertStartedConsent(destination, overrideStarted);
       if (destination.result !== null || destination.cancelledAt !== null
         || (destination.blackPlayerId === null) === (destination.whitePlayerId === null)) {
         throw new ConflictError('Destination table is not waiting for a player.');
@@ -1290,10 +1440,8 @@ export class ChessRepository {
         throw new ConflictError('Players can only move between tables in the same event.');
       }
       const side: CheckInSide = destination.blackPlayerId === null ? 'black' : 'white';
+      this.updateGameSeatInTransaction(destination.id, side, playerId, overrideStarted);
       this.db.prepare('DELETE FROM GameResource WHERE id = ?').run(source.id);
-      this.db.prepare(
-        `UPDATE GameResource SET ${side === 'black' ? 'blackPlayerId' : 'whitePlayerId'} = ? WHERE id = ?`,
-      ).run(playerId, destination.id);
       const moved = this.getJoinedGame(destination.id);
       this.db.exec('COMMIT');
       return moved;
@@ -1306,12 +1454,15 @@ export class ChessRepository {
     }
   }
 
-  cancelGame(id: number, rawReason?: string, now = () => new Date().toISOString()): GameResource {
+  cancelGame(
+    id: number, rawReason?: string, now = () => new Date().toISOString(),
+    overrideStarted = false, unfinishedOnly = false,
+  ): GameResource {
     const reason = rawReason?.trim() || null;
     if (reason && reason.length > 500) throw new ValidationError('Cancellation reason must be at most 500 characters.');
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      const cancelled = this.cancelGameInTransaction(id, reason, now);
+      const cancelled = this.cancelGameInTransaction(id, reason, now, overrideStarted, unfinishedOnly);
       this.db.exec('COMMIT');
       return cancelled;
     } catch (error) {
@@ -1324,10 +1475,16 @@ export class ChessRepository {
     id: number,
     reason: string | null,
     now: () => string,
+    overrideStarted = false,
+    unfinishedOnly = false,
   ): GameResource {
     const game = this.getGame(id);
+    if (unfinishedOnly && game.result !== null) {
+      throw new ConflictError('A result has been recorded for this game. Review it before confirming cancellation.');
+    }
     if (game.cancelledAt !== null) return game;
     if (game.result === null) {
+      this.assertStartedConsent(game, overrideStarted);
       this.db.prepare('DELETE FROM GameResource WHERE id = ?').run(id);
       return game;
     }
@@ -1464,7 +1621,9 @@ export class ChessRepository {
       if (eventId !== undefined) this.resolveEventId(eventId);
       const membershipJoin = eventId === undefined
         ? ''
-        : 'INNER JOIN CheckInResource AS ep ON ep.playerId = p.id AND ep.eventId = ?';
+        : `INNER JOIN CheckInResource AS ep ON ep.playerId = p.id AND ep.eventId = ?
+          LEFT JOIN PairingCohortResource AS cohort
+            ON cohort.eventId = ep.eventId AND cohort.playerId = p.id`;
       const sessionRecords = eventId === undefined
         ? `SELECT p.id, 0 AS sessionGamesPlayed, 0 AS sessionWins,
             0 AS sessionLosses, 0 AS sessionDraws
@@ -1486,6 +1645,7 @@ export class ChessRepository {
       return this.db.prepare(`
         WITH records AS (
           SELECT p.id, p.name, p.scanningIdentifier, p.rating AS currentRating,
+            ${eventId === undefined ? '' : 'cohort.cohort,'}
             COUNT(g.id) AS gamesPlayed,
             SUM(CASE
               WHEN (g.whitePlayerId = p.id AND g.result = '1-0')

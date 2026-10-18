@@ -36,8 +36,13 @@ export function ModalDialog({
       void onCloseRef.current()
     }
     document.addEventListener('keydown', closeOnEscape)
-    window.requestAnimationFrame(() => (initialFocusRef?.current ?? dialogRef.current)?.focus())
+    const focusFrame = window.requestAnimationFrame(() => {
+      if (dialogRef.current && !dialogRef.current.contains(document.activeElement)) {
+        (initialFocusRef?.current ?? dialogRef.current).focus()
+      }
+    })
     return () => {
+      window.cancelAnimationFrame(focusFrame)
       document.removeEventListener('keydown', closeOnEscape)
       returnTarget?.focus()
     }

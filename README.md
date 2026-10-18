@@ -1,4 +1,4 @@
-# Sunset Chess 1.0
+# Sunset Chess 1.4
 
 A local-first QR camera scanner with a SQLite/MCP control plane.
 
@@ -91,6 +91,9 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
   Selecting a clean thumbnail opens a shared, focus-trapped game detail modal
   containing seat assignment/replacement and eligible cancellation controls,
   plus finished/cancelled game audit details.
+- Player-card game history remains at the organizer's chosen horizontal scroll
+  position during background refreshes, without snapping to card boundaries.
+  Open cards refresh in place without discarding focus or unsaved name edits.
 - Twenty most recently completed games with compact W/L/D plus signed Elo
   changes and each player's Elo at the beginning of that game
 - Successful QR check-ins optimistically promote the assigned table to the
@@ -604,6 +607,17 @@ prefers opponents with the same cumulative session record sign (positive,
 even, or negative), then the longest-waiting eligible opponent. If none is
 eligible, check-in reuses an empty table or creates a new one.
 
+Session standings show a Cohort column instead of rank numbers or
+gold/silver/bronze badges, without grouping or reordering players by cohort.
+Letter badges distinguish A (blue), B (purple), C (green), and D (orange), with
+text labels so identification does not depend on color alone. The badges
+use the frozen session assignments, not a fresh split of today's Elo ratings,
+so they continue to show the algorithm's actual pairing boundaries as ratings
+change. Player readiness, table links, Elo, lifetime records, and session records
+remain available. If a session member has no recorded cohort, the view explicitly
+shows a neutral dash labeled "No cohort assigned" rather than guessing an assignment.
+The overall club leaderboard retains its existing ranks and podium badges.
+
 ## Resource contract and adapters
 
 Sunset Chess 1.2 publishes a self-describing Zod application contract at
@@ -641,11 +655,11 @@ back together. v9 stored attendance but not an immutable original placement;
 migration reconstructs active placements and explicitly marks older
 unrecoverable placement status as `migrated` instead of inventing history.
 
-MCP is published at <http://localhost:4175/mcp>. Compatibility tools are `player-list`,
+MCP for 1.4 is published at <http://localhost:4176/mcp>. Compatibility tools are `player-list`,
 `player-get`, `player-create`, `player-upsert`, `player-name-update`,
 `player-check-in`, `player-delete`,
 `game-list`, `game-get`, `game-create`, `game-result-set`, `game-cancel`,
-`game-seat-update`, and the backward-compatible `game-delete`.
+`game-seat-update`, `game-start`, and the backward-compatible `game-delete`.
 Read tools also include `leaderboard-list` and `player-profile-get` for ranked
 records, recent games, and chronological rating history.
 Club Session tools create, list, rename, select the pairing mode, and close
@@ -665,10 +679,63 @@ waiting game with a cryptographically random side. The read-only `GET /api/games
 table) and `recentGames` (the 20 most recently finished). `PATCH
 /api/games/:id/result` with JSON `{ "result": "1-0" }` (or either other
 canonical token) finalizes a fully seated game. `PATCH
-/api/games/:id/seats/:side` accepts `{ "playerId": 1234 }` or `null` to assign,
-replace, or remove one active seat. `DELETE /api/games/:id` deletes an unfinished
+/api/games/:id/seats/:side` accepts `{ "playerId": 1234 }` or
+`{ "playerId": null }` to assign, replace, or remove one active seat.
+`GET /api/players?gameId=:id` returns the entire player roster (not the
+200-entry leaderboard subset), including check-in and source-table context.
+Selecting an unchecked player creates session membership and a pairing cohort,
+then seats them directly without invoking automatic pairing. Selecting someone
+at another table in the same event moves them, leaves their former seat empty,
+and keeps the old table. Players in a different event remain visible but cannot
+be moved across events. Seating, movement, and check-in changes are atomic;
+none change Elo.
+
+`POST /api/games/:id/start` explicitly marks a fully seated unfinished game as
+**Playing**. This persists `startedAt`, displays a yellow lock icon beside the
+table number on the card, and
+locks seat edits and unfinished-game cancellation behind organizer consent.
+For cancellation in the table popup, choosing Cancelled supplies that consent;
+unfinished games are removed immediately without an additional confirmation.
+Both the destination and a moved player's source table are checked. A blocked
+seat request returns HTTP 409 with `requiresStartedOverride: true`; the
+organizer can keep both games unchanged or explicitly retry with
+`"overrideStarted": true`. Automatic pairing never fills Started tables, even
+if a seat was emptied by an override. Normal result reporting remains available
+without requiring Start first.
+The same endpoint accepts JSON `{ "start": false }` to return an unfinished
+game to **Paired**, clearing `startedAt` and unlocking seat edits without changing
+players, check-ins, cohorts, or ratings. JSON `{ "start": true }` explicitly
+starts play; omitting the body retains the original start behavior. Completed
+and cancelled games cannot change between Paired and Playing. Generic resource
+updates and MCP `game-start` also accept `start: false`; a later start records a
+new timestamp. Existing persisted/API lifecycle codes remain backward-compatible.
+
+`POST /api/games/:id/switch-sides` accepts JSON `{}` (or
+`{ "overrideStarted": true }`) and atomically exchanges both seats and check-in
+colors. It returns the joined game, preserves `startedAt`, and returns HTTP 409
+with `requiresStartedOverride: true` when a Started game needs consent.
+Generic HTTP/MCP resource updates expose the same operation as `swapSides: true`,
+which cannot be combined with explicit replacement seat IDs. Switching is not
+idempotent: each successful request exchanges the colors again, so clients must
+not automatically repeat successful switches. The generic MCP update tool is
+therefore advertised as non-idempotent.
+
+`DELETE /api/games/:id` deletes an unfinished
 game or audit-cancels an eligible finished game and may accept JSON
-`{ "reason": "..." }`. Finished cancellation follows the guarded
+`{ "reason": "...", "overrideStarted": true }`. The override is required only
+for an unfinished Started game. Optional `"unfinishedOnly": true` rejects the
+request with HTTP 409 if a result has been recorded, without changing the game
+or Elo; the popup uses this guard for immediate cancellation. Generic resource updates support `start` and
+`overrideStarted`; MCP `game-start`, `game-seat-update`, `game-cancel`, and
+`game-delete` enforce the same rules. Generic resource deletion cannot bypass
+Started consent; use an explicit update with `cancel` and `overrideStarted`.
+The existing **Move To...** waiting-player workflow, its HTTP endpoint, and
+`waiting-player-move` also support explicit `overrideStarted` consent. Unlike
+choosing a player through a game card, this dedicated workflow retains its
+existing behavior of closing the vacated waiting table.
+Explicitly closing a session still resolves all its games through its existing
+confirmation workflow. Existing games migrate with no Started timestamp;
+they are not automatically locked. Finished cancellation follows the guarded
 compensation policy above. The browser loads it immediately,
 polls without overlapping requests, refreshes on focus/visibility, preserves
 the last successful view on errors, and offers retry. A locally checked-in game
@@ -704,6 +771,18 @@ The bounded limit is 1–200. `GET /api/players/:id/profile?recentLimit=10`
 returns record/rank, the player's ongoing games, newest-first non-cancelled
 completed games (maximum 50), and full chronological Elo history. Malformed
 bounds return 400 and missing players 404.
+Top-level dashboard tabs use the History API and a `view` query parameter:
+`?view=leaderboard`, `?view=recent-games`, or `?view=session-4` for session ID 4.
+Clicking or keyboard-selecting a tab adds a history entry; selecting the current
+tab does not. Browser Back/Forward restores the corresponding view, and refresh
+or a shared URL restores the selected session or Recent Games tab. Existing
+query parameters, URL fragments, and history state are preserved. Without a
+`view` parameter, the saved dashboard preference supplies the initial view.
+Session links wait for session data before validation. Unavailable/closed
+sessions and invalid view links return to Leaderboard with a visible explanation.
+Creating a session navigates to it; closing it replaces its current URL with
+Leaderboard. Navigation does not restart or otherwise change camera state.
+
 The Elo Leaderboard occupies its dashboard tab, with player creation available
 from its Add player modal. Rows are native keyboard buttons and open the shared
 player card. The ARIA modal
@@ -716,14 +795,79 @@ closes, and the footer retains a text-only Delete player action.
 
 Player cards, seat assignment, and game cancellation use one shared modal
 widget for the backdrop, X close control, Escape handling, focus trap, and
-focus restoration. Each table card has a keyboard-accessible gear menu. Active
-empty seats have an accessible add action for assignment, while occupied seats
-have a pencil action and a searchable player picker whose special Empty option
-clears the seat. While that picker is open, an authoritatively decoded player
-piece selects the same eligible list entry without submitting; the user still
-confirms Assign player or Replace player. Current/opposing occupants, players
-at other live tables, and unknown or unavailable roster entries are rejected
-with an accessible status message. Server-provided finished-game deltas use signed, tabular,
+focus restoration. Each table card opens a keyboard-accessible detail dialog
+with searchable Black and White player fields; the special Empty option clears
+an occupied seat. Player fields and winner/draw actions appear at the top of
+the detail dialog. Status and timestamps sit to the left of a compact,
+right-aligned table preview, stacking on narrow screens. A Status dropdown
+replaces the Start/Cancel links and shows the current status and eligible next
+statuses: **Paired**, **Playing**, **Completed**, and **Cancelled**.
+Choosing Playing explicitly starts a fully seated unfinished game; choosing
+Paired returns a Playing game to its not-started state, removing the lock.
+Completed is not a manual transition: it appears only after declaring a winner
+or draw, with the recorded outcome displayed separately under Result.
+Choosing Cancelled depends on whether a result is recorded: without a result, it
+immediately removes the table, including Started tables, with no confirmation.
+With a recorded result, it opens the confirmation before eligible Elo compensation.
+The immediate request is guarded against a result arriving concurrently; it fails
+visibly rather than silently undoing that result. Seat/switch Started-game
+override rules remain unchanged. Results still use the
+winner/draw controls; Completed and Cancelled games cannot return to Paired or
+Playing through this dropdown.
+Audit labels and values use matching text sizing and baseline alignment.
+The detail dialog closes through its top-right X, Escape, or the backdrop,
+without a redundant bottom Close button.
+Player search options float below the active field over the dialog content
+instead of moving the result controls, timestamps, or table preview.
+The larger table dialog remains bounded by the viewport. Its player dropdown
+escapes the dialog's scroll clipping, follows its field during scrolling and
+resizing, and opens above the field when there is more room there. The list
+scrolls within the available screen space, including with a mobile keyboard open.
+The full roster includes unchecked players and players at
+other live tables. Current table, Started, and check-in context remains available
+in hover titles and assistive labels rather than separate visible lines.
+For a Club Session table with an opposing player selected, a Suggested section
+puts players from that opponent's saved session cohort first. Suggestions do
+not duplicate players in Other players, and players assigned to another event
+are not suggested. The full eligible roster remains searchable. Each candidate
+uses two compact lines: `Player Name 700 (vs. Opponent 2-1-0)` with the rating
+smaller and vertically centered, then `Last Played: date` (or `Never`).
+The reusable `PlayerMatchupSummary` component renders both dropdown options and
+the selected player inside each closed selector. Opening game details loads
+matchup metadata for both selected players without requiring a field click.
+Focusing a selector switches it to searchable text; Escape, Tab, or moving focus
+away restores the selected player's rich summary, discarding no seat assignments.
+The small square-loop arrow icon button between the centered player labels/selectors
+exchanges the black and white
+players in one atomic update (including moving a lone player to the empty color).
+It preserves the table, session, check-ins, frozen cohorts, and Started timestamp,
+and requires explicit override confirmation on a Started table. Both empty seats
+disable the control. Result buttons read **Black Wins**, **Draw**, and **White Wins**.
+Beside Last Played, seated candidates show `Playing Opponent · not started` or
+`Playing Opponent · started 10 minutes ago`; an empty opposing seat shows the
+table number instead. Unseated candidates show their latest completed,
+noncancelled result (`Last Result: Lost to Opponent`, `Won against Opponent`,
+or `Drew with Opponent`), or `No completed games`. This latest result spans all
+opponents and sessions, not just the current matchup. Activity/result context
+also appears when the table has no opposing player selected.
+The record is all-time wins-losses-draws from
+the candidate's perspective against the opposing player.
+History includes completed, noncancelled games across all sessions and standalone
+play. No prior games means 0W-0L-0D. Empty opposing seats and standalone tables do
+not show cohort suggestions. Seat changes refresh opponent-specific context.
+Current/opposing occupants and unknown player identities cannot be selected.
+An authoritatively decoded piece uses the same manual seat-assignment flow.
+Ordinary selections apply immediately; modifications affecting a Started table
+require the explicit override prompt before either table changes.
+To manually pair during check-in, check in player A normally. Clicking **Check in**
+in club or session standings automatically opens their assigned table popup
+after successful check-in (including waiting or already-checked-in responses).
+This uses the same editable popup as the table links; failed check-ins do not
+open a table. The separate Add Player to Session picker and scanner check-in
+flows keep their existing behavior. In the table popup,
+choose player B for the other seat from the full list. Player B is checked
+in automatically if needed. Once the organizer is satisfied with both seats,
+choose **Playing** in the Status dropdown. Server-provided finished-game deltas use signed, tabular,
 positive/negative/neutral styling. Cancelled cards retain the subdued original
 result and cancellation time, omit deltas and management controls, and remain
 available as audit records in Recent Games.
@@ -755,14 +899,14 @@ Pre-production policy decisions are intentionally explicit:
   immutable-result rule serialize finalization and prevent double rating.
 
 From Working Memory Desktop chat, use natural language with the canonical app
-mention, for example `@sunset-chess show me current games` or
-`@sunset-chess add Elliot as a new player`. The managed container must already
+mention, for example `@sunset-chess-1-4 show me current games` or
+`@sunset-chess-1-4 add Elliot as a new player`. The managed container must already
 be running and healthy, and its current ContainerClaim must advertise the MCP
 endpoint. Read tools run directly; create, update, and delete tools require
 confirmation in chat.
 
 ```sh
-curl --fail http://localhost:4175/health
+curl --fail http://localhost:4176/health
 ```
 
 ## Container
@@ -775,8 +919,30 @@ The Compose definition applies the same ownership labels, port mapping, and
 named volume expected by the Working Memory desktop launcher. Use this command
 instead of a manual `docker run`; an unlabeled container is intentionally
 rejected by the launcher. Container recreation and restart preserve the
-database. The canonical deployment uses image `sunset-chess:1.3`, container
-`working-memory-sunset-chess`, claim and Compose project `sunset-chess`, port
-4175, and named volume `working-memory-sunset-chess-data`. To reset it,
+database. This branch deploys **Sunset Chess 1.4** using image `sunset-chess:1.4`,
+container `working-memory-sunset-chess-1-4`, claim and Compose project
+`sunset-chess-1-4`, host port 4176 (container port 4175), and named volume
+`working-memory-sunset-chess-1-4-data`. Open <http://localhost:4176>;
+its MCP endpoint is <http://localhost:4176/mcp>.
+The volume is external: it must be created/seeded before the first deployment,
+and Compose will neither silently create an empty database volume nor delete it
+with `down --volumes`.
+
+The original **Sunset Chess** remains on port 4175 with claim `sunset-chess`,
+container `working-memory-sunset-chess`, and volume
+`working-memory-sunset-chess-data`. Do not redeploy, stop, migrate, or delete
+that environment during the preservation period. Its retirement is a separate,
+explicitly approved operation after the week of October 18, 2026; nothing in
+this deployment schedules deletion.
+
+The 1.4 volume was seeded before testing using SQLite's online backup API,
+with the original volume mounted read-only in a temporary helper container.
+The backup passed `PRAGMA integrity_check` and all seven application/migration
+tables had matching row counts. Never copy a live SQLite file directly (it may
+have WAL state), mount the original volume writable, or overwrite an existing
+1.4 database when deploying. After cloning, both environments are independent:
+changes in one are not synchronized to the other.
+
+To reset only the 1.4 environment,
 stop/remove the container and explicitly remove the volume yourself; the
 application never deletes the volume automatically.
