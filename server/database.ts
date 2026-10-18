@@ -478,6 +478,14 @@ const migrations = [
       ON PlayerResource(scanningIdentifier) WHERE scanningIdentifier IS NOT NULL;
     `,
   },
+  {
+    version: 12,
+    sql: `
+      ALTER TABLE GameResource ADD COLUMN startedAt TEXT CHECK (
+        startedAt IS NULL OR (length(startedAt) >= 20 AND datetime(startedAt) IS NOT NULL)
+      );
+    `,
+  },
 ] as const;
 
 function backfillRatingLedger(db: DatabaseSync, recordedAt: string): void {

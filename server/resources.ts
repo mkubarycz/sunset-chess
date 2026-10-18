@@ -37,9 +37,10 @@ export type ResourceQuery = {
 
 const EPOCH = '1970-01-01T00:00:00.000Z';
 
-function lifecycle(game: ChessGame): 'waiting' | 'playing' | 'finished' | 'cancelled' {
+function lifecycle(game: ChessGame): 'waiting' | 'playing' | 'started' | 'finished' | 'cancelled' {
   if (game.cancelledAt) return 'cancelled';
   if (game.result) return 'finished';
+  if (game.startedAt) return 'started';
   if (game.blackPlayerId !== null && game.whitePlayerId !== null) return 'playing';
   return 'waiting';
 }
@@ -244,6 +245,7 @@ export class ResourceService {
       tableNumber: game.tableNumber,
     }, {
       lifecycle: lifecycle(game),
+      startedAt: game.startedAt,
       result: game.result,
       finishedAt: game.finishedAt,
       cancelledAt: game.cancelledAt,

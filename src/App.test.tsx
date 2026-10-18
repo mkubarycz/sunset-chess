@@ -122,6 +122,7 @@ function setupCamera() {
 
 describe('scanner and player producer', () => {
   beforeEach(() => {
+    window.history.replaceState(null, '', '/')
     localStorage.setItem('sunset-chess:preferences', JSON.stringify({
       version: 1,
       showDebugTools: true,
@@ -146,6 +147,126 @@ describe('scanner and player producer', () => {
     restoreDescriptor(window, 'isSecureContext', secureContextDescriptor)
     restoreDescriptor(HTMLVideoElement.prototype, 'requestVideoFrameCallback', requestVideoFrameDescriptor)
     restoreDescriptor(HTMLVideoElement.prototype, 'cancelVideoFrameCallback', cancelVideoFrameDescriptor)
+  })
+
+  describe('dashboard URL navigation', () => {
+    const session = {
+      id: 4, type: 'club-session' as const, name: 'Navigation Session',
+      createdAt: '2026-10-02T13:00:00.000Z', active: true, closedAt: null,
+      playerCount: 0, gameCount: 0, activeGameCount: 0,
+      pairingMode: 'club-session-pairing-1' as const,
+    }
+    const dashboardProps = () => ({
+      fetchGames: vi.fn().mockResolvedValue([]),
+      fetchSessions: vi.fn().mockResolvedValue([session]),
+      gamesPollIntervalMs: 60_000,
+    })
+
+    beforeEach(() => {
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(
+        JSON.stringify({ leaderboard: [] }), { status: 200 },
+      ))
+    })
+
+    it('pushes tab navigation and restores views with browser Back and Forward', async () => {
+      window.history.replaceState({ existing: 'preserved' }, '', '/?scanner=1#preview')
+      const push = vi.spyOn(window.history, 'pushState')
+      render(<App {...dashboardProps()} />)
+      const sessionTab = await screen.findByRole('tab', { name: session.name })
+      expect(new URL(window.location.href).searchParams.get('view')).toBe('leaderboard')
+      await userEvent.click(screen.getByRole('tab', { name: 'Recent Games' }))
+      expect(new URL(window.location.href).searchParams.get('view')).toBe('recent-games')
+      await userEvent.click(sessionTab)
+      expect(new URL(window.location.href).searchParams.get('view')).toBe('session-4')
+      expect(new URL(window.location.href).searchParams.get('scanner')).toBe('1')
+      expect(window.location.hash).toBe('#preview')
+      expect(window.history.state).toEqual({ existing: 'preserved' })
+      await userEvent.click(sessionTab)
+      expect(push).toHaveBeenCalledTimes(2)
+      act(() => window.history.back())
+      await waitFor(() => expect(screen.getByRole('tab', { name: 'Recent Games' }))
+        .toHaveAttribute('aria-selected', 'true'))
+      expect(new URL(window.location.href).searchParams.get('view')).toBe('recent-games')
+      act(() => window.history.forward())
+      await waitFor(() => expect(sessionTab).toHaveAttribute('aria-selected', 'true'))
+      expect(new URL(window.location.href).searchParams.get('view')).toBe('session-4')
+      expect(push).toHaveBeenCalledTimes(2)
+    })
+
+    it('restores a session URL after loading sessions and after a refresh', async () => {
+      window.history.replaceState(null, '', '/?view=session-4')
+      let resolveSessions!: (sessions: (typeof session)[]) => void
+      const pending = new Promise<(typeof session)[]>((resolve) => { resolveSessions = resolve })
+      const props = {
+        ...dashboardProps(),
+        fetchSessions: vi.fn().mockReturnValueOnce(pending).mockResolvedValue([session]),
+      }
+      const view = render(<App {...props} />)
+      expect(screen.getByText('Loading Club Session…')).toBeVisible()
+      expect(new URL(window.location.href).searchParams.get('view')).toBe('session-4')
+      await act(async () => { resolveSessions([session]) })
+      expect(await screen.findByRole('tab', { name: session.name })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getByRole('heading', { name: 'Session Standings' })).toBeVisible()
+      view.unmount()
+      render(<App {...props} />)
+      expect(await screen.findByRole('tab', { name: session.name })).toHaveAttribute('aria-selected', 'true')
+      expect(new URL(window.location.href).searchParams.get('view')).toBe('session-4')
+    })
+
+    it('restores Recent Games from the URL instead of a conflicting saved preference', async () => {
+      window.history.replaceState(null, '', '/?view=recent-games')
+      const props = dashboardProps()
+      const view = render(<App {...props} />)
+      await screen.findByRole('tab', { name: session.name })
+      expect(screen.getByRole('tab', { name: 'Recent Games' })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getByRole('heading', { name: 'Recent Games' })).toBeVisible()
+      view.unmount()
+      render(<App {...props} />)
+      expect(screen.getByRole('tab', { name: 'Recent Games' })).toHaveAttribute('aria-selected', 'true')
+    })
+
+    it('retains the saved default when the URL does not specify a view', async () => {
+      localStorage.setItem('sunset-chess:preferences', JSON.stringify({
+        version: 1, showDebugTools: true, selectedTab: 'recent-games', markerShape: 'square',
+      }))
+      render(<App {...dashboardProps()} />)
+      await screen.findByRole('tab', { name: session.name })
+      expect(screen.getByRole('tab', { name: 'Recent Games' })).toHaveAttribute('aria-selected', 'true')
+      expect(new URL(window.location.href).searchParams.get('view')).toBe('recent-games')
+    })
+
+    it.each(['unknown', 'session-999', 'session-0', 'session-9007199254740992'])(
+      'normalizes unavailable URLs with an explicit message (%s)', async (requested) => {
+        window.history.replaceState(null, '', `/?view=${requested}`)
+        render(<App {...dashboardProps()} />)
+        await screen.findByRole('tab', { name: session.name })
+        await waitFor(() => expect(new URL(window.location.href).searchParams.get('view')).toBe('leaderboard'))
+        expect(screen.getByRole('tab', { name: 'Leaderboard' })).toHaveAttribute('aria-selected', 'true')
+        expect(screen.getByRole('alert', { name: 'Dashboard navigation error' }))
+          .toHaveTextContent(/unavailable|no longer available/)
+      },
+    )
+
+    it('does not restore a session that is already closed', async () => {
+      window.history.replaceState(null, '', '/?view=session-4')
+      render(<App {...dashboardProps()} fetchSessions={vi.fn().mockResolvedValue([
+        { ...session, active: false, closedAt: '2026-10-02T15:00:00.000Z' },
+      ])} />)
+      await waitFor(() => expect(new URL(window.location.href).searchParams.get('view')).toBe('leaderboard'))
+      expect(screen.getByRole('alert', { name: 'Dashboard navigation error' }))
+        .toHaveTextContent('That Club Session is no longer available')
+    })
+
+    it('reports history failures without switching to a view the URL cannot preserve', async () => {
+      render(<App {...dashboardProps()} />)
+      await screen.findByRole('tab', { name: session.name })
+      vi.spyOn(window.history, 'pushState').mockImplementation(() => { throw new Error('History unavailable') })
+      await userEvent.click(screen.getByRole('tab', { name: 'Recent Games' }))
+      expect(screen.getByRole('alert', { name: 'Dashboard navigation error' }))
+        .toHaveTextContent('The dashboard URL could not be updated: History unavailable')
+      expect(screen.getByRole('tab', { name: 'Leaderboard' })).toHaveAttribute('aria-selected', 'true')
+      expect(new URL(window.location.href).searchParams.get('view')).toBe('leaderboard')
+    })
   })
 
   it('starts with ideal constraints and stops the worker and track on unmount', async () => {
@@ -1980,7 +2101,7 @@ describe('ongoing games', () => {
     const dialog = screen.getByRole('dialog', { name: 'Table 2 game details' })
     const blackPlayerInput = screen.getByRole('combobox', { name: 'Black player' })
     await userEvent.click(blackPlayerInput)
-    await screen.findByRole('option', { name: 'Zelda Knight (812 Elo)' })
+    await screen.findByRole('option', { name: 'Zelda Knight 812' })
 
     detections = [{
       rawValue: JSON.stringify({ v: 1, kind: 'player', playerId: 3000, name: 'Zelda Knight' }),
@@ -2201,6 +2322,82 @@ describe('ongoing games', () => {
     expect(ongoingList).toHaveClass('games-list')
   })
 
+  describe('standings check-in table details', () => {
+    afterEach(() => window.history.replaceState(null, '', '/'))
+
+    it.each([
+      { view: 'leaderboard', status: 'waiting' },
+      { view: 'session-4', status: 'waiting' },
+      { view: 'session-4', status: 'paired' },
+      { view: 'session-4', status: 'already-checked-in' },
+    ] as const)('opens the assigned table after $status check-in from $view', async ({ view, status }) => {
+      window.history.replaceState(null, '', `/?view=${view}`)
+      const user = userEvent.setup()
+      const session = {
+        id: 4, type: 'club-session' as const, name: 'Check-in Session',
+        createdAt: '2026-10-18T12:00:00.000Z', active: true, closedAt: null,
+        playerCount: 1, gameCount: 1, activeGameCount: 1,
+        pairingMode: 'club-session-pairing-1' as const,
+      }
+      const assignedGame = {
+        ...game, id: 20, tableNumber: 7, eventId: session.id,
+        blackPlayerId: 1002, blackPlayer: { id: 1002, name: 'Manual Player', rating: 700 },
+        whitePlayerId: status === 'waiting' ? null : game.whitePlayerId,
+        whitePlayer: status === 'waiting' ? null : game.whitePlayer,
+      }
+      let checkedIn = false
+      const checkInPlayer = vi.fn(async () => {
+        checkedIn = true
+        return { status, game: assignedGame, side: 'black' as const }
+      })
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => new Response(JSON.stringify(
+        String(input).startsWith('/api/leaderboard') ? { leaderboard: [{
+          rank: 1, id: 1002, name: 'Manual Player', currentRating: 700,
+          gamesPlayed: 0, wins: 0, losses: 0, draws: 0, lastPlayedAt: null,
+          cohort: 'A', checkInStatus: checkedIn ? status === 'waiting' ? 'waiting' : 'playing' : 'not-checked-in',
+          tableNumber: checkedIn ? 7 : null, opponentName: assignedGame.whitePlayer?.name ?? null,
+        }] } : { players: [{ id: 1002, name: 'Manual Player', currentRating: 700 }] },
+      ), { status: 200 }))
+      render(<App
+        fetchGames={vi.fn(async () => ({
+          games: checkedIn || status === 'already-checked-in' ? [assignedGame] : [], recentGames: [],
+        }))}
+        fetchSessions={vi.fn().mockResolvedValue([session])}
+        checkInPlayer={checkInPlayer}
+        gamesPollIntervalMs={60_000}
+      />)
+      await user.click(await screen.findByRole('button', { name: 'Check in Manual Player' }))
+      const dialog = await screen.findByRole('dialog', { name: 'Table 7 game details' })
+      expect(checkInPlayer).toHaveBeenCalledExactlyOnceWith({
+        v: 1, kind: 'player', playerId: 1002, name: 'Manual Player',
+      }, expect.any(AbortSignal))
+      expect(within(dialog).getByRole('combobox', { name: 'Black player' })).toHaveValue('Manual Player (700 Elo)')
+      expect(within(dialog).getByRole('button', { name: 'Switch white and black players' })).toBeVisible()
+      await user.click(within(dialog).getByRole('button', { name: 'Close game details' }))
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Open details for Table 7' })).toHaveFocus()
+      await user.click(screen.getByRole('button', { name: 'Open Table 7 game details' }))
+      expect(await screen.findByRole('dialog', { name: 'Table 7 game details' })).toBeVisible()
+    })
+
+    it('does not open a table popup when check-in fails', async () => {
+      window.history.replaceState(null, '', '/?view=leaderboard')
+      const user = userEvent.setup()
+      const checkInPlayer = vi.fn().mockRejectedValue(new Error('Check-in rejected.'))
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({ leaderboard: [{
+        rank: 1, id: 1002, name: 'Manual Player', currentRating: 700,
+        gamesPlayed: 0, wins: 0, losses: 0, draws: 0, lastPlayedAt: null,
+        checkInStatus: 'not-checked-in', tableNumber: null,
+      }] }), { status: 200 }))
+      render(<App fetchGames={vi.fn().mockResolvedValue([])}
+        fetchSessions={vi.fn().mockResolvedValue([])} checkInPlayer={checkInPlayer} />)
+      await user.click(await screen.findByRole('button', { name: 'Check in Manual Player' }))
+      await waitFor(() => expect(screen.getAllByText('Check-in rejected.').length).toBeGreaterThan(0))
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Check in Manual Player' })).toBeEnabled()
+    })
+  })
+
   it('creates an active Club Session tab with scoped games and standings', async () => {
     const session = {
       id: 4,
@@ -2250,6 +2447,7 @@ describe('ongoing games', () => {
     expect(createClubSession).toHaveBeenCalledWith(expect.any(AbortSignal))
     const sessionTab = await screen.findByRole('tab', { name: 'Oct 2 Club Session' })
     expect(sessionTab).toHaveAttribute('aria-selected', 'true')
+    expect(new URL(window.location.href).searchParams.get('view')).toBe(`session-${session.id}`)
     expect(screen.queryByRole('button', { name: '+ Create Club Session' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Configure Oct 2 Club Session' })).toBeVisible()
     expect(screen.getByRole('heading', { name: 'Session Standings' })).toBeVisible()
@@ -2276,6 +2474,7 @@ describe('ongoing games', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Close Session' }))
     await userEvent.click(screen.getByRole('button', { name: 'Draw Games and Close' }))
     expect(closeClubSession).toHaveBeenCalledWith(session.id, 'draw')
+    expect(new URL(window.location.href).searchParams.get('view')).toBe('leaderboard')
     expect(screen.queryByRole('tab', { name: 'Oct 2 Club Session' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '+ Create Club Session' })).toBeVisible()
     expect(screen.getByRole('tab', { name: 'Leaderboard' })).toHaveAttribute('aria-selected', 'true')

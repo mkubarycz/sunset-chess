@@ -23,7 +23,7 @@ export function Leaderboard({
   onScanCode?: (player: LeaderboardEntry) => void
   onCheckIn?: (player: LeaderboardEntry) => Promise<void>
   onOpenGame?: (player: LeaderboardEntry) => void
-  onMoveWaitingPlayer?: (player: LeaderboardEntry, destinationGameId: number) => Promise<void>
+  onMoveWaitingPlayer?: (player: LeaderboardEntry, destinationGameId: number, overrideStarted?: boolean) => Promise<void>
   waitingGames?: readonly OngoingGame[]
   eventId?: number
   title?: string
@@ -36,8 +36,10 @@ export function Leaderboard({
   const [movingPlayer, setMovingPlayer] = useState<LeaderboardEntry | null>(null)
   const [movingToGameId, setMovingToGameId] = useState<number | null>(null)
   const [moveError, setMoveError] = useState('')
+  const [pendingMoveId, setPendingMoveId] = useState<number | null>(null)
   const returnFocusRef = useRef<HTMLElement | null>(null)
   const moveReturnFocusRef = useRef<HTMLElement | null>(null)
+  const sessionStandings = eventId !== undefined
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     if (!signal?.aborted) setLoading(true)
@@ -120,15 +122,25 @@ export function Leaderboard({
       && (game.eventId ?? null) === (sourceGame.eventId ?? null))
     : []
 
-  const movePlayer = async (destinationGameId: number) => {
+  const movePlayer = async (destinationGameId: number, overrideStarted = false) => {
     if (!movingPlayer || !onMoveWaitingPlayer || movingToGameId !== null) return
+    const destination = moveTargets.find((candidate) => candidate.id === destinationGameId)
+    if (!overrideStarted && (sourceGame?.startedAt || destination?.startedAt)) {
+      setPendingMoveId(destinationGameId)
+      return
+    }
     setMovingToGameId(destinationGameId)
     setMoveError('')
     try {
-      await onMoveWaitingPlayer(movingPlayer, destinationGameId)
+      if (overrideStarted) await onMoveWaitingPlayer(movingPlayer, destinationGameId, true)
+      else await onMoveWaitingPlayer(movingPlayer, destinationGameId)
       setMovingPlayer(null)
+      setPendingMoveId(null)
     } catch (reason) {
       setMoveError(reason instanceof Error ? reason.message : 'Could not move this player.')
+      if (reason instanceof Error && 'requiresStartedOverride' in reason && reason.requiresStartedOverride === true) {
+        setPendingMoveId(destinationGameId)
+      }
     } finally {
       setMovingToGameId(null)
     }
@@ -140,6 +152,9 @@ export function Leaderboard({
         <div className="section-heading leaderboard-heading">
           <div>
             <h2 id="leaderboard-heading">{title}</h2>
+            {sessionStandings && <p className="leaderboard-intro">
+              Session cohorts A-D are fixed. Automatic pairing only matches players within the same cohort.
+            </p>}
           </div>
           {onAddPlayer && <button type="button"
             onClick={(event) => onAddPlayer(event.currentTarget)}>{addPlayerLabel}</button>}
@@ -152,14 +167,19 @@ export function Leaderboard({
         {entries.length > 0 && (
           <div className="leaderboard-table-wrap">
             <table className={`leaderboard-table${eventId === undefined ? '' : ' session-leaderboard-table'}`}
-              aria-label="Elo rankings">
+              aria-label={sessionStandings ? 'Session standings' : 'Elo rankings'}>
               <thead><tr>
-                <th>Rank</th><th>Player</th><th>Elo</th><th>Record</th>
+                <th>{sessionStandings ? 'Cohort' : 'Rank'}</th><th>Player</th><th>Elo</th><th>Record</th>
                 {eventId !== undefined && <th>Session Record</th>}
               </tr></thead>
               <tbody>{entries.map((entry) => (
-                <tr className={`leaderboard-row rank-${entry.rank}`} key={entry.id}>
-                  <td>
+                <tr className={`leaderboard-row${sessionStandings ? '' : ` rank-${entry.rank}`}`} key={entry.id}>
+                  {sessionStandings ? <td>
+                    <span className={`leaderboard-cohort cohort-${entry.cohort ?? 'unassigned'}`}
+                      aria-label={entry.cohort ? `Cohort ${entry.cohort}` : 'No cohort assigned'}>
+                      {entry.cohort ?? '-'}
+                    </span>
+                  </td> : <td>
                     <span
                       className={`leaderboard-rank${entry.rank <= 3 ? ` podium podium-${entry.rank}` : ''}`}
                       aria-label={entry.rank === 1 ? 'Rank 1, gold' : entry.rank === 2
@@ -167,7 +187,7 @@ export function Leaderboard({
                     >
                       {entry.rank}
                     </span>
-                  </td>
+                  </td>}
                   <td className="leaderboard-player">
                     <div className="leaderboard-player-content">
                       <button type="button" className="leaderboard-player-name"
@@ -183,6 +203,7 @@ export function Leaderboard({
                           onClick={(event) => {
                             moveReturnFocusRef.current = event.currentTarget
                             setMoveError('')
+                            setPendingMoveId(null)
                             setMovingPlayer(entry)
                           }}>
                           Move To...
@@ -204,7 +225,9 @@ export function Leaderboard({
                     <small>{entry.gamesPlayed}g</small>
                     <button type="button" className="leaderboard-row-hit" onClick={(event) => {
                       openPlayerCard(entry, event.currentTarget)
-                    }} aria-label={`${entry.name}, rank ${entry.rank}, ${entry.currentRating} Elo, ${entry.wins}-${entry.losses}-${entry.draws} record`}>
+                    }} aria-label={`${entry.name}, ${sessionStandings
+                      ? entry.cohort ? `cohort ${entry.cohort}` : 'no cohort assigned'
+                      : `rank ${entry.rank}`}, ${entry.currentRating} Elo, ${entry.wins}-${entry.losses}-${entry.draws} record`}>
                       <span className="visually-hidden">View {entry.name} profile</span>
                     </button>
                   </td>
@@ -220,7 +243,7 @@ export function Leaderboard({
           </div>
         )}
       </section>
-      {selected && <PlayerCardDialog key={`${selected.id}:${refreshKey}`} player={selected} onClose={close}
+      {selected && <PlayerCardDialog key={selected.id} player={selected} refreshKey={refreshKey} onClose={close}
         onMutate={() => refresh()} onScanCode={onScanCode} />}
       {movingPlayer && (
         <ModalDialog title={`Move ${movingPlayer.name} to another table`}
@@ -229,7 +252,17 @@ export function Leaderboard({
           returnFocusRef={moveReturnFocusRef}
           onClose={() => setMovingPlayer(null)}>
           <p>Select a table that is waiting for a player. Table {movingPlayer.tableNumber} will close.</p>
-          {moveTargets.length === 0 ? (
+          {pendingMoveId !== null ? (
+            <section aria-label="Confirm Started game move">
+              <p role="alert">This game has already started. Moving this player requires your explicit override.</p>
+              <div className="dialog-actions">
+                <button type="button" className="secondary" disabled={movingToGameId !== null}
+                  onClick={() => setPendingMoveId(null)}>Keep games unchanged</button>
+                <button type="button" disabled={movingToGameId !== null}
+                  onClick={() => void movePlayer(pendingMoveId, true)}>Override and move</button>
+              </div>
+            </section>
+          ) : moveTargets.length === 0 ? (
             <p className="games-message">No other tables are waiting for a player.</p>
           ) : (
             <div className="move-player-options">
