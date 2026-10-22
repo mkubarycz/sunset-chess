@@ -14,15 +14,13 @@ export function DashboardTabs({
   selected,
   onSelect,
   tabs,
-  createLabel,
-  onCreate,
+  toolbarActions,
   children,
 }: {
   selected: string
   onSelect: (tab: string) => void
   tabs: DashboardTab[]
-  createLabel?: string
-  onCreate?: () => void
+  toolbarActions?: ReactNode
   children: Record<string, ReactNode>
 }) {
   const refs = useRef(new Map<string, HTMLButtonElement>())
@@ -40,7 +38,8 @@ export function DashboardTabs({
   }
   return (
     <section className="tabbed-workspace">
-      <div role="tablist" aria-label="Dashboard views" className="dashboard-tabs">
+      <div className="dashboard-toolbar">
+        <div role="tablist" aria-label="Dashboard views" className="dashboard-tabs">
         {tabs.map(({ id, label, action }) => (
           <div className={`dashboard-tab-item${action ? ' has-action' : ''}`}
             data-selected={selected === id} key={id}>
@@ -70,11 +69,8 @@ export function DashboardTabs({
             )}
           </div>
         ))}
-        {createLabel && onCreate && (
-          <button type="button" className="create-session-tab" onClick={onCreate}>
-            {createLabel}
-          </button>
-        )}
+        </div>
+        {toolbarActions}
       </div>
       {tabs.map(({ id }) => (
         <div

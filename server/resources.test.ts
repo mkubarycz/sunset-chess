@@ -37,6 +37,21 @@ afterEach(() => {
 });
 
 describe('Sunset Chess application contract', () => {
+  it('advertises and applies empty-session soft deletion without exposing retained cohorts', () => {
+    const { db, resources } = fixture();
+    resources.create('player', { id: 1000, name: 'Alice' });
+    const session = resources.create('club-session', { name: 'Unused session' }).resource;
+    expect(sunsetChessContract.resources['club-session'].capabilities.delete).toBe(true);
+    const deleted = resources.delete('club-session', session.metadata.id);
+    expect(ResourceEnvelopeSchema.parse(deleted)).toEqual(deleted);
+    expect(deleted.status).toMatchObject({ lifecycle: 'deleted', deletedAt: expect.any(String) });
+    expect(resources.query('club-session')).toEqual([]);
+    expect(resources.query('pairing-cohort')).toEqual([]);
+    expect(() => resources.get('club-session', session.metadata.id)).toThrow('was not found');
+    expect(() => resources.get('pairing-cohort', `${session.metadata.id}:1000`)).toThrow('was not found');
+    db.close();
+  });
+
   it('is self-describing and declares every common-envelope resource concern', () => {
     expect(ApplicationContractSchema.parse(sunsetChessContract)).toEqual(sunsetChessContract);
     expect(sunsetChessContract.envelope.fields).toEqual([
@@ -213,7 +228,7 @@ describe('Sunset Chess application contract', () => {
   it('physically migrates to first-class resource tables at the latest schema', () => {
     const { db } = fixture();
     expect(db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get())
-      .toEqual({ version: 12 });
+      .toEqual({ version: 13 });
     const tables = (db.prepare(`
       SELECT name FROM sqlite_master
       WHERE type = 'table' AND name LIKE '%Resource'

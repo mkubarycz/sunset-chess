@@ -23,6 +23,62 @@ afterEach(() => {
 });
 
 describe('ChessRepository', () => {
+  it.each([true, false])('soft-deletes an empty session, retaining its row and cohorts (active=%s)', (active) => {
+    const { db, repository, path } = fixture();
+    repository.upsertPlayer(1000, 'Alice');
+    const session = repository.createClubSession('Empty session');
+    if (!active) repository.closeClubSession(session.id, 'cancel');
+    const deletedAt = '2026-10-22T22:00:00.000Z';
+    expect(repository.softDeleteClubSession(session.id, () => deletedAt)).toMatchObject({
+      id: session.id, deletedAt, active: false,
+    });
+    expect(db.prepare('SELECT deletedAt, active FROM ClubSessionResource WHERE id = ?').get(session.id))
+      .toEqual({ deletedAt, active: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM PairingCohortResource WHERE eventId = ?').get(session.id))
+      .toEqual({ count: 1 });
+    expect(repository.listClubSessions()).toEqual([]);
+    expect(repository.listPairingCohorts()).toEqual([]);
+    expect(() => repository.getClubSession(session.id)).toThrow(NotFoundError);
+    expect(() => repository.softDeleteClubSession(session.id)).toThrow(NotFoundError);
+    expect(() => repository.updateClubSessionName(session.id, 'Restored')).toThrow(NotFoundError);
+    expect(() => repository.updateClubSessionPairingMode(session.id, 'club-session-pairing-1')).toThrow(NotFoundError);
+    expect(() => repository.closeClubSession(session.id, 'cancel')).toThrow(NotFoundError);
+    expect(() => repository.createEmptyGame(undefined, session.id)).toThrow(NotFoundError);
+    expect(() => repository.listLeaderboard(100, session.id)).toThrow(NotFoundError);
+    db.close();
+    const reopened = openDatabase(path);
+    const restored = new ChessRepository(reopened);
+    expect(restored.listClubSessions()).toEqual([]);
+    expect(restored.createClubSession('Next session').id).toBeGreaterThan(session.id);
+    reopened.close();
+  });
+
+  it.each(['check-in', 'empty game', 'completed game', 'cancelled game'])(
+    'rejects deletion when a session has a %s, even with stale empty counts', (kind) => {
+      const { db, repository } = fixture();
+      repository.upsertPlayer(1000, 'Alice');
+      repository.upsertPlayer(1001, 'Bob');
+      const session = repository.createClubSession('No data yet');
+      expect(session).toMatchObject({ playerCount: 0, gameCount: 0 });
+      if (kind === 'check-in') {
+        db.prepare('INSERT INTO CheckInResource(eventId, playerId, checkedInAt) VALUES (?, ?, ?)')
+          .run(session.id, 1000, session.createdAt);
+      } else if (kind === 'empty game') {
+        repository.createEmptyGame(undefined, session.id);
+      } else {
+        const game = repository.createGame(1000, 1001, session.id);
+        repository.finalizeGame(game.id, '1/2-1/2');
+        if (kind === 'cancelled game') repository.cancelGame(game.id);
+      }
+      expect(() => repository.softDeleteClubSession(session.id)).toThrow(
+        'Only a session with zero check-ins and zero games can be deleted.',
+      );
+      expect(repository.getClubSession(session.id).deletedAt).toBeNull();
+      expect(db.isTransaction).toBe(false);
+      db.close();
+    },
+  );
+
   it('offers every player beyond the leaderboard limit with source table and check-in context', () => {
     const { db, repository } = fixture();
     for (let id = 1000; id <= 1220; id += 1) repository.upsertPlayer(id, `Player ${id}`);
@@ -426,6 +482,74 @@ describe('ChessRepository', () => {
     db.close();
   });
 
+  it('resolves opponents and actual outcomes for the full history beyond the recent-game limit', () => {
+    const { db, repository } = fixture();
+    try {
+      repository.upsertPlayer(1000, 'Alice');
+      repository.upsertPlayer(1001, 'Bob');
+      repository.upsertPlayer(1002, 'Carol');
+      const loss = repository.createGame(1000, 1001);
+      repository.finalizeGame(loss.id, '1-0', () => '2027-01-01T12:00:00.000Z');
+      const win = repository.createGame(1000, 1002);
+      repository.finalizeGame(win.id, '0-1', () => '2027-01-02T12:00:00.000Z');
+      const draw = repository.createGame(1001, 1000);
+      repository.finalizeGame(draw.id, '1/2-1/2', () => '2027-01-03T12:00:00.000Z');
+      expect(repository.getPlayerProfile(1000).ratingHistory.at(-1)).toMatchObject({
+        outcome: 'draw', delta: 1, opponentName: 'Bob', opponentRatingBefore: 716, opponentDelta: -1,
+      });
+      expect(repository.getPlayerProfile(1001).ratingHistory.at(-1)).toMatchObject({
+        outcome: 'draw', delta: -1, opponentName: 'Alice', opponentRatingBefore: 701, opponentDelta: 1,
+      });
+      repository.cancelGame(draw.id, 'Incorrect result', () => '2027-01-04T12:00:00.000Z');
+      const profile = repository.getPlayerProfile(1000, 1);
+      expect(profile.recentGames.map(({ id }) => id)).toEqual([win.id]);
+      expect(profile.ratingHistory).toMatchObject([
+        { reason: 'baseline', opponentName: null, outcome: null, opponentRatingBefore: null, opponentDelta: null },
+        { reason: 'game', gameId: loss.id, opponentName: 'Bob', outcome: 'loss', opponentRatingBefore: 700, opponentDelta: 16 },
+        { reason: 'game', gameId: win.id, opponentName: 'Carol', outcome: 'win' },
+        { reason: 'game', gameId: draw.id, opponentName: 'Bob', outcome: 'draw', opponentRatingBefore: 716, opponentDelta: -1 },
+        { reason: 'compensation', gameId: draw.id, opponentName: 'Bob', outcome: 'draw', opponentRatingBefore: 715, opponentDelta: 1 },
+      ]);
+      expect(repository.getPlayerProfile(1001).ratingHistory[1]).toMatchObject({
+        outcome: 'win', opponentName: 'Alice',
+      });
+      expect(repository.getPlayerProfile(1002).ratingHistory[1]).toMatchObject({
+        outcome: 'loss', opponentName: 'Alice',
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('loads authoritative details for an individual ongoing, old finished, or cancelled game', () => {
+    const { db, repository } = fixture();
+    try {
+      repository.upsertPlayer(1000, 'Alice');
+      repository.upsertPlayer(1001, 'Bob');
+      const game = repository.createGame(1000, 1001);
+      expect(repository.getGameDetails(game.id)).toMatchObject({
+        id: game.id, createdAt: game.createdAt, result: null, canCancel: true,
+        blackPlayer: { id: 1000, name: 'Alice' }, whitePlayer: { id: 1001, name: 'Bob' },
+      });
+      repository.finalizeGame(game.id, '1-0', () => '2027-01-02T12:00:00.000Z');
+      expect(repository.getGameDetails(game.id)).toMatchObject({
+        createdAt: game.createdAt, finishedAt: '2027-01-02T12:00:00.000Z',
+        result: '1-0', canCancel: true, blackStartingRating: 700, blackRatingDelta: -16,
+        whiteStartingRating: 700, whiteRatingDelta: 16,
+      });
+      const later = repository.createGame(1000, 1001);
+      repository.finalizeGame(later.id, '1/2-1/2', () => '2027-01-03T12:00:00.000Z');
+      expect(repository.getGameDetails(game.id)).toMatchObject({ id: game.id, canCancel: false });
+      repository.cancelGame(later.id, 'Incorrect result', () => '2027-01-04T12:00:00.000Z');
+      expect(repository.getGameDetails(later.id)).toMatchObject({
+        cancelledAt: '2027-01-04T12:00:00.000Z', cancellationReason: 'Incorrect result', canCancel: false,
+      });
+      expect(() => repository.getGameDetails(999999)).toThrow(NotFoundError);
+    } finally {
+      db.close();
+    }
+  });
+
   it('migrates idempotently and persists players and games', () => {
     const { db, repository, path } = fixture();
     repository.upsertPlayer(1000, '  Alice  ');
@@ -439,9 +563,9 @@ describe('ChessRepository', () => {
     ]);
     expect(persisted.getGame(game.id)).toEqual(game);
     expect(reopened.prepare('SELECT count(*) AS count FROM schema_migrations').get())
-      .toEqual({ count: 12 });
+      .toEqual({ count: 13 });
     expect(db.prepare('SELECT count(*) AS count FROM schema_migrations').get())
-      .toEqual({ count: 12 });
+      .toEqual({ count: 13 });
     reopened.close();
     db.close();
   });
@@ -486,7 +610,7 @@ describe('ChessRepository', () => {
     migrated.close();
     const reopened = openDatabase(path);
     expect(reopened.prepare('SELECT count(*) AS count FROM GameResource').get()).toEqual({ count: 1 });
-    expect(reopened.prepare('SELECT count(*) AS count FROM schema_migrations').get()).toEqual({ count: 12 });
+    expect(reopened.prepare('SELECT count(*) AS count FROM schema_migrations').get()).toEqual({ count: 13 });
     reopened.close();
   });
 

@@ -163,8 +163,8 @@ describe('scanner and player producer', () => {
     })
 
     beforeEach(() => {
-      vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(
-        JSON.stringify({ leaderboard: [] }), { status: 200 },
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => new Response(
+        JSON.stringify(String(input).includes('/sessions/') ? { games: [] } : { leaderboard: [] }), { status: 200 },
       ))
     })
 
@@ -247,14 +247,127 @@ describe('scanner and player producer', () => {
       },
     )
 
-    it('does not restore a session that is already closed', async () => {
+    it('restores a closed session URL as a read-only historical view', async () => {
       window.history.replaceState(null, '', '/?view=session-4')
       render(<App {...dashboardProps()} fetchSessions={vi.fn().mockResolvedValue([
         { ...session, active: false, closedAt: '2026-10-02T15:00:00.000Z' },
       ])} />)
-      await waitFor(() => expect(new URL(window.location.href).searchParams.get('view')).toBe('leaderboard'))
-      expect(screen.getByRole('alert', { name: 'Dashboard navigation error' }))
-        .toHaveTextContent('That Club Session is no longer available')
+      expect(await screen.findByRole('region', { name: `Past club session: ${session.name}` })).toBeVisible()
+      expect(new URL(window.location.href).searchParams.get('view')).toBe('session-4')
+      expect(screen.queryByRole('alert', { name: 'Dashboard navigation error' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: `Configure ${session.name}` })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Add player to session' })).not.toBeInTheDocument()
+    })
+
+    it.each([true, false])('deletes an empty session from its page and removes it from navigation (active=%s)', async (active) => {
+      window.history.replaceState(null, '', '/?view=session-4')
+      const deleteClubSession = vi.fn().mockResolvedValue(undefined)
+      render(<App {...dashboardProps()} deleteClubSession={deleteClubSession}
+        fetchSessions={vi.fn().mockResolvedValue([{ ...session, active }])} />)
+      await userEvent.click(await screen.findByRole('button', { name: 'Delete empty session' }))
+      expect(deleteClubSession).not.toHaveBeenCalled()
+      await userEvent.click(screen.getByRole('button', { name: 'Delete Session' }))
+      expect(deleteClubSession).toHaveBeenCalledWith(4)
+      expect(await screen.findByRole('region', { name: 'All Club Sessions' })).toBeVisible()
+      expect(new URL(window.location.href).searchParams.get('view')).toBe('club-sessions')
+      expect(screen.queryByRole('tab', { name: session.name })).not.toBeInTheDocument()
+      await userEvent.click(screen.getByRole('button', { name: 'Club Sessions' }))
+      expect(screen.queryByRole('menuitem', { name: new RegExp(session.name) })).not.toBeInTheDocument()
+      expect(screen.getByRole('menuitem', { name: 'Create New Session' })).toBeEnabled()
+    })
+
+    it('uses the deletion endpoint and keeps the session open on a server conflict', async () => {
+      window.history.replaceState(null, '', '/?view=session-4')
+      const fetch = vi.mocked(globalThis.fetch).mockImplementation(async (_input, init) => new Response(
+        JSON.stringify(init?.method === 'DELETE'
+          ? { error: 'Only a session with zero check-ins and zero games can be deleted.' }
+          : { leaderboard: [], games: [] }),
+        { status: init?.method === 'DELETE' ? 409 : 200 },
+      ))
+      render(<App {...dashboardProps()} />)
+      await userEvent.click(await screen.findByRole('button', { name: 'Delete empty session' }))
+      await userEvent.click(screen.getByRole('button', { name: 'Delete Session' }))
+      expect(fetch).toHaveBeenCalledWith('/api/sessions/4', expect.objectContaining({ method: 'DELETE' }))
+      expect(await within(screen.getByRole('dialog')).findByRole('alert')).toHaveTextContent('zero check-ins and zero games')
+      expect(new URL(window.location.href).searchParams.get('view')).toBe('session-4')
+      expect(screen.getByRole('dialog')).toBeVisible()
+    })
+
+    it('lists dated past sessions alongside an active session and restores history with Back', async () => {
+      const past = { ...session, id: 2, name: 'Previous Club Night',
+        active: false, closedAt: '2026-10-02T15:00:00.000Z' }
+      render(<App {...dashboardProps()} fetchSessions={vi.fn().mockResolvedValue([past, session])} />)
+      await screen.findByRole('tab', { name: session.name })
+      await userEvent.click(screen.getByRole('button', { name: 'Club Sessions' }))
+      const menu = screen.getByRole('menu', { name: 'Club Sessions' })
+      const option = within(menu).getByRole('menuitem', { name: /Previous Club Night/ })
+      expect(option).toHaveTextContent(new Date(past.createdAt).toLocaleString())
+      expect(within(menu).getByRole('menuitem', { name: new RegExp(session.name) })).toHaveTextContent('Active')
+      await userEvent.click(option)
+      expect(await screen.findByRole('region', { name: `Past club session: ${past.name}` })).toBeVisible()
+      expect(new URL(window.location.href).searchParams.get('view')).toBe('session-2')
+      await userEvent.click(screen.getByRole('tab', { name: session.name }))
+      act(() => window.history.back())
+      expect(await screen.findByRole('region', { name: `Past club session: ${past.name}` })).toBeVisible()
+    })
+
+    it('communicates when there are no sessions and keeps creation and archive discoverable', async () => {
+      render(<App {...dashboardProps()} fetchSessions={vi.fn().mockResolvedValue([])} />)
+      await userEvent.click(screen.getByRole('button', { name: 'Club Sessions' }))
+      expect(await screen.findByText('No club sessions yet.')).toBeVisible()
+      expect(screen.getByRole('menuitem', { name: 'Create New Session' })).toBeEnabled()
+      await userEvent.click(screen.getByRole('menuitem', { name: 'Find Past Sessions' }))
+      expect(screen.getByRole('tab', { name: 'Club Sessions' })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getByText('No past club sessions yet.')).toBeVisible()
+    })
+
+    it('shows only the most recent five in the menu and all sessions in the archive tab', async () => {
+      const history = Array.from({ length: 7 }, (_, index) => ({
+        ...session, id: index + 1, name: `Club Night ${index + 1}`,
+        createdAt: `2026-10-0${index + 1}T13:00:00.000Z`, active: false,
+        closedAt: `2026-10-0${index + 1}T15:00:00.000Z`,
+      }))
+      const props = { ...dashboardProps(), fetchSessions: vi.fn().mockResolvedValue(history) }
+      const view = render(<App {...props} />)
+      await userEvent.click(screen.getByRole('button', { name: 'Club Sessions' }))
+      const menu = screen.getByRole('menu', { name: 'Club Sessions' })
+      expect(within(menu).getAllByRole('menuitem')).toHaveLength(7)
+      expect(within(menu).getByRole('menuitem', { name: /Club Night 7/ })).toBeVisible()
+      expect(within(menu).queryByRole('menuitem', { name: /Club Night 1/ })).not.toBeInTheDocument()
+      await userEvent.click(within(menu).getByRole('menuitem', { name: 'Find Past Sessions' }))
+      const archive = screen.getByRole('region', { name: 'All Club Sessions' })
+      expect(within(archive).getAllByRole('button')).toHaveLength(7)
+      expect(new URL(window.location.href).searchParams.get('view')).toBe('club-sessions')
+      await userEvent.click(within(archive).getByRole('button', { name: /Club Night 1/ }))
+      expect(await screen.findByRole('region', { name: 'Past club session: Club Night 1' })).toBeVisible()
+      act(() => window.history.back())
+      expect(await screen.findByRole('region', { name: 'All Club Sessions' })).toBeVisible()
+      view.unmount()
+      render(<App {...props} />)
+      expect(await screen.findByRole('region', { name: 'All Club Sessions' })).toBeVisible()
+      expect(screen.getByRole('tab', { name: 'Club Sessions' })).toHaveAttribute('aria-selected', 'true')
+    })
+
+    it('keeps the active session available and explains why creation is disabled', async () => {
+      render(<App {...dashboardProps()} />)
+      await screen.findByRole('tab', { name: session.name })
+      await userEvent.click(screen.getByRole('button', { name: 'Club Sessions' }))
+      expect(screen.getByRole('menuitem', { name: 'Create New Session' })).toBeDisabled()
+      expect(screen.getByText('Close the active session before creating another.')).toBeVisible()
+      await userEvent.click(screen.getByRole('menuitem', { name: new RegExp(session.name) }))
+      expect(screen.getByRole('tab', { name: session.name })).toHaveAttribute('aria-selected', 'true')
+    })
+
+    it('shows session-load failures rather than an empty history and supports retry', async () => {
+      const fetchSessions = vi.fn().mockRejectedValueOnce(new Error('Sessions offline'))
+        .mockResolvedValue([session])
+      render(<App {...dashboardProps()} fetchSessions={fetchSessions} />)
+      expect(await screen.findByRole('alert')).toHaveTextContent('Sessions offline')
+      await userEvent.click(screen.getByRole('button', { name: 'Club Sessions' }))
+      expect(screen.getByRole('menuitem', { name: 'Create New Session' })).toBeDisabled()
+      expect(screen.getByText('Sessions unavailable. Use Retry club sessions below.')).toBeVisible()
+      await userEvent.click(screen.getByRole('button', { name: 'Retry club sessions' }))
+      expect(await screen.findByRole('tab', { name: session.name })).toBeVisible()
     })
 
     it('reports history failures without switching to a view the URL cannot preserve', async () => {
@@ -431,6 +544,7 @@ describe('scanner and player producer', () => {
     render(<App
       workerFactory={() => worker as unknown as Worker}
       fetchGames={vi.fn().mockResolvedValue([])}
+      fetchSessions={vi.fn().mockResolvedValue([])}
       gamesPollIntervalMs={1_000_000}
     />)
     await act(async () => vi.advanceTimersByTimeAsync(0))
@@ -2227,6 +2341,7 @@ describe('ongoing games', () => {
     render(<App
       fetchGames={vi.fn().mockResolvedValue([])}
       createEmptyGame={vi.fn().mockRejectedValue(new Error('Database unavailable.'))}
+      fetchSessions={vi.fn().mockResolvedValue([])}
       gamesPollIntervalMs={60_000}
     />)
     await screen.findByText('No games are ongoing yet.')
@@ -2442,13 +2557,16 @@ describe('ongoing games', () => {
       checkInPlayer={checkInPlayer}
       gamesPollIntervalMs={60_000}
     />)
-    await userEvent.click(await screen.findByRole('button', { name: '+ Create Club Session' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Club Sessions' }))
+    const create = screen.getByRole('menuitem', { name: 'Create New Session' })
+    await waitFor(() => expect(create).toBeEnabled())
+    await userEvent.click(create)
 
     expect(createClubSession).toHaveBeenCalledWith(expect.any(AbortSignal))
     const sessionTab = await screen.findByRole('tab', { name: 'Oct 2 Club Session' })
     expect(sessionTab).toHaveAttribute('aria-selected', 'true')
     expect(new URL(window.location.href).searchParams.get('view')).toBe(`session-${session.id}`)
-    expect(screen.queryByRole('button', { name: '+ Create Club Session' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Configure Oct 2 Club Session' })).toBeVisible()
     expect(screen.getByRole('heading', { name: 'Session Standings' })).toBeVisible()
 
@@ -2476,7 +2594,8 @@ describe('ongoing games', () => {
     expect(closeClubSession).toHaveBeenCalledWith(session.id, 'draw')
     expect(new URL(window.location.href).searchParams.get('view')).toBe('leaderboard')
     expect(screen.queryByRole('tab', { name: 'Oct 2 Club Session' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '+ Create Club Session' })).toBeVisible()
+    await userEvent.click(screen.getByRole('button', { name: 'Club Sessions' }))
+    expect(screen.getByRole('menuitem', { name: 'Create New Session' })).toBeEnabled()
     expect(screen.getByRole('tab', { name: 'Leaderboard' })).toHaveAttribute('aria-selected', 'true')
   })
 

@@ -197,6 +197,7 @@ export class ResourceService {
     const numericId = this.numericId(id);
     if (kind === 'player') return this.player(this.repository.deletePlayer(numericId));
     if (kind === 'game') return this.game(this.repository.deleteGame(numericId));
+    if (kind === 'club-session') return this.session(this.repository.softDeleteClubSession(numericId));
     throw new ConflictError(`${kind} deletion is not supported.`);
   }
 
@@ -215,8 +216,9 @@ export class ResourceService {
       name: session.name,
       pairingMode: session.pairingMode,
     }, {
-      lifecycle: session.active ? 'active' : 'closed',
+      lifecycle: session.deletedAt ? 'deleted' : session.active ? 'active' : 'closed',
       closedAt: session.closedAt,
+      deletedAt: session.deletedAt,
       playerCount: session.playerCount,
       gameCount: session.gameCount,
       activeGameCount: session.activeGameCount,

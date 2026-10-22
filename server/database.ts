@@ -486,6 +486,16 @@ const migrations = [
       );
     `,
   },
+  {
+    version: 13,
+    sql: `
+      ALTER TABLE ClubSessionResource ADD COLUMN deletedAt TEXT CHECK (
+        deletedAt IS NULL OR (
+          active = 0 AND length(deletedAt) >= 20 AND datetime(deletedAt) IS NOT NULL
+        )
+      );
+    `,
+  },
 ] as const;
 
 function backfillRatingLedger(db: DatabaseSync, recordedAt: string): void {

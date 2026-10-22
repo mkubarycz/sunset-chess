@@ -169,6 +169,9 @@ export function GameCard({
   onMutate,
   management = true,
   selectable = true,
+  mode = 'card',
+  onOpenDetails,
+  onClose,
   authoritativePlayerScan = null,
   onSeatScanTargetChange,
   onSeatScanFeedback,
@@ -182,11 +185,14 @@ export function GameCard({
   onMutate?: (game: OngoingGame) => void | Promise<void>
   management?: boolean
   selectable?: boolean
+  mode?: 'card' | 'dialog'
+  onOpenDetails?: () => void
+  onClose?: () => void
   authoritativePlayerScan?: AuthoritativePlayerScan | null
   onSeatScanTargetChange?: (target: SeatScanTarget | null) => void
   onSeatScanFeedback?: (feedback: SeatScanFeedback) => void
 }) {
-  const [dialog, setDialog] = useState<'detail' | 'cancel' | null>(null)
+  const [dialog, setDialog] = useState<'detail' | 'cancel' | null>(mode === 'dialog' ? 'detail' : null)
   const [activeSide, setActiveSide] = useState<'black' | 'white' | null>(null)
   const [players, setPlayers] = useState<MatchupPlayer[]>([])
   const [pendingSeat, setPendingSeat] = useState<{
@@ -226,6 +232,7 @@ export function GameCard({
     setDialog(null)
     setPendingSeat(null)
     setPendingSwitch(null)
+    onClose?.()
   }
 
   useLayoutEffect(() => {
@@ -673,7 +680,8 @@ export function GameCard({
   }
 
   return (
-    <article
+    <>
+    {mode === 'card' && <article
       className={`game-card${className}`}
       data-game-id={game.id}
       data-game-created-at={game.createdAt}
@@ -688,6 +696,10 @@ export function GameCard({
         ref={detailTriggerRef}
         aria-label={`Open details for Table ${game.tableNumber}`}
         onClick={() => {
+          if (onOpenDetails) {
+            onOpenDetails()
+            return
+          }
           dialogReturnFocusRef.current = detailTriggerRef.current
           setActiveSide(null)
           setReplacementQuery('')
@@ -703,6 +715,7 @@ export function GameCard({
           handledScanTokenRef.current = authoritativePlayerScan?.token ?? null
           setDialog('detail')
         }} />}
+    </article>}
       {dialog && <ModalDialog
         key={dialog}
         className={` game-management-dialog${dialog === 'detail' ? ' game-detail-dialog' : ''}`}
@@ -941,6 +954,6 @@ export function GameCard({
           </div>
         </> : null}
       </ModalDialog>}
-    </article>
+    </>
   )
 }

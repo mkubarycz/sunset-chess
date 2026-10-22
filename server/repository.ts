@@ -67,6 +67,7 @@ export interface ClubSession {
   name: string;
   createdAt: string;
   closedAt: string | null;
+  deletedAt: string | null;
   active: boolean;
   playerCount: number;
   gameCount: number;
@@ -107,7 +108,12 @@ export interface PlayerProfile extends LeaderboardEntry {
     ratingAfter: number;
     delta: number;
   }>;
-  ratingHistory: RatingEvent[];
+  ratingHistory: Array<RatingEvent & {
+    opponentName: string | null;
+    opponentRatingBefore: number | null;
+    opponentDelta: number | null;
+    outcome: 'win' | 'draw' | 'loss' | null;
+  }>;
 }
 
 export type RandomIndex = (maxExclusive: number) => number;
@@ -183,7 +189,7 @@ export class ChessRepository {
 
   listClubSessions(): ClubSession[] {
     return (this.db.prepare(`
-      SELECT e.id, e.type, e.name, e.createdAt, e.closedAt, e.active, e.pairingMode,
+      SELECT e.id, e.type, e.name, e.createdAt, e.closedAt, e.deletedAt, e.active, e.pairingMode,
         COUNT(DISTINCT ep.playerId) AS playerCount,
         COUNT(DISTINCT g.id) AS gameCount,
         COUNT(DISTINCT CASE
@@ -192,7 +198,7 @@ export class ChessRepository {
       FROM ClubSessionResource AS e
       LEFT JOIN CheckInResource AS ep ON ep.eventId = e.id
       LEFT JOIN GameResource AS g ON g.eventId = e.id
-      WHERE e.type = 'club-session'
+      WHERE e.type = 'club-session' AND e.deletedAt IS NULL
       GROUP BY e.id
       ORDER BY e.active DESC, e.createdAt DESC, e.id DESC
     `).all() as unknown as Array<Omit<ClubSession, 'active'> & { active: number }>)
@@ -237,6 +243,29 @@ export class ChessRepository {
     return session;
   }
 
+  softDeleteClubSession(id: number, now = () => new Date().toISOString()): ClubSession {
+    const deletedAt = now();
+    if (typeof deletedAt !== 'string' || Number.isNaN(Date.parse(deletedAt))) {
+      throw new Error('Clock source returned an invalid ISO timestamp.');
+    }
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const session = this.getClubSession(id);
+      if (session.playerCount !== 0 || session.gameCount !== 0) {
+        throw new ConflictError('Only a session with zero check-ins and zero games can be deleted.');
+      }
+      const closedAt = session.closedAt ?? deletedAt;
+      this.db.prepare(`
+        UPDATE ClubSessionResource SET deletedAt = ?, active = 0, closedAt = ? WHERE id = ?
+      `).run(deletedAt, closedAt, id);
+      this.db.exec('COMMIT');
+      return { ...session, active: false, closedAt, deletedAt };
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   listRatingEvents(playerId?: number): Array<RatingEvent & { playerId: number }> {
     return this.db.prepare(`
       SELECT id, playerId, gameId, previousRating, rating, delta, recordedAt,
@@ -255,7 +284,9 @@ export class ChessRepository {
   }
 
   listPairingCohorts(eventId?: number, playerId?: number): PairingCohort[] {
-    const conditions: string[] = [];
+    const conditions: string[] = [
+      'eventId IN (SELECT id FROM ClubSessionResource WHERE deletedAt IS NULL)',
+    ];
     const parameters: number[] = [];
     if (eventId !== undefined) {
       conditions.push('eventId = ?');
@@ -319,7 +350,8 @@ export class ChessRepository {
   updateClubSessionName(id: number, rawName: string): ClubSession {
     const name = validateSessionName(rawName);
     const result = this.db.prepare(`
-      UPDATE ClubSessionResource SET name = ? WHERE id = ? AND type = 'club-session'
+      UPDATE ClubSessionResource SET name = ?
+      WHERE id = ? AND type = 'club-session' AND deletedAt IS NULL
     `).run(name, id);
     if (result.changes === 0) throw new NotFoundError(`Club session ${id} was not found.`);
     const session = this.listClubSessions().find((candidate) => candidate.id === id);
@@ -333,7 +365,7 @@ export class ChessRepository {
     }
     const result = this.db.prepare(`
       UPDATE ClubSessionResource SET pairingMode = ?
-      WHERE id = ? AND type = 'club-session'
+      WHERE id = ? AND type = 'club-session' AND deletedAt IS NULL
     `).run(pairingMode, id);
     if (result.changes === 0) throw new NotFoundError(`Club session ${id} was not found.`);
     const session = this.listClubSessions().find((candidate) => candidate.id === id);
@@ -356,7 +388,8 @@ export class ChessRepository {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const session = this.db.prepare(`
-        SELECT id, active FROM ClubSessionResource WHERE id = ? AND type = 'club-session'
+        SELECT id, active FROM ClubSessionResource
+        WHERE id = ? AND type = 'club-session' AND deletedAt IS NULL
       `).get(id) as { id: number; active: number } | undefined;
       if (!session) throw new NotFoundError(`Club session ${id} was not found.`);
       if (session.active !== 1) throw new ConflictError(`Club session ${id} is already closed.`);
@@ -747,18 +780,20 @@ export class ChessRepository {
     result: 'ongoing' | 'finished' = 'ongoing',
     limit?: number,
     eventId?: number,
+    gameId?: number,
   ): JoinedChessGame[] {
     this.assertRatingProjectionIntegrity();
     const statusWhere = result === 'ongoing'
       ? 'g.result IS NULL AND g.cancelledAt IS NULL'
       : '(g.result IS NOT NULL OR g.cancelledAt IS NOT NULL)';
-    const where = `${statusWhere}${eventId === undefined ? '' : ' AND g.eventId = ?'}`;
+    const where = `${statusWhere}${eventId === undefined ? '' : ' AND g.eventId = ?'}${gameId === undefined ? '' : ' AND g.id = ?'}`;
     const order = result === 'ongoing'
       ? 'g.tableNumber'
       : 'COALESCE(g.cancelledAt, g.finishedAt, g.createdAt) DESC, g.id DESC';
     const limitSql = limit === undefined ? '' : ' LIMIT ?';
     const parameters = [
       ...(eventId === undefined ? [] : [eventId]),
+      ...(gameId === undefined ? [] : [gameId]),
       ...(limit === undefined ? [] : [limit]),
     ];
     return this.db.prepare(`
@@ -1203,13 +1238,15 @@ export class ChessRepository {
     if (eventId === null) return null;
     if (eventId !== undefined) {
       const exists = this.db.prepare(`
-        SELECT 1 FROM ClubSessionResource WHERE id = ? AND type = 'club-session'
+        SELECT 1 FROM ClubSessionResource
+        WHERE id = ? AND type = 'club-session' AND deletedAt IS NULL
       `).get(eventId);
       if (!exists) throw new NotFoundError(`Club session ${eventId} was not found.`);
       return eventId;
     }
     const active = this.db.prepare(`
-      SELECT id FROM ClubSessionResource WHERE type = 'club-session' AND active = 1
+      SELECT id FROM ClubSessionResource
+      WHERE type = 'club-session' AND active = 1 AND deletedAt IS NULL
     `).get() as { id: number } | undefined;
     return active?.id ?? null;
   }
@@ -1218,6 +1255,16 @@ export class ChessRepository {
     const game = this.listJoinedGames('ongoing').find((candidate) => candidate.id === id);
     if (!game) throw new Error(`Game ${id} disappeared during check-in.`);
     return game;
+  }
+
+  getGameDetails(id: number): JoinedChessGame {
+    const game = this.getGame(id);
+    const joined = this.listJoinedGames(
+      game.result !== null || game.cancelledAt !== null ? 'finished' : 'ongoing',
+      undefined, undefined, id,
+    )[0];
+    if (!joined) throw new NotFoundError(`Game ${id} was not found.`);
+    return joined;
   }
 
   deleteGame(id: number, overrideStarted = false): GameResource {
@@ -1707,10 +1754,26 @@ export class ChessRepository {
       const entry = this.listLeaderboard(200).find((candidate) => candidate.id === id);
       if (!entry) throw new NotFoundError(`Player ${id} was not found.`);
       const ratingHistory = this.db.prepare(`
-        SELECT id, gameId, previousRating, rating, delta, recordedAt, reason, opponentId, result
-        FROM RatingEventResource WHERE playerId = ?
-        ORDER BY id ASC
-      `).all(id) as unknown as RatingEvent[];
+        SELECT event.id, event.gameId, event.previousRating, event.rating, event.delta,
+          event.recordedAt, event.reason, event.opponentId, event.result,
+          opponent.name AS opponentName,
+          opponentEvent.previousRating AS opponentRatingBefore,
+          opponentEvent.delta AS opponentDelta,
+          CASE
+            WHEN event.result = '1/2-1/2' THEN 'draw'
+            WHEN (event.result = '1-0' AND game.whitePlayerId = event.playerId)
+              OR (event.result = '0-1' AND game.blackPlayerId = event.playerId) THEN 'win'
+            WHEN event.result IS NOT NULL AND game.id IS NOT NULL THEN 'loss'
+            ELSE NULL
+          END AS outcome
+        FROM RatingEventResource AS event
+        LEFT JOIN PlayerResource AS opponent ON opponent.id = event.opponentId
+        LEFT JOIN RatingEventResource AS opponentEvent ON opponentEvent.gameId = event.gameId
+          AND opponentEvent.playerId = event.opponentId AND opponentEvent.reason = event.reason
+        LEFT JOIN GameResource AS game ON game.id = event.gameId
+        WHERE event.playerId = ?
+        ORDER BY event.id ASC
+      `).all(id) as unknown as PlayerProfile['ratingHistory'];
       const recentRows = this.db.prepare(`
         SELECT g.id, g.tableNumber, g.whitePlayerId, g.blackPlayerId, g.result, g.finishedAt,
           opponent.id AS opponentId, opponent.name AS opponentName,

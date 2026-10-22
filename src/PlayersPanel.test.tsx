@@ -71,7 +71,7 @@ describe('PlayersPanel', () => {
     expect(within(recentGames).getAllByText('700', { selector: '.player-rating' })).toHaveLength(2)
     expect(within(recentGames).getByText('W +16')).toBeVisible()
     expect(within(recentGames).getByText('L -16')).toBeVisible()
-    expect(within(recentGames).queryByRole('button')).not.toBeInTheDocument()
+    expect(within(recentGames).getByRole('button', { name: 'Open details for Table 2' })).toBeVisible()
     expect(screen.queryByRole('img', { name: /Elo history/ })).not.toBeInTheDocument()
     expect(screen.getByRole('table', { name: 'Elo history for Alice' })).toBeVisible()
     expect(dialog.querySelector('.profile-summary')).toHaveTextContent(

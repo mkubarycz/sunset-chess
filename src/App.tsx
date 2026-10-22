@@ -159,6 +159,9 @@ import { useDashboardNavigation } from './useDashboardNavigation'
 import { ModalDialog } from './ModalDialog'
 import { SettingsMenu } from './SettingsMenu'
 import { SessionCard, type ClubSession } from './SessionCard'
+import { PastSessionView } from './PastSessionView'
+import { ClubSessionsMenu, ClubSessionsView } from './ClubSessions'
+import { SessionHeader } from './SessionHeader'
 import { SessionPlayerDialog, type SelectablePlayer } from './SessionPlayerDialog'
 import {
   loadUiPreferences,
@@ -320,6 +323,7 @@ interface AppProps {
     pairingMode: 'club-session-pairing-1',
   ) => Promise<ClubSession>
   closeClubSession?: (id: number, resolution: 'draw' | 'cancel') => Promise<ClubSession>
+  deleteClubSession?: (id: number) => Promise<void>
   checkInPlayer?: (player: PlayerPayload, signal: AbortSignal) => Promise<CheckInResult>
   moveWaitingPlayer?: (
     playerId: number,
@@ -420,6 +424,16 @@ async function defaultCreateClubSession(signal: AbortSignal): Promise<ClubSessio
     throw new Error(body.error || `Club session creation failed (${response.status}).`)
   }
   return body.session
+}
+
+async function defaultDeleteClubSession(id: number): Promise<void> {
+  const response = await fetch(`/api/sessions/${id}`, {
+    method: 'DELETE', headers: { accept: 'application/json' },
+  })
+  const body = await response.json() as { session?: { id: number; deletedAt?: string }; error?: string }
+  if (!response.ok || body.session?.id !== id || typeof body.session.deletedAt !== 'string') {
+    throw new Error(body.error || `Club session deletion failed (${response.status}).`)
+  }
 }
 
 async function defaultRenameClubSession(id: number, name: string): Promise<ClubSession> {
@@ -524,6 +538,7 @@ export default function App({
   renameClubSession = defaultRenameClubSession,
   updateClubSessionPairingMode = defaultUpdateClubSessionPairingMode,
   closeClubSession = defaultCloseClubSession,
+  deleteClubSession = defaultDeleteClubSession,
   checkInPlayer = defaultCheckInPlayer,
   moveWaitingPlayer = defaultMoveWaitingPlayer,
   finalizeGame = defaultFinalizeGame,
@@ -553,9 +568,11 @@ export default function App({
   const [leaderboardRefresh, setLeaderboardRefresh] = useState(0)
   const [sessions, setSessions] = useState<ClubSession[]>([])
   const [sessionsLoaded, setSessionsLoaded] = useState(false)
+  const sessionIds = useMemo(() => sessionsLoaded ? sessions.map((session) => session.id) : undefined,
+    [sessions, sessionsLoaded])
   const { selectedView, navigationError, navigate } = useDashboardNavigation(
     initialPreferences.preferences.selectedTab,
-    sessionsLoaded ? sessions.find((session) => session.active)?.id ?? null : undefined,
+    sessionIds,
   )
   const [sessionsError, setSessionsError] = useState('')
   const [creatingSession, setCreatingSession] = useState(false)
@@ -925,6 +942,14 @@ export default function App({
     const updated = await renameClubSession(id, name)
     setSessions((current) => current.map((session) => session.id === id ? updated : session))
   }, [renameClubSession])
+
+  const handleDeleteClubSession = useCallback(async (id: number) => {
+    await deleteClubSession(id)
+    setSessions((current) => current.filter((session) => session.id !== id))
+    setSessionConfigOpen(false)
+    setSessionPlayerDialogOpen(false)
+    navigate('club-sessions', 'replace')
+  }, [deleteClubSession, navigate])
 
   const handleUpdateClubSessionPairingMode = useCallback(async (
     id: number,
@@ -3470,10 +3495,14 @@ export default function App({
   )
 
   const activeSession = sessions.find((session) => session.active) ?? null
+  const pastSessions = sessions.filter((session) => !session.active)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id - a.id)
+  const selectedPastSession = pastSessions.find((session) => selectedView === `session-${session.id}`)
   const sessionViewId = activeSession ? `session-${activeSession.id}` : null
   const dashboardTabs = [
     { id: 'leaderboard', label: 'Leaderboard' },
     { id: 'recent-games', label: 'Recent Games' },
+    ...(selectedView === 'club-sessions' ? [{ id: 'club-sessions', label: 'Club Sessions' }] : []),
     ...(activeSession && sessionViewId ? [{
       id: sessionViewId,
       label: activeSession.name,
@@ -3483,6 +3512,7 @@ export default function App({
         onClick: () => setSessionConfigOpen(true),
       },
     }] : []),
+    ...(selectedPastSession ? [{ id: `session-${selectedPastSession.id}`, label: selectedPastSession.name }] : []),
   ]
   const ongoingGamesPanel = (
     panelGames: OngoingGame[],
@@ -3696,10 +3726,12 @@ export default function App({
           <DashboardTabs
             selected={selectedView}
             tabs={dashboardTabs}
-            createLabel={!activeSession
-              ? (creatingSession ? '+ Creating Club Session…' : '+ Create Club Session')
-              : undefined}
-            onCreate={!activeSession && !creatingSession ? () => void handleCreateClubSession() : undefined}
+            toolbarActions={
+              <ClubSessionsMenu sessions={sessions} loaded={sessionsLoaded} error={sessionsError}
+                creating={creatingSession} onCreate={() => void handleCreateClubSession()}
+                onSelect={(id) => navigate(`session-${id}`)}
+                onFindPast={() => navigate('club-sessions')} />
+            }
             onSelect={(view) => {
               navigate(view)
               if (view === 'leaderboard' || view === 'recent-games') {
@@ -3721,8 +3753,16 @@ export default function App({
               {ongoingGamesPanel(games, 'all')}
             </div>,
             'recent-games': recentGamesPanel,
+            'club-sessions': <ClubSessionsView sessions={sessions} loaded={sessionsLoaded} error={sessionsError}
+              onSelect={(id) => navigate(`session-${id}`)} />,
+            ...(selectedPastSession ? {
+              [`session-${selectedPastSession.id}`]: <PastSessionView key={selectedPastSession.id}
+                session={selectedPastSession} onDelete={() => handleDeleteClubSession(selectedPastSession.id)} />,
+            } : {}),
             ...(activeSession && sessionViewId ? {
-              [sessionViewId]: <div className="workspace-with-games">
+              [sessionViewId]: <div className="active-session-view">
+                <SessionHeader session={activeSession} onDelete={() => handleDeleteClubSession(activeSession.id)} />
+                <div className="workspace-with-games">
                 <Leaderboard refreshKey={leaderboardRefresh} variant="rail"
                   onScanCode={beginPlayerCodeScan}
                   eventId={activeSession.id} title="Session Standings"
@@ -3740,6 +3780,7 @@ export default function App({
                   'session',
                   activeSession.id,
                 )}
+                </div>
               </div>,
             } : {}),
           }}</DashboardTabs>
@@ -3760,7 +3801,9 @@ export default function App({
               onClose={() => setSessionPlayerDialogOpen(false)}
               onCheckIn={handleManualSessionCheckIn} />
           )}
-          {sessionsError && <p className="games-message error">{sessionsError}</p>}
+          {sessionsError && <p className="games-message error" role="alert">{sessionsError}
+            {' '}<button type="button" onClick={() => void refreshSessions()}>Retry club sessions</button>
+          </p>}
           {playerCreator}
         </section>
 

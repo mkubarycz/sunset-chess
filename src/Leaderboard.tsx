@@ -3,6 +3,20 @@ import type { OngoingGame } from './GameCard'
 import { ModalDialog } from './ModalDialog'
 import { PlayerCardDialog, type LeaderboardEntry } from './PlayerCardDialog'
 
+function recordLabel(wins: number, draws: number, losses: number) {
+  return `${wins} ${wins === 1 ? 'win' : 'wins'}, ${draws} ${draws === 1 ? 'draw' : 'draws'}, ${losses} ${losses === 1 ? 'loss' : 'losses'}`
+}
+
+function StandingRecord({ wins, draws, losses }: { wins: number; draws: number; losses: number }) {
+  return (
+    <span className="standing-record" role="group" aria-label={recordLabel(wins, draws, losses)}>
+      <span className="standing-record-wins" aria-hidden="true">{wins}W</span>{' '}
+      <span className="standing-record-draws" aria-hidden="true">{draws}D</span>{' '}
+      <span className="standing-record-losses" aria-hidden="true">{losses}L</span>
+    </span>
+  )
+}
+
 export function Leaderboard({
   refreshKey,
   variant = 'default',
@@ -15,6 +29,7 @@ export function Leaderboard({
   waitingGames = [],
   eventId,
   title = 'Current Club Standings',
+  readOnly = false,
 }: {
   refreshKey: number
   variant?: 'default' | 'rail'
@@ -27,6 +42,7 @@ export function Leaderboard({
   waitingGames?: readonly OngoingGame[]
   eventId?: number
   title?: string
+  readOnly?: boolean
 }) {
   const [entries, setEntries] = useState<LeaderboardEntry[]>([])
   const [loading, setLoading] = useState(true)
@@ -190,14 +206,14 @@ export function Leaderboard({
                   </td>}
                   <td className="leaderboard-player">
                     <div className="leaderboard-player-content">
-                      <button type="button" className="leaderboard-player-name"
+                      {readOnly ? <strong>{entry.name}</strong> : <button type="button" className="leaderboard-player-name"
                         aria-label={`Open player card for ${entry.name}`}
                         onClick={(event) => openPlayerCard(entry, event.currentTarget)}>
                         {entry.name}
-                      </button>
-                      <span className={`leaderboard-player-status status-${entry.checkInStatus ?? 'not-checked-in'}`}>
+                      </button>}
+                      {!readOnly && <span className={`leaderboard-player-status status-${entry.checkInStatus ?? 'not-checked-in'}`}>
                         {statusContent(entry)}
-                      </span>
+                      </span>}
                       {onMoveWaitingPlayer && entry.checkInStatus === 'waiting' && (
                         <button type="button" className="leaderboard-move-player"
                           onClick={(event) => {
@@ -221,20 +237,19 @@ export function Leaderboard({
                   </td>
                   <td className="leaderboard-elo">{entry.currentRating}</td>
                   <td className="leaderboard-record">
-                    <span>{entry.wins}-{entry.losses}-{entry.draws}</span>
-                    <small>{entry.gamesPlayed}g</small>
-                    <button type="button" className="leaderboard-row-hit" onClick={(event) => {
+                    <StandingRecord wins={entry.wins} draws={entry.draws} losses={entry.losses} />
+                    {!readOnly && <button type="button" className="leaderboard-row-hit" onClick={(event) => {
                       openPlayerCard(entry, event.currentTarget)
                     }} aria-label={`${entry.name}, ${sessionStandings
                       ? entry.cohort ? `cohort ${entry.cohort}` : 'no cohort assigned'
-                      : `rank ${entry.rank}`}, ${entry.currentRating} Elo, ${entry.wins}-${entry.losses}-${entry.draws} record`}>
+                      : `rank ${entry.rank}`}, ${entry.currentRating} Elo, record: ${recordLabel(entry.wins, entry.draws, entry.losses)}`}>
                       <span className="visually-hidden">View {entry.name} profile</span>
-                    </button>
+                    </button>}
                   </td>
                   {eventId !== undefined && (
                     <td className="leaderboard-session-record">
-                      <span>{entry.sessionWins ?? 0}-{entry.sessionLosses ?? 0}-{entry.sessionDraws ?? 0}</span>
-                      <small>{entry.sessionGamesPlayed ?? 0}g</small>
+                      <StandingRecord wins={entry.sessionWins ?? 0}
+                        draws={entry.sessionDraws ?? 0} losses={entry.sessionLosses ?? 0} />
                     </td>
                   )}
                 </tr>

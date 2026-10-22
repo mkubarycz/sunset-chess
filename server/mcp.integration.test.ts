@@ -80,6 +80,120 @@ async function fixture() {
 }
 
 describe('Sunset Chess HTTP and MCP', () => {
+  it('serves full individual game details and opponent-aware rating history over HTTP', async () => {
+    const app = await fixture();
+    try {
+      const base = `http://127.0.0.1:${app.port}`;
+      app.repository.upsertPlayer(1000, 'Alice');
+      app.repository.upsertPlayer(1001, 'Bob');
+      const game = app.repository.createGame(1000, 1001);
+      const endpoint = `${base}/api/games/${game.id}`;
+      const ongoing = await fetch(endpoint);
+      expect(ongoing.status).toBe(200);
+      expect(await ongoing.json()).toEqual({ game: app.repository.getGameDetails(game.id) });
+      app.repository.finalizeGame(game.id, '1-0', () => '2027-01-02T12:00:00.000Z');
+      const completed = await fetch(endpoint);
+      expect(completed.status).toBe(200);
+      expect(await completed.json()).toMatchObject({ game: {
+        createdAt: game.createdAt, finishedAt: '2027-01-02T12:00:00.000Z',
+        blackRatingDelta: -16, whiteRatingDelta: 16, canCancel: true,
+        blackPlayer: { name: 'Alice' }, whitePlayer: { name: 'Bob' },
+      } });
+      const profile = await fetch(`${base}/api/players/1000/profile?recentLimit=1`);
+      expect(await profile.json()).toMatchObject({ profile: { ratingHistory: [
+        { reason: 'baseline', opponentName: null, outcome: null, opponentRatingBefore: null, opponentDelta: null },
+        { reason: 'game', gameId: game.id, opponentName: 'Bob', outcome: 'loss', opponentRatingBefore: 700, opponentDelta: 16 },
+      ] } });
+      app.repository.cancelGame(game.id, 'Incorrect result');
+      const cancelled = await fetch(endpoint);
+      expect(cancelled.status).toBe(200);
+      expect(await cancelled.json()).toMatchObject({ game: {
+        cancelledAt: expect.any(String), cancellationReason: 'Incorrect result', canCancel: false,
+      } });
+      const missing = await fetch(`${base}/api/games/999999`);
+      expect(missing.status).toBe(404);
+      expect(await missing.json()).toMatchObject({ code: 'not_found', error: expect.any(String) });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('soft-deletes empty sessions over HTTP and rejects stale or populated deletion requests', async () => {
+    const app = await fixture();
+    try {
+      const base = `http://127.0.0.1:${app.port}`;
+      const session = app.repository.createClubSession('Empty active session');
+      const endpoint = `${base}/api/sessions/${session.id}`;
+      const removed = await fetch(endpoint, { method: 'DELETE' });
+      expect(removed.status).toBe(200);
+      expect(await removed.json()).toMatchObject({
+        session: { id: session.id, active: false, deletedAt: expect.any(String) },
+      });
+      expect(await (await fetch(`${base}/api/sessions`)).json()).toEqual({ sessions: [] });
+      expect((await fetch(`${endpoint}/games`)).status).toBe(404);
+      expect((await fetch(endpoint, { method: 'DELETE' })).status).toBe(404);
+      expect(app.db.prepare('SELECT COUNT(*) AS count FROM ClubSessionResource WHERE id = ?').get(session.id))
+        .toEqual({ count: 1 });
+      const populated = app.repository.createClubSession('Now has a game');
+      app.repository.createEmptyGame(undefined, populated.id);
+      const rejected = await fetch(`${base}/api/sessions/${populated.id}`, { method: 'DELETE' });
+      expect(rejected.status).toBe(409);
+      expect(await rejected.json()).toMatchObject({ error: expect.stringContaining('zero check-ins and zero games') });
+      expect(app.repository.getClubSession(populated.id).active).toBe(true);
+      expect((await fetch(`${base}/api/sessions/999999`, { method: 'DELETE' })).status).toBe(404);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('supports soft deletion through the generic MCP resource contract', async () => {
+    const app = await fixture();
+    try {
+      const session = app.repository.createClubSession('Unused MCP session');
+      const deleted = await app.client.callTool({
+        name: 'resource-delete', arguments: { kind: 'club-session', id: String(session.id) },
+      });
+      expect(deleted.isError).not.toBe(true);
+      expect(deleted.structuredContent).toMatchObject({
+        resource: { status: { lifecycle: 'deleted', deletedAt: expect.any(String) } },
+      });
+      expect(app.repository.listClubSessions()).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('returns complete session history beyond the recent-game limit without mixing sessions', async () => {
+    const app = await fixture();
+    try {
+      app.repository.upsertPlayer(1000, 'Alice');
+      app.repository.upsertPlayer(1001, 'Bob');
+      const session = app.repository.createClubSession('Past session');
+      const ids: number[] = [];
+      for (let i = 0; i < 25; i += 1) {
+        const game = app.repository.createGame(1000, 1001, session.id);
+        app.repository.finalizeGame(game.id, '1/2-1/2');
+        ids.push(game.id);
+      }
+      app.repository.closeClubSession(session.id, 'cancel');
+      const active = app.repository.createClubSession('Current session');
+      app.repository.createGame(1000, 1001, active.id);
+      const base = `http://127.0.0.1:${app.port}`;
+      const endpoint = `${base}/api/sessions/${session.id}/games`;
+      const response = await fetch(endpoint);
+      expect(response.status).toBe(200);
+      const body = await response.json() as { games: Array<{ id: number; eventId: number }> };
+      expect(body.games).toHaveLength(25);
+      expect(body.games.map((game) => game.id).sort((a, b) => a - b)).toEqual(ids);
+      expect(body.games.every((game) => game.eventId === session.id)).toBe(true);
+      expect((await fetch(endpoint, { method: 'POST' })).status).toBe(405);
+      expect((await fetch(`${base}/api/sessions/999999/games`)).status).toBe(404);
+      expect(app.repository.getClubSession(active.id).active).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('requires and supports Started consent in the existing waiting-player move workflow', async () => {
     const app = await fixture();
     try {
