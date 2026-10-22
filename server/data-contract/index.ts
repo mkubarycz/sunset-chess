@@ -8,6 +8,7 @@ export { ResourceKindSchema, type ResourceKind } from './resource-kind.js';
 export { sunsetChessResources } from './registry.js';
 
 export { CheckInCreateInputSchema } from './check-in.post.js';
+export { CheckInUpdateInputSchema } from './check-in.put.js';
 export { ClubSessionCreateInputSchema } from './club-session.post.js';
 export { ClubSessionUpdateInputSchema } from './club-session.put.js';
 export { GameCreateInputSchema } from './game.post.js';

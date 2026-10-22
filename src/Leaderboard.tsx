@@ -24,6 +24,7 @@ export function Leaderboard({
   addPlayerLabel = 'Add player',
   onScanCode,
   onCheckIn,
+  onCheckOut,
   onOpenGame,
   onMoveWaitingPlayer,
   waitingGames = [],
@@ -37,6 +38,7 @@ export function Leaderboard({
   addPlayerLabel?: string
   onScanCode?: (player: LeaderboardEntry) => void
   onCheckIn?: (player: LeaderboardEntry) => Promise<void>
+  onCheckOut?: (player: LeaderboardEntry) => Promise<void>
   onOpenGame?: (player: LeaderboardEntry) => void
   onMoveWaitingPlayer?: (player: LeaderboardEntry, destinationGameId: number, overrideStarted?: boolean) => Promise<void>
   waitingGames?: readonly OngoingGame[]
@@ -49,6 +51,7 @@ export function Leaderboard({
   const [error, setError] = useState('')
   const [selected, setSelected] = useState<LeaderboardEntry | null>(null)
   const [checkingInId, setCheckingInId] = useState<number | null>(null)
+  const [checkingOutId, setCheckingOutId] = useState<number | null>(null)
   const [movingPlayer, setMovingPlayer] = useState<LeaderboardEntry | null>(null)
   const [movingToGameId, setMovingToGameId] = useState<number | null>(null)
   const [moveError, setMoveError] = useState('')
@@ -113,7 +116,22 @@ export function Leaderboard({
     </button>
   )
 
+  const checkOut = async (entry: LeaderboardEntry) => {
+    if (!onCheckOut || checkingOutId !== null) return
+    setCheckingOutId(entry.id)
+    setError('')
+    try {
+      await onCheckOut(entry)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not check out this player.')
+    } finally {
+      setCheckingOutId(null)
+    }
+  }
+
   const statusContent = (entry: LeaderboardEntry) => {
+    if (entry.checkInStatus === 'checked-out') return 'Checked out · Unavailable'
+    if (entry.checkInStatus === 'available') return 'Checked in · Available for pairing'
     if (entry.checkInStatus === 'waiting' && entry.tableNumber !== null) {
       return <>Waiting at {onOpenGame ? tableLink(entry) : `table ${entry.tableNumber}`}</>
     }
@@ -177,7 +195,7 @@ export function Leaderboard({
         </div>
         <div aria-live="polite">
           {loading && entries.length === 0 && <p>Loading leaderboard…</p>}
-          {error && <p className="games-message error">{error}</p>}
+          {error && <p role="alert" className="games-message error">{error}</p>}
         </div>
         {!loading && !error && entries.length === 0 && <p>No players yet. New players begin at 700 Elo.</p>}
         {entries.length > 0 && (
@@ -225,9 +243,22 @@ export function Leaderboard({
                           Move To...
                         </button>
                       )}
-                      {onCheckIn && (entry.checkInStatus ?? 'not-checked-in') === 'not-checked-in' && (
+                      {sessionStandings && !readOnly && onCheckOut
+                        && ['waiting', 'playing', 'available'].includes(entry.checkInStatus ?? '') && (
+                        <button type="button" className="leaderboard-check-out secondary"
+                          aria-label={`Check out ${entry.name}`}
+                          disabled={checkingOutId !== null || checkingInId !== null || entry.tableNumber != null}
+                          title={entry.tableNumber != null
+                            ? `Finish or cancel Table ${entry.tableNumber} before checking out.`
+                            : `Check ${entry.name} out of this session`}
+                          onClick={() => void checkOut(entry)}>
+                          {checkingOutId === entry.id ? 'Checking out…' : 'Check out'}
+                        </button>
+                      )}
+                      {sessionStandings && !readOnly && onCheckIn
+                        && ['not-checked-in', 'checked-out'].includes(entry.checkInStatus ?? 'not-checked-in') && (
                         <button type="button" className="leaderboard-check-in"
-                          disabled={checkingInId !== null}
+                          disabled={checkingInId !== null || checkingOutId !== null}
                           aria-label={`Check in ${entry.name}`}
                           onClick={() => void checkIn(entry)}>
                           {checkingInId === entry.id ? 'Checking in…' : 'Check in'}

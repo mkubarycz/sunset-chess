@@ -80,6 +80,75 @@ async function fixture() {
 }
 
 describe('Sunset Chess HTTP and MCP', () => {
+  it('scopes attendance and enforces checkout through HTTP, MCP, and generic resources', async () => {
+    const app = await fixture();
+    try {
+      const base = `http://127.0.0.1:${app.port}`;
+      app.repository.upsertPlayer(1000, 'Alice');
+      app.repository.upsertPlayer(1001, 'Bob');
+      for (let id = 1002; id < 1016; id++) app.repository.upsertPlayer(id, `Player ${id}`);
+      const session = app.repository.createClubSession('Attendance');
+      const endpoint = `${base}/api/sessions/${session.id}/check-ins`;
+      const post = (playerId: number, name: string) => fetch(endpoint, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ playerId, name }),
+      });
+      const first = await post(1000, 'Alice');
+      expect(first.status).toBe(200);
+      const firstBody = await first.json() as { game: { id: number }; checkIn: { id: number; eventId: number } };
+      expect(firstBody.checkIn.eventId).toBe(session.id);
+      const second = await post(1001, 'Bob');
+      expect(second.status).toBe(200);
+      const blocked = await fetch(`${endpoint}/1000`, { method: 'DELETE' });
+      expect(blocked.status).toBe(409);
+      expect(await blocked.json()).toMatchObject({ error: expect.stringMatching(/Finish or cancel Table/) });
+      app.repository.finalizeGame(firstBody.game.id, '1/2-1/2');
+      const available = await fetch(`${base}/api/resources/check-in/${firstBody.checkIn.id}`);
+      expect(await available.json()).toMatchObject({ resource: { status: {
+        attendance: 'checked-in', placement: 'available',
+      } } });
+      const checkedOut = await fetch(`${endpoint}/1000`, { method: 'DELETE' });
+      expect(checkedOut.status).toBe(200);
+      expect(await checkedOut.json()).toMatchObject({ checkIn: {
+        playerId: 1000, eventId: session.id, checkedOutAt: expect.any(String),
+      } });
+      const empty = app.repository.createEmptyGame(undefined, session.id);
+      const rejectedSeat = await fetch(`${base}/api/games/${empty.id}/seats/black`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ playerId: 1000 }),
+      });
+      expect(rejectedSeat.status).toBe(409);
+      const mcp = await app.client.callTool({
+        name: 'player-check-out', arguments: { playerId: 1001, eventId: session.id },
+      });
+      expect(mcp.isError).not.toBe(true);
+      expect(mcp.structuredContent).toMatchObject({ checkIn: {
+        playerId: 1001, checkedOutAt: expect.any(String),
+      } });
+      const generic = await fetch(`${base}/api/resources/check-in/${firstBody.checkIn.id}`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ checkOut: true }),
+      });
+      expect(generic.status).toBe(200);
+      expect(await generic.json()).toMatchObject({ resource: { status: {
+        attendance: 'checked-out', placement: 'checked-out',
+      } } });
+      const reactivated = await app.client.callTool({
+        name: 'resource-create',
+        arguments: { kind: 'check-in', spec: { playerId: 1000, name: 'Alice', eventId: session.id } },
+      });
+      expect(reactivated.isError).not.toBe(true);
+      expect(app.repository.listCheckIns(session.id, 1000)).toEqual([
+        expect.objectContaining({ id: firstBody.checkIn.id, checkedOutAt: null }),
+      ]);
+      app.repository.closeClubSession(session.id, 'cancel');
+      app.repository.createClubSession('Next session');
+      expect((await post(1000, 'Alice')).status).toBe(409);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('serves full individual game details and opponent-aware rating history over HTTP', async () => {
     const app = await fixture();
     try {
@@ -899,7 +968,7 @@ describe('Sunset Chess HTTP and MCP', () => {
       'club-session-pairing-mode-update', 'contract-discover',
       'game-cancel', 'game-create', 'game-delete', 'game-get', 'game-list', 'game-result-set',
       'game-seat-update', 'game-start',
-      'leaderboard-list', 'player-check-in', 'player-create', 'player-delete',
+      'leaderboard-list', 'player-check-in', 'player-check-out', 'player-create', 'player-delete',
       'player-get', 'player-list', 'player-name-update', 'player-profile-get', 'player-upsert',
       'resource-create', 'resource-delete', 'resource-get', 'resource-query', 'resource-update',
       'waiting-player-move',

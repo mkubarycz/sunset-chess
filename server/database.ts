@@ -496,6 +496,24 @@ const migrations = [
       );
     `,
   },
+  {
+    version: 14,
+    sql: `
+      ALTER TABLE CheckInResource ADD COLUMN checkedOutAt TEXT CHECK (
+        checkedOutAt IS NULL OR (length(checkedOutAt) >= 20 AND datetime(checkedOutAt) IS NOT NULL)
+      );
+      INSERT OR IGNORE INTO CheckInResource(eventId, playerId, checkedInAt, gameId, placement, side)
+      SELECT g.eventId, g.blackPlayerId, g.createdAt, g.id,
+        CASE WHEN g.whitePlayerId IS NULL THEN 'waiting' ELSE 'paired' END, 'black'
+      FROM GameResource g JOIN ClubSessionResource s ON s.id = g.eventId AND s.active = 1
+      WHERE g.result IS NULL AND g.cancelledAt IS NULL AND g.blackPlayerId IS NOT NULL;
+      INSERT OR IGNORE INTO CheckInResource(eventId, playerId, checkedInAt, gameId, placement, side)
+      SELECT g.eventId, g.whitePlayerId, g.createdAt, g.id,
+        CASE WHEN g.blackPlayerId IS NULL THEN 'waiting' ELSE 'paired' END, 'white'
+      FROM GameResource g JOIN ClubSessionResource s ON s.id = g.eventId AND s.active = 1
+      WHERE g.result IS NULL AND g.cancelledAt IS NULL AND g.whitePlayerId IS NOT NULL;
+    `,
+  },
 ] as const;
 
 function backfillRatingLedger(db: DatabaseSync, recordedAt: string): void {

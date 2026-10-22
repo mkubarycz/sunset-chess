@@ -51,7 +51,7 @@ export interface LeaderboardEntry {
   losses: number;
   draws: number;
   lastPlayedAt: string | null;
-  checkInStatus: 'not-checked-in' | 'waiting' | 'playing';
+  checkInStatus: 'not-checked-in' | 'waiting' | 'playing' | 'available' | 'checked-out';
   tableNumber: number | null;
   opponentName: string | null;
   sessionGamesPlayed: number;
@@ -123,6 +123,7 @@ export interface CheckIn {
   eventId: number | null;
   playerId: number;
   checkedInAt: string;
+  checkedOutAt: string | null;
   gameId: number | null;
   placement: 'paired' | 'waiting' | 'already-checked-in' | null;
   side: CheckInSide | null;
@@ -217,7 +218,7 @@ export class ChessRepository {
       parameters.push(playerId);
     }
     return this.db.prepare(`
-      SELECT id, eventId, playerId, checkedInAt, gameId, placement, side
+      SELECT id, eventId, playerId, checkedInAt, checkedOutAt, gameId, placement, side
       FROM CheckInResource
       ${conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''}
       ORDER BY checkedInAt DESC, id DESC
@@ -226,7 +227,7 @@ export class ChessRepository {
 
   getCheckIn(id: number): CheckIn {
     const checkIn = this.db.prepare(`
-      SELECT id, eventId, playerId, checkedInAt, gameId, placement, side
+      SELECT id, eventId, playerId, checkedInAt, checkedOutAt, gameId, placement, side
       FROM CheckInResource WHERE id = ?
     `).get(id) as unknown as CheckIn | undefined;
     if (!checkIn) throw new NotFoundError(`Check-in ${id} was not found.`);
@@ -405,11 +406,14 @@ export class ChessRepository {
         if (resolution === 'cancel' || game.blackPlayerId === null || game.whitePlayerId === null) {
           this.db.prepare('DELETE FROM GameResource WHERE id = ?').run(game.id);
         } else {
-          this.finalizeGameInTransaction(game.id, '1/2-1/2', closedAt);
+          this.finalizeGameInTransaction(game.id, '1/2-1/2', closedAt, false);
         }
       }
       this.db.prepare(`
         UPDATE ClubSessionResource SET active = 0, closedAt = ? WHERE id = ? AND active = 1
+      `).run(closedAt, id);
+      this.db.prepare(`
+        UPDATE CheckInResource SET checkedOutAt = COALESCE(checkedOutAt, ?) WHERE eventId = ?
       `).run(closedAt, id);
       const closed = this.listClubSessions().find((candidate) => candidate.id === id);
       if (!closed) throw new Error(`Club session ${id} disappeared after close.`);
@@ -438,7 +442,10 @@ export class ChessRepository {
       throw new ConflictError('Player options are available only for an ongoing game.');
     }
     const activeGames = this.listGames().filter((candidate) => !candidate.result && !candidate.cancelledAt);
-    const checkedIn = new Set(this.listCheckIns(game.eventId ?? undefined).map(({ playerId }) => playerId));
+    const attendance = this.listCheckIns(game.eventId ?? undefined);
+    const checkedIn = new Set(attendance.filter((entry) => entry.checkedOutAt === null).map(({ playerId }) => playerId));
+    const checkedOut = new Set(game.eventId === null ? []
+      : attendance.filter((entry) => entry.checkedOutAt !== null).map(({ playerId }) => playerId));
     const cohorts = new Map(game.eventId === null ? []
       : this.listPairingCohorts(game.eventId).map(({ playerId, cohort }) => [playerId, cohort]));
     const opponents = [game.blackPlayerId, game.whitePlayerId].filter((id): id is number => id !== null);
@@ -496,7 +503,7 @@ export class ChessRepository {
     const lastResults = new Map(latestResults.map(({ playerId, ...result }) => [playerId, result]));
     const players = this.listPlayers();
     const playersById = new Map(players.map((player) => [player.id, player]));
-    return players.map((player) => {
+    return players.filter((player) => !checkedOut.has(player.id)).map((player) => {
       const assigned = activeGames.find((candidate) =>
         candidate.blackPlayerId === player.id || candidate.whitePlayerId === player.id);
       const assignedOpponentId = assigned?.blackPlayerId === player.id
@@ -909,11 +916,21 @@ export class ChessRepository {
         LIMIT 1
       `).get() as { tableNumber: number };
       const resolvedEventId = this.resolveEventId(eventId);
+      if (resolvedEventId !== null) {
+        this.assertSessionAssignment(resolvedEventId, blackPlayerId);
+        this.assertSessionAssignment(resolvedEventId, whitePlayerId);
+      }
       const result = this.db.prepare(
         `INSERT INTO GameResource(tableNumber, createdAt, blackPlayerId, whitePlayerId, eventId)
          VALUES (?, ?, ?, ?, ?)`,
       ).run(table.tableNumber, new Date().toISOString(), blackPlayerId, whitePlayerId, resolvedEventId);
       const game = this.getGame(Number(result.lastInsertRowid));
+      if (resolvedEventId !== null) {
+        for (const [playerId, side] of [[blackPlayerId, 'black'], [whitePlayerId, 'white']] as const) {
+          this.ensureSessionPairingCohort(resolvedEventId, playerId);
+          this.recordCheckIn(resolvedEventId, playerId, game.createdAt, game.id, 'paired', side);
+        }
+      }
       this.db.exec('COMMIT');
       return game;
     } catch (error) {
@@ -938,10 +955,14 @@ export class ChessRepository {
       if (typeof createdAt !== 'string' || Number.isNaN(Date.parse(createdAt))) {
         throw new Error('Clock source returned an invalid ISO timestamp.');
       }
+      const resolvedEventId = this.resolveEventId(eventId);
+      if (resolvedEventId !== null && !this.getClubSession(resolvedEventId).active) {
+        throw new ConflictError('Cannot create a game in a closed Club Session.');
+      }
       const result = this.db.prepare(`
         INSERT INTO GameResource(tableNumber, createdAt, blackPlayerId, whitePlayerId, eventId)
         VALUES (?, ?, NULL, NULL, ?)
-      `).run(this.lowestAvailableTable(), createdAt, this.resolveEventId(eventId));
+      `).run(this.lowestAvailableTable(), createdAt, resolvedEventId);
       const game = this.getJoinedGame(Number(result.lastInsertRowid));
       this.db.exec('COMMIT');
       return game;
@@ -955,6 +976,7 @@ export class ChessRepository {
     player: Pick<PlayerResource, 'id' | 'name'>,
     rng: (maxExclusive: number) => number = randomInt,
     now: () => string = () => new Date().toISOString(),
+    eventId?: number,
   ): CheckInResult {
     const name = validatePlayerInput(player.id, player.name);
     this.db.exec('BEGIN IMMEDIATE');
@@ -968,14 +990,23 @@ export class ChessRepository {
         ON CONFLICT(id) DO UPDATE SET name = excluded.name
       `).run(player.id, name);
       this.ensureBaseline(player.id, checkedInAt);
-      const activeEventId = this.resolveEventId(undefined);
+      const activeEventId = this.resolveEventId(eventId);
       if (activeEventId !== null) {
+        if (!this.getClubSession(activeEventId).active) {
+          throw new ConflictError('Cannot check a player into a closed Club Session.');
+        }
         this.ensureSessionPairingCohort(activeEventId, player.id);
         this.db.prepare(`
           INSERT INTO CheckInResource(eventId, playerId, checkedInAt)
           VALUES (?, ?, ?)
           ON CONFLICT DO NOTHING
         `).run(activeEventId, player.id, checkedInAt);
+        this.db.prepare(`
+          UPDATE CheckInResource
+          SET checkedInAt = CASE WHEN checkedOutAt IS NOT NULL THEN ? ELSE checkedInAt END,
+            checkedOutAt = NULL
+          WHERE eventId = ? AND playerId = ?
+        `).run(checkedInAt, activeEventId, player.id);
       }
 
       const existing = this.db.prepare(`
@@ -987,6 +1018,10 @@ export class ChessRepository {
         id: number; blackPlayerId: number | null; whitePlayerId: number | null; eventId: number | null
       } | undefined;
       if (existing) {
+        if (existing.eventId !== activeEventId
+          && (eventId !== undefined || existing.eventId !== null)) {
+          throw new ConflictError('This player already has an unfinished game in another session.');
+        }
         if (existing.eventId === null && activeEventId !== null) {
           this.db.prepare('UPDATE GameResource SET eventId = ? WHERE id = ?').run(activeEventId, existing.id);
         }
@@ -1010,11 +1045,20 @@ export class ChessRepository {
           ORDER BY createdAt ASC, id ASC
           LIMIT 1
         `).get()
-        : this.findClubSessionPairing(activeEventId, player.id);
+        : this.findClubSessionPairing(activeEventId, player.id, true);
       const typedWaiting = waiting as {
-        id: number; blackPlayerId: number | null; whitePlayerId: number | null
+        id: number | null; blackPlayerId: number | null; whitePlayerId: number | null
       } | undefined;
-      if (typedWaiting) {
+      if (typedWaiting?.id === null && activeEventId !== null) {
+        if (typedWaiting.whitePlayerId === null) throw new Error('Session pairing has no opponent.');
+        const created = this.createSessionPairing(activeEventId, player.id, typedWaiting.whitePlayerId, checkedInAt, rng);
+        const game = this.getJoinedGame(created.id);
+        const side: CheckInSide = game.blackPlayerId === player.id ? 'black' : 'white';
+        const checkIn = this.recordCheckIn(activeEventId, player.id, checkedInAt, game.id, 'paired', side);
+        this.db.exec('COMMIT');
+        return { status: 'paired', game, side, checkIn };
+      }
+      if (typedWaiting && typedWaiting.id !== null) {
         const side: CheckInSide = typedWaiting.blackPlayerId === null ? 'black' : 'white';
         this.db.prepare(
           `UPDATE GameResource SET ${side === 'black' ? 'blackPlayerId' : 'whitePlayerId'} = ? WHERE id = ?`,
@@ -1032,12 +1076,12 @@ export class ChessRepository {
         FROM GameResource
         WHERE result IS NULL AND cancelledAt IS NULL
           AND startedAt IS NULL
-          AND (eventId IS ? OR (eventId IS NULL AND ? IS NOT NULL))
+          AND (eventId IS ? OR (eventId IS NULL AND ? IS NOT NULL AND ? = 1))
           AND blackPlayerId IS NULL AND whitePlayerId IS NULL
         ORDER BY CASE WHEN eventId IS ? THEN 0 ELSE 1 END,
           tableNumber ASC, createdAt ASC, id ASC
         LIMIT 1
-      `).get(activeEventId, activeEventId, activeEventId) as { id: number } | undefined;
+      `).get(activeEventId, activeEventId, eventId === undefined ? 1 : 0, activeEventId) as { id: number } | undefined;
       const sideIndex = rng(2);
       if (sideIndex !== 0 && sideIndex !== 1) {
         throw new Error('Random side source must return 0 or 1.');
@@ -1085,6 +1129,47 @@ export class ChessRepository {
     }
   }
 
+  checkOutPlayer(eventId: number, playerId: number, now = () => new Date().toISOString()): CheckIn {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      if (!this.getClubSession(eventId).active) throw new ConflictError('This Club Session is closed.');
+      const attendance = this.listCheckIns(eventId, playerId)[0];
+      if (!attendance) throw new NotFoundError('This player has not checked into this Club Session.');
+      if (attendance.checkedOutAt !== null) {
+        this.db.exec('COMMIT');
+        return attendance;
+      }
+      const game = this.db.prepare(`
+        SELECT tableNumber FROM GameResource
+        WHERE result IS NULL AND cancelledAt IS NULL AND (blackPlayerId = ? OR whitePlayerId = ?)
+        LIMIT 1
+      `).get(playerId, playerId) as { tableNumber: number } | undefined;
+      if (game) throw new ConflictError(`Finish or cancel Table ${game.tableNumber} before checking this player out.`);
+      const checkedOutAt = now();
+      if (typeof checkedOutAt !== 'string' || Number.isNaN(Date.parse(checkedOutAt))) {
+        throw new Error('Clock source returned an invalid ISO timestamp.');
+      }
+      this.db.prepare(`
+        UPDATE CheckInResource SET checkedOutAt = ?, gameId = NULL, placement = NULL, side = NULL
+        WHERE id = ?
+      `).run(checkedOutAt, attendance.id);
+      const checkedOut = this.getCheckIn(attendance.id);
+      this.db.exec('COMMIT');
+      return checkedOut;
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  private assertSessionAssignment(eventId: number, playerId: number): void {
+    if (!this.getClubSession(eventId).active) throw new ConflictError('This Club Session is closed.');
+    const attendance = this.listCheckIns(eventId, playerId)[0];
+    if (attendance?.checkedOutAt != null) {
+      throw new ConflictError(`${this.getPlayer(playerId).name} is checked out of this Club Session. Check them in before assigning another game.`);
+    }
+  }
+
   private recordCheckIn(
       eventId: number | null,
       playerId: number,
@@ -1112,11 +1197,11 @@ export class ChessRepository {
       } else {
         this.db.prepare(`
           UPDATE CheckInResource
-          SET gameId = COALESCE(gameId, ?),
-              placement = COALESCE(placement, ?),
-              side = COALESCE(side, ?)
+          SET gameId = ?,
+              placement = CASE WHEN gameId = ? THEN COALESCE(placement, ?) ELSE ? END,
+              side = ?
           WHERE id = ?
-        `).run(gameId, placement, side, id);
+        `).run(gameId, gameId, placement, placement, side, id);
       }
       return this.getCheckIn(id);
   }
@@ -1148,7 +1233,8 @@ export class ChessRepository {
   private findClubSessionPairing(
     eventId: number,
     playerId: number,
-  ): { id: number; blackPlayerId: number | null; whitePlayerId: number | null } | undefined {
+    includeAvailable = false,
+  ): { id: number | null; blackPlayerId: number | null; whitePlayerId: number | null } | undefined {
     return this.db.prepare(`
       WITH completed AS (
         SELECT blackPlayerId, whitePlayerId, result
@@ -1178,6 +1264,16 @@ export class ChessRepository {
         WHERE g.eventId = ?
           AND g.result IS NULL AND g.cancelledAt IS NULL AND g.startedAt IS NULL
           AND (g.blackPlayerId IS NULL) <> (g.whitePlayerId IS NULL)
+        UNION ALL
+        SELECT NULL, NULL, attendance.playerId, attendance.checkedInAt, attendance.playerId
+        FROM CheckInResource AS attendance
+        WHERE attendance.eventId = ? AND attendance.checkedOutAt IS NULL
+          AND attendance.playerId <> ? AND ? = 1
+          AND NOT EXISTS (
+            SELECT 1 FROM GameResource AS busy
+            WHERE busy.result IS NULL AND busy.cancelledAt IS NULL
+              AND (busy.blackPlayerId = attendance.playerId OR busy.whitePlayerId = attendance.playerId)
+          )
       )
       SELECT candidate.id, candidate.blackPlayerId, candidate.whitePlayerId
       FROM candidates AS candidate
@@ -1189,12 +1285,15 @@ export class ChessRepository {
         AND opponentCohort.cohort = incomingCohort.cohort
       INNER JOIN records AS incomingRecord ON incomingRecord.playerId = ?
       INNER JOIN records AS opponentRecord ON opponentRecord.playerId = candidate.opponentId
+      INNER JOIN CheckInResource AS opponentAttendance
+        ON opponentAttendance.eventId = ? AND opponentAttendance.playerId = candidate.opponentId
+        AND opponentAttendance.checkedOutAt IS NULL
       WHERE NOT EXISTS (
         SELECT 1 FROM completed AS prior
         WHERE (prior.blackPlayerId = ? AND prior.whitePlayerId = candidate.opponentId)
            OR (prior.whitePlayerId = ? AND prior.blackPlayerId = candidate.opponentId)
       )
-      ORDER BY CASE
+      ORDER BY CASE WHEN candidate.id IS NULL THEN 1 ELSE 0 END, CASE
         WHEN incomingRecord.gamesPlayed = 0 THEN 0
         WHEN SIGN(incomingRecord.score) = SIGN(opponentRecord.score) THEN 0
         ELSE 1
@@ -1207,14 +1306,66 @@ export class ChessRepository {
       eventId,
       eventId,
       playerId,
+      includeAvailable ? 1 : 0,
+      eventId,
       playerId,
+      playerId,
+      eventId,
       playerId,
       playerId,
     ) as {
-      id: number;
+      id: number | null;
       blackPlayerId: number | null;
       whitePlayerId: number | null;
     } | undefined;
+  }
+
+  private createSessionPairing(
+    eventId: number, playerId: number, opponentId: number, createdAt: string, rng = randomInt,
+  ): GameResource {
+    this.assertSessionAssignment(eventId, playerId);
+    this.assertSessionAssignment(eventId, opponentId);
+    const side = rng(2);
+    if (side !== 0 && side !== 1) throw new Error('Random side source must return 0 or 1.');
+    const blackPlayerId = side === 0 ? playerId : opponentId;
+    const whitePlayerId = side === 0 ? opponentId : playerId;
+    const inserted = this.db.prepare(`
+      INSERT INTO GameResource(tableNumber, createdAt, blackPlayerId, whitePlayerId, eventId)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(this.lowestAvailableTable(), createdAt, blackPlayerId, whitePlayerId, eventId);
+    const gameId = Number(inserted.lastInsertRowid);
+    this.recordCheckIn(eventId, blackPlayerId, createdAt, gameId, 'paired', 'black');
+    this.recordCheckIn(eventId, whitePlayerId, createdAt, gameId, 'paired', 'white');
+    return this.getGame(gameId);
+  }
+
+  private pairAvailableSessionPlayers(eventId: number): void {
+    if (!this.getClubSession(eventId).active) return;
+    const available = this.db.prepare(`
+      SELECT attendance.playerId FROM CheckInResource AS attendance
+      WHERE attendance.eventId = ? AND attendance.checkedOutAt IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM GameResource AS game WHERE game.result IS NULL AND game.cancelledAt IS NULL
+            AND (game.blackPlayerId = attendance.playerId OR game.whitePlayerId = attendance.playerId)
+        )
+      ORDER BY attendance.checkedInAt, attendance.id
+    `).all(eventId) as Array<{ playerId: number }>;
+    for (const { playerId } of available) {
+      if (this.db.prepare(`
+        SELECT 1 FROM GameResource WHERE result IS NULL AND cancelledAt IS NULL
+          AND (blackPlayerId = ? OR whitePlayerId = ?)
+      `).get(playerId, playerId)) continue;
+      const candidate = this.findClubSessionPairing(eventId, playerId, true);
+      if (!candidate) continue;
+      const side: CheckInSide = candidate.blackPlayerId === null ? 'black' : 'white';
+      if (candidate.id !== null) {
+        this.updateGameSeatInTransaction(candidate.id, side, playerId);
+      } else {
+        const opponentId = candidate.whitePlayerId;
+        if (opponentId === null) throw new Error('Automatic pairing has no opponent.');
+        this.createSessionPairing(eventId, playerId, opponentId, new Date().toISOString());
+      }
+    }
   }
 
   private lowestAvailableTable(): number {
@@ -1389,6 +1540,7 @@ export class ChessRepository {
     if (playerId !== null) {
       this.getPlayer(playerId);
       if (playerId === opponentId) throw new ValidationError('A player cannot occupy both seats.');
+      if (game.eventId !== null) this.assertSessionAssignment(game.eventId, playerId);
       if (game.eventId !== null && !this.getClubSession(game.eventId).active) {
         throw new ConflictError('Cannot check a player into a closed Club Session.');
       }
@@ -1532,6 +1684,10 @@ export class ChessRepository {
     if (game.cancelledAt !== null) return game;
     if (game.result === null) {
       this.assertStartedConsent(game, overrideStarted);
+      this.db.prepare(`
+        UPDATE CheckInResource SET gameId = NULL, placement = NULL, side = NULL
+        WHERE gameId = ? AND eventId IS NOT NULL
+      `).run(id);
       this.db.prepare('DELETE FROM GameResource WHERE id = ?').run(id);
       return game;
     }
@@ -1618,7 +1774,7 @@ export class ChessRepository {
     }
   }
 
-  private finalizeGameInTransaction(id: number, result: GameResult, finishedAt: string): GameResource {
+  private finalizeGameInTransaction(id: number, result: GameResult, finishedAt: string, pairNext = true): GameResource {
     const game = this.getGame(id);
     if (game.cancelledAt !== null) throw new ConflictError(`Game ${id} is cancelled.`);
     if (game.result !== null) {
@@ -1657,6 +1813,13 @@ export class ChessRepository {
     this.db.prepare('UPDATE PlayerResource SET rating = ? WHERE id = ?')
       .run(black.rating + blackDelta, black.id);
     this.assertRatingProjectionIntegrity();
+    if (game.eventId !== null) {
+      this.db.prepare(`
+        UPDATE CheckInResource SET gameId = NULL, placement = NULL, side = NULL
+        WHERE eventId = ? AND gameId = ?
+      `).run(game.eventId, id);
+      if (pairNext) this.pairAvailableSessionPlayers(game.eventId);
+    }
     return this.getGame(id);
   }
 
@@ -1692,7 +1855,7 @@ export class ChessRepository {
       return this.db.prepare(`
         WITH records AS (
           SELECT p.id, p.name, p.scanningIdentifier, p.rating AS currentRating,
-            ${eventId === undefined ? '' : 'cohort.cohort,'}
+            ${eventId === undefined ? '' : 'cohort.cohort, ep.checkedOutAt,'}
             COUNT(g.id) AS gamesPlayed,
             SUM(CASE
               WHEN (g.whitePlayerId = p.id AND g.result = '1-0')
@@ -1718,7 +1881,8 @@ export class ChessRepository {
           ) AS rank,
           r.*,
           CASE
-            WHEN ongoing.id IS NULL THEN 'not-checked-in'
+            ${eventId === undefined ? '' : "WHEN r.checkedOutAt IS NOT NULL THEN 'checked-out'"}
+            WHEN ongoing.id IS NULL THEN '${eventId === undefined ? 'not-checked-in' : 'available'}'
             WHEN ongoing.blackPlayerId IS NULL OR ongoing.whitePlayerId IS NULL THEN 'waiting'
             ELSE 'playing'
           END AS checkInStatus,
@@ -1729,6 +1893,7 @@ export class ChessRepository {
         INNER JOIN session_records AS sr ON sr.id = r.id
         LEFT JOIN GameResource AS ongoing
           ON ongoing.result IS NULL AND ongoing.cancelledAt IS NULL
+          ${eventId === undefined ? '' : 'AND ongoing.eventId = ?'}
           AND (ongoing.whitePlayerId = r.id OR ongoing.blackPlayerId = r.id)
         LEFT JOIN PlayerResource AS opponent
           ON opponent.id = CASE
@@ -1740,7 +1905,7 @@ export class ChessRepository {
         LIMIT ?
       `).all(...(eventId === undefined
         ? [limit]
-        : [eventId, eventId, limit])) as unknown as LeaderboardEntry[];
+        : [eventId, eventId, eventId, limit])) as unknown as LeaderboardEntry[];
   }
 
   getPlayerProfile(id: number, recentLimit = 10): PlayerProfile {

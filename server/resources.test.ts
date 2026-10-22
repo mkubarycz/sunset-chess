@@ -32,6 +32,38 @@ function fixture() {
   return { db, repository, resources: new ResourceService(repository), path };
 }
 
+it('upgrades populated v13 attendance without losing domain data and recovers manual active seats', () => {
+  const { db, repository, path } = fixture();
+  repository.upsertPlayer(1000, 'Alice');
+  repository.upsertPlayer(1001, 'Bob');
+  const session = repository.createClubSession('Migration attendance');
+  const game = repository.createGame(1000, 1001, session.id);
+  const players = repository.listPlayers();
+  const games = repository.listGames();
+  const ratingEvents = repository.listRatingEvents();
+  db.exec(`
+    DELETE FROM CheckInResource;
+    ALTER TABLE CheckInResource DROP COLUMN checkedOutAt;
+    DELETE FROM schema_migrations WHERE version = 14;
+  `);
+  db.close();
+  const migrated = openDatabase(path);
+  try {
+    const next = new ChessRepository(migrated);
+    expect(next.listPlayers()).toEqual(players);
+    expect(next.listGames()).toEqual(games);
+    expect(next.listRatingEvents()).toEqual(ratingEvents);
+    expect(next.listCheckIns(session.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ playerId: 1000, gameId: game.id, checkedOutAt: null }),
+      expect.objectContaining({ playerId: 1001, gameId: game.id, checkedOutAt: null }),
+    ]));
+    expect(migrated.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' });
+    expect(migrated.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+  } finally {
+    migrated.close();
+  }
+});
+
 afterEach(() => {
   for (const file of files.splice(0)) rmSync(file, { force: true });
 });
@@ -228,7 +260,7 @@ describe('Sunset Chess application contract', () => {
   it('physically migrates to first-class resource tables at the latest schema', () => {
     const { db } = fixture();
     expect(db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get())
-      .toEqual({ version: 13 });
+      .toEqual({ version: 14 });
     const tables = (db.prepare(`
       SELECT name FROM sqlite_master
       WHERE type = 'table' AND name LIKE '%Resource'
@@ -286,7 +318,7 @@ describe('Sunset Chess application contract', () => {
       INSERT INTO ClubEventPlayer(eventId, playerId, checkedInAt)
       SELECT eventId, playerId, checkedInAt FROM CheckInResource WHERE eventId IS NOT NULL;
       DROP TABLE CheckInResource;
-      DELETE FROM schema_migrations WHERE version = 10;
+      DELETE FROM schema_migrations WHERE version IN (10, 14);
     `);
     db.close();
 

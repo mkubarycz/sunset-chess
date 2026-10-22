@@ -7,6 +7,7 @@ import {
 } from './errors.js';
 import {
   CheckInCreateInputSchema,
+  CheckInUpdateInputSchema,
   ClubSessionCreateInputSchema,
   ClubSessionUpdateInputSchema,
   GameCreateInputSchema,
@@ -132,7 +133,9 @@ export class ResourceService {
       }
       case 'check-in': {
         const parsed = parseContractInput(CheckInCreateInputSchema, record);
-        const result = this.repository.checkInPlayer({ id: parsed.playerId, name: parsed.name });
+        const result = this.repository.checkInPlayer(
+          { id: parsed.playerId, name: parsed.name }, undefined, undefined, parsed.eventId,
+        );
         return {
           resource: this.checkIn(result.checkIn),
           effects: [this.player(this.repository.getPlayer(parsed.playerId)), this.game(result.game)],
@@ -156,6 +159,12 @@ export class ResourceService {
     this.assertCapability(kind, 'update');
     const numericId = this.numericId(id);
     const record = this.record(input);
+    if (kind === 'check-in') {
+      parseContractInput(CheckInUpdateInputSchema, record);
+      const attendance = this.repository.getCheckIn(numericId);
+      if (attendance.eventId === null) throw new ConflictError('Checkout requires a Club Session.');
+      return this.checkIn(this.repository.checkOutPlayer(attendance.eventId, attendance.playerId));
+    }
     if (kind === 'player') {
       const parsed = parseContractInput(PlayerUpdateInputSchema, record);
       let player = this.repository.getPlayer(numericId);
@@ -231,9 +240,14 @@ export class ResourceService {
       playerId: checkIn.playerId,
       name: player.name,
     }, {
-      placement: checkIn.placement ?? 'migrated',
+      placement: checkIn.placement ?? (checkIn.checkedOutAt !== null
+        ? 'checked-out'
+        : checkIn.eventId !== null && this.repository.getClubSession(checkIn.eventId).active
+          ? 'available' : 'migrated'),
       side: checkIn.side,
       checkedInAt: checkIn.checkedInAt,
+      checkedOutAt: checkIn.checkedOutAt,
+      attendance: checkIn.checkedOutAt === null ? 'checked-in' : 'checked-out',
     }, {
       player: String(checkIn.playerId),
       session: checkIn.eventId === null ? null : String(checkIn.eventId),

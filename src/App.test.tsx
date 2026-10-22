@@ -556,7 +556,7 @@ describe('scanner and player producer', () => {
     expect(worker.terminate).toHaveBeenCalledOnce()
     expect(cancelAnimationFrame).toHaveBeenCalled()
     expect(screen.getByRole('status')).toHaveTextContent('Camera off')
-    expect(screen.getByRole('alert')).toHaveTextContent('Camera paused after 5 minutes without a QR code')
+    expect(screen.getByText(/Camera paused after 5 minutes without a QR code/)).toHaveAttribute('role', 'alert')
     expect(screen.getByRole('button', { name: 'Start Camera' })).toBeInTheDocument()
   })
 
@@ -2346,7 +2346,7 @@ describe('ongoing games', () => {
     />)
     await screen.findByText('No games are ongoing yet.')
     await userEvent.click(screen.getByRole('button', { name: 'Add empty game' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('Database unavailable.')
+    expect(await screen.findByText('Database unavailable.')).toHaveAttribute('role', 'alert')
     expect(screen.getByRole('button', { name: 'Add empty game' })).toBeEnabled()
   })
 
@@ -2440,6 +2440,55 @@ describe('ongoing games', () => {
   describe('standings check-in table details', () => {
     afterEach(() => window.history.replaceState(null, '', '/'))
 
+    it('uses explicit session HTTP endpoints for checkout and re-check-in', async () => {
+      window.history.replaceState(null, '', '/?view=session-4')
+      const session = {
+        id: 4, type: 'club-session' as const, name: 'Attendance',
+        createdAt: '2026-10-18T12:00:00.000Z', active: true, closedAt: null,
+        playerCount: 1, gameCount: 0, activeGameCount: 0, pairingMode: 'club-session-pairing-1' as const,
+      }
+      const assigned = {
+        ...game, id: 20, tableNumber: 7, eventId: 4, blackPlayerId: 1002,
+        blackPlayer: { id: 1002, name: 'Manual Player', rating: 700 },
+        whitePlayerId: null, whitePlayer: null,
+      }
+      let status = 'available'
+      const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        if (input === '/api/sessions/4/check-ins/1002' && init?.method === 'DELETE') {
+          status = 'checked-out'
+          return new Response(JSON.stringify({ checkIn: {
+            eventId: 4, playerId: 1002, checkedOutAt: '2026-10-22T22:00:00.000Z',
+          } }))
+        }
+        if (input === '/api/sessions/4/check-ins' && init?.method === 'POST') {
+          status = 'waiting'
+          return new Response(JSON.stringify({ status: 'waiting', game: assigned, side: 'black' }))
+        }
+        if (String(input).startsWith('/api/leaderboard')) {
+          return new Response(JSON.stringify({ leaderboard: [{
+            rank: 1, id: 1002, name: 'Manual Player', currentRating: 700, cohort: 'A',
+            gamesPlayed: 0, wins: 0, losses: 0, draws: 0, lastPlayedAt: null,
+            checkInStatus: status, tableNumber: status === 'waiting' ? 7 : null,
+          }] }))
+        }
+        if (input === '/api/players?gameId=20') {
+          return new Response(JSON.stringify({ players: [{ id: 1002, name: 'Manual Player', currentRating: 700 }] }))
+        }
+        throw new Error(`Unexpected request: ${String(input)}`)
+      })
+      render(<App fetchSessions={vi.fn().mockResolvedValue([session])}
+        fetchGames={vi.fn(async () => status === 'waiting' ? [assigned] : [])} />)
+      await userEvent.click(await screen.findByRole('button', { name: 'Check out Manual Player' }))
+      expect(await screen.findByText('Checked out · Unavailable')).toBeVisible()
+      await userEvent.click(screen.getByRole('button', { name: 'Check in Manual Player' }))
+      await screen.findByRole('dialog', { name: 'Table 7 game details' })
+      expect(fetch).toHaveBeenCalledWith('/api/sessions/4/check-ins/1002', expect.objectContaining({ method: 'DELETE' }))
+      expect(fetch).toHaveBeenCalledWith('/api/sessions/4/check-ins', expect.objectContaining({
+        method: 'POST', body: JSON.stringify({ playerId: 1002, name: 'Manual Player' }),
+      }))
+      expect(fetch.mock.calls.some(([url]) => url === '/api/check-ins')).toBe(false)
+    })
+
     it.each([
       { view: 'leaderboard', status: 'waiting' },
       { view: 'session-4', status: 'waiting' },
@@ -2481,11 +2530,16 @@ describe('ongoing games', () => {
         checkInPlayer={checkInPlayer}
         gamesPollIntervalMs={60_000}
       />)
+      if (view === 'leaderboard') {
+        await screen.findByRole('table', { name: 'Elo rankings' })
+        expect(screen.queryByRole('button', { name: 'Check in Manual Player' })).not.toBeInTheDocument()
+        await user.click(await screen.findByRole('tab', { name: session.name }))
+      }
       await user.click(await screen.findByRole('button', { name: 'Check in Manual Player' }))
       const dialog = await screen.findByRole('dialog', { name: 'Table 7 game details' })
       expect(checkInPlayer).toHaveBeenCalledExactlyOnceWith({
         v: 1, kind: 'player', playerId: 1002, name: 'Manual Player',
-      }, expect.any(AbortSignal))
+      }, expect.any(AbortSignal), session.id)
       expect(within(dialog).getByRole('combobox', { name: 'Black player' })).toHaveValue('Manual Player (700 Elo)')
       expect(within(dialog).getByRole('button', { name: 'Switch white and black players' })).toBeVisible()
       await user.click(within(dialog).getByRole('button', { name: 'Close game details' }))
@@ -2496,16 +2550,22 @@ describe('ongoing games', () => {
     })
 
     it('does not open a table popup when check-in fails', async () => {
-      window.history.replaceState(null, '', '/?view=leaderboard')
+      window.history.replaceState(null, '', '/?view=session-4')
       const user = userEvent.setup()
       const checkInPlayer = vi.fn().mockRejectedValue(new Error('Check-in rejected.'))
+      const session = {
+        id: 4, type: 'club-session' as const, name: 'Check-in Session',
+        createdAt: '2026-10-18T12:00:00.000Z', active: true, closedAt: null,
+        playerCount: 1, gameCount: 0, activeGameCount: 0,
+        pairingMode: 'club-session-pairing-1' as const,
+      }
       vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({ leaderboard: [{
         rank: 1, id: 1002, name: 'Manual Player', currentRating: 700,
         gamesPlayed: 0, wins: 0, losses: 0, draws: 0, lastPlayedAt: null,
         checkInStatus: 'not-checked-in', tableNumber: null,
       }] }), { status: 200 }))
       render(<App fetchGames={vi.fn().mockResolvedValue([])}
-        fetchSessions={vi.fn().mockResolvedValue([])} checkInPlayer={checkInPlayer} />)
+        fetchSessions={vi.fn().mockResolvedValue([session])} checkInPlayer={checkInPlayer} />)
       await user.click(await screen.findByRole('button', { name: 'Check in Manual Player' }))
       await waitFor(() => expect(screen.getAllByText('Check-in rejected.').length).toBeGreaterThan(0))
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
@@ -2581,7 +2641,7 @@ describe('ongoing games', () => {
       kind: 'player',
       playerId: 1002,
       name: 'Manual Player',
-    }, expect.any(AbortSignal))
+    }, expect.any(AbortSignal), session.id)
 
     await userEvent.click(screen.getByRole('tab', { name: 'Leaderboard' }))
     expect(within(screen.getByRole('region', { name: 'Ongoing games' })).getAllByRole('article'))

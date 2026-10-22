@@ -345,3 +345,56 @@ describe('Leaderboard', () => {
     })).not.toBeInTheDocument())
   })
 })
+describe('session attendance controls', () => {
+  const entries = [
+    { rank: 1, id: 1000, name: 'Alice', currentRating: 700, gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
+      lastPlayedAt: null, checkInStatus: 'available', tableNumber: null, cohort: 'A' },
+    { rank: 2, id: 1001, name: 'Bob', currentRating: 700, gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
+      lastPlayedAt: null, checkInStatus: 'waiting', tableNumber: 2, cohort: 'A' },
+    { rank: 3, id: 1002, name: 'Carol', currentRating: 700, gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
+      lastPlayedAt: null, checkInStatus: 'checked-out', tableNumber: null, cohort: 'A' },
+  ]
+
+  it('keeps check-in and checkout controls off the main leaderboard even if handlers are supplied', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ leaderboard: entries }) }))
+    render(<Leaderboard refreshKey={0} onCheckIn={vi.fn()} onCheckOut={vi.fn()} />)
+    await screen.findByRole('table', { name: 'Elo rankings' })
+    expect(screen.queryByRole('button', { name: /^Check (in|out) / })).not.toBeInTheDocument()
+  })
+
+  it('shows session availability, checkout, blocked-game explanations, and explicit re-check-in', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ leaderboard: entries }) }))
+    const onCheckOut = vi.fn().mockResolvedValue(undefined)
+    const onCheckIn = vi.fn().mockResolvedValue(undefined)
+    render(<Leaderboard refreshKey={0} eventId={4} onCheckIn={onCheckIn} onCheckOut={onCheckOut} />)
+    const checkout = await screen.findByRole('button', { name: 'Check out Alice' })
+    expect(screen.getByText('Checked in · Available for pairing')).toBeVisible()
+    expect(screen.getByText('Checked out · Unavailable')).toBeVisible()
+    expect(checkout).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Check out Bob' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Check out Bob' }))
+      .toHaveAttribute('title', 'Finish or cancel Table 2 before checking out.')
+    fireEvent.click(checkout)
+    await waitFor(() => expect(onCheckOut).toHaveBeenCalledWith(expect.objectContaining({ id: 1000 })))
+    fireEvent.click(screen.getByRole('button', { name: 'Check in Carol' }))
+    await waitFor(() => expect(onCheckIn).toHaveBeenCalledWith(expect.objectContaining({ id: 1002 })))
+    expect(screen.queryByRole('button', { name: 'Check in Alice' })).not.toBeInTheDocument()
+  })
+
+  it('reports checkout failures without hiding the player or pretending checkout succeeded', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ leaderboard: entries }) }))
+    render(<Leaderboard refreshKey={0} eventId={4}
+      onCheckOut={vi.fn().mockRejectedValue(new Error('Finish or cancel the current game.'))} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Check out Alice' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Finish or cancel the current game.')
+    expect(screen.getByRole('button', { name: 'Check out Alice' })).toBeEnabled()
+    expect(screen.getByText('Checked in · Available for pairing')).toBeVisible()
+  })
+
+  it('keeps historical attendance read-only', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ leaderboard: entries }) }))
+    render(<Leaderboard refreshKey={0} eventId={4} readOnly onCheckIn={vi.fn()} onCheckOut={vi.fn()} />)
+    await screen.findByRole('table', { name: 'Session standings' })
+    expect(screen.queryByRole('button', { name: /^Check (in|out) / })).not.toBeInTheDocument()
+  })
+})

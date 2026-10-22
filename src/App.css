@@ -359,7 +359,9 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .leaderboard-player-status.status-playing { color: var(--success); }
 .leaderboard-table-link { padding: 0; border: 0; color: inherit; background: transparent; font: inherit; text-decoration: underline; }
 .leaderboard-table-link:hover { color: var(--ivory); background: transparent; }
-.leaderboard-check-in { flex: 0 0 auto; min-height: 26px; margin-left: auto; padding: 4px 7px; font-size: .65rem; }
+.leaderboard-check-in, .leaderboard-check-out { flex: 0 0 auto; min-height: 26px; margin-left: auto; padding: 4px 7px; font-size: .65rem; }
+.leaderboard-player-status.status-available { color: var(--success); }
+.leaderboard-player-status.status-checked-out { color: var(--muted); }
 .leaderboard-move-player { flex: 0 0 auto; padding: 0; border: 0; color: var(--amber-bright); background: transparent; font-size: .65rem; text-decoration: underline; }
 .leaderboard-move-player:hover { color: var(--ivory); background: transparent; }
 .leaderboard-elo, .leaderboard-record, .leaderboard-session-record, .leaderboard-rank { font-variant-numeric: tabular-nums; }

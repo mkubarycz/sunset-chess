@@ -726,7 +726,15 @@ export function createSunsetServer(
           throw error;
         }
       }
-      if (url.pathname === '/api/check-ins') {
+      const checkoutMatch = url.pathname.match(/^\/api\/sessions\/(\d+)\/check-ins\/(\d+)$/);
+      if (checkoutMatch) {
+        if (req.method !== 'DELETE') return sendJson(res, 405, { error: 'Method not allowed.' });
+        return sendJson(res, 200, {
+          checkIn: repository.checkOutPlayer(Number(checkoutMatch[1]), Number(checkoutMatch[2])),
+        });
+      }
+      const sessionCheckInMatch = url.pathname.match(/^\/api\/sessions\/(\d+)\/check-ins$/);
+      if (url.pathname === '/api/check-ins' || sessionCheckInMatch) {
         if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed.' });
         if (req.headers['content-type']?.split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
           return sendJson(res, 400, { error: 'Content-Type must be application/json.' });
@@ -751,7 +759,7 @@ export function createSunsetServer(
           return sendJson(res, 200, repository.checkInPlayer({
             id: playerId as number,
             name,
-          }));
+          }, undefined, undefined, sessionCheckInMatch ? Number(sessionCheckInMatch[1]) : undefined));
         } catch (error) {
           if (error instanceof DomainError) {
             return sendJson(res, error.code === 'conflict' ? 409 : 400, {

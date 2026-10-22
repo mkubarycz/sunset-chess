@@ -53,7 +53,7 @@ export function SessionPlayerDialog({
         error?: string
       }
       const sessionBody = await sessionResponse.json() as {
-        leaderboard?: Array<{ id: number }>
+        leaderboard?: Array<{ id: number; checkInStatus?: string }>
         error?: string
       }
       if (!playersResponse.ok || !playersBody.players) {
@@ -63,7 +63,8 @@ export function SessionPlayerDialog({
         throw new Error(sessionBody.error || 'Could not load session players.')
       }
       setPlayers(playersBody.players)
-      setCheckedInIds(new Set(sessionBody.leaderboard.map(({ id }) => id)))
+      setCheckedInIds(new Set(sessionBody.leaderboard
+        .filter(({ checkInStatus }) => checkInStatus !== 'checked-out').map(({ id }) => id)))
       setError('')
     }).catch((cause) => {
       if (!controller.signal.aborted) {

@@ -281,7 +281,9 @@ describe('ChessRepository', () => {
     expect(() => repository.updateGameSeat(destination.id, 'white', 1000))
       .toThrow(/already started.*Table 1/);
     expect(repository.listGames()).toEqual(before);
-    expect(repository.listCheckIns(session.id, 1000)).toHaveLength(0);
+    expect(repository.listCheckIns(session.id, 1000)).toEqual([
+      expect.objectContaining({ playerId: 1000, gameId: source.id, checkedOutAt: null }),
+    ]);
     repository.updateGameResource(destination.id, { start: true });
     expect(() => repository.updateGameSeat(destination.id, 'white', 1004))
       .toThrow(/already started.*Table 2/);
@@ -563,9 +565,9 @@ describe('ChessRepository', () => {
     ]);
     expect(persisted.getGame(game.id)).toEqual(game);
     expect(reopened.prepare('SELECT count(*) AS count FROM schema_migrations').get())
-      .toEqual({ count: 13 });
+      .toEqual({ count: 14 });
     expect(db.prepare('SELECT count(*) AS count FROM schema_migrations').get())
-      .toEqual({ count: 13 });
+      .toEqual({ count: 14 });
     reopened.close();
     db.close();
   });
@@ -610,7 +612,7 @@ describe('ChessRepository', () => {
     migrated.close();
     const reopened = openDatabase(path);
     expect(reopened.prepare('SELECT count(*) AS count FROM GameResource').get()).toEqual({ count: 1 });
-    expect(reopened.prepare('SELECT count(*) AS count FROM schema_migrations').get()).toEqual({ count: 13 });
+    expect(reopened.prepare('SELECT count(*) AS count FROM schema_migrations').get()).toEqual({ count: 14 });
     reopened.close();
   });
 
@@ -1105,15 +1107,13 @@ describe('ChessRepository', () => {
     const decisive = repository.checkInPlayer({ id: 1000, name: 'Player 1000' }, () => 0);
     repository.checkInPlayer({ id: 1001, name: 'Player 1001' });
     repository.finalizeGame(decisive.game.id, '0-1');
-    const draw = repository.checkInPlayer({ id: 1002, name: 'Player 1002' }, () => 0);
-    repository.checkInPlayer({ id: 1003, name: 'Player 1003' });
-    repository.finalizeGame(draw.game.id, '1/2-1/2');
-
-    const evenWaiting = repository.checkInPlayer({ id: 1002, name: 'Player 1002' }, () => 0);
+    const evenIncoming = repository.checkInPlayer({ id: 1002, name: 'Player 1002' }, () => 0);
+    expect(evenIncoming.status).toBe('paired');
+    expect([evenIncoming.game.blackPlayerId, evenIncoming.game.whitePlayerId].sort()).toEqual([1000, 1002]);
     const positiveIncoming = repository.checkInPlayer({ id: 1000, name: 'Player 1000' });
     expect(positiveIncoming).toMatchObject({
-      status: 'paired',
-      game: { id: evenWaiting.game.id },
+      status: 'already-checked-in',
+      game: { id: evenIncoming.game.id },
     });
     db.close();
   });
@@ -1217,7 +1217,7 @@ describe('ChessRepository', () => {
       .toEqual(expect.arrayContaining([
         expect.objectContaining({
           id: 1000,
-          checkInStatus: 'not-checked-in',
+          checkInStatus: 'available',
           sessionGamesPlayed: 1,
           sessionWins: 0,
           sessionLosses: 1,
@@ -1247,16 +1247,11 @@ describe('ChessRepository', () => {
     repository.finalizeGame(first.game.id, '0-1');
     repository.finalizeGame(second.game.id, '0-1');
 
-    const positiveWaiting = repository.checkInPlayer({ id: 1000, name: 'Player 1000' }, () => 0);
-    const negativeWaiting = repository.checkInPlayer({ id: 1001, name: 'Player 1001' }, () => 0);
-    expect(negativeWaiting.status).toBe('waiting');
-    expect(negativeWaiting.game.id).not.toBe(positiveWaiting.game.id);
-    const positiveIncoming = repository.checkInPlayer({ id: 1002, name: 'Player 1002' });
-    expect(positiveIncoming).toMatchObject({
-      status: 'paired',
-      game: { id: positiveWaiting.game.id },
-    });
-    expect(positiveIncoming.game.id).not.toBe(negativeWaiting.game.id);
+    const ongoing = repository.listJoinedGames();
+    expect(ongoing).toHaveLength(2);
+    expect(ongoing.map((game) => [game.blackPlayerId, game.whitePlayerId].sort()).sort())
+      .toEqual([[1000, 1002], [1001, 1003]]);
+    expect(repository.checkInPlayer({ id: 1002, name: 'Player 1002' }).status).toBe('already-checked-in');
     db.close();
   });
 

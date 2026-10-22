@@ -33,7 +33,7 @@ export function SessionHeader({ session, onDelete }: {
           {session.closedAt && <> · Closed <time dateTime={session.closedAt}>
             {new Date(session.closedAt).toLocaleString()}
           </time></>}
-          {' · '}{session.playerCount} checked in · {session.gameCount} games</p>
+          {' · '}{session.playerCount} participants · {session.gameCount} games</p>
         {!session.active && <p>Closed session. Results are read-only; Elo and overall records show current club totals.</p>}
       </div>
       {session.playerCount === 0 && session.gameCount === 0 && (

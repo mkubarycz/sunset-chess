@@ -679,7 +679,7 @@ unrecoverable placement status as `migrated` instead of inventing history.
 
 MCP for 1.4 is published at <http://localhost:4176/mcp>. Compatibility tools are `player-list`,
 `player-get`, `player-create`, `player-upsert`, `player-name-update`,
-`player-check-in`, `player-delete`,
+`player-check-in`, `player-check-out`, `player-delete`,
 `game-list`, `game-get`, `game-create`, `game-result-set`, `game-cancel`,
 `game-seat-update`, `game-start`, and the backward-compatible `game-delete`.
 Read tools also include `leaderboard-list` and `player-profile-get` for ranked
@@ -694,17 +694,48 @@ natural-language creation; it uniformly chooses an available ID from 1000–2000
 accepts only black and white player IDs and assigns the table. A quick protocol
 smoke can be run with any Streamable HTTP MCP client.
 
-`POST /api/check-ins` accepts a validated player QR identity, updates that player,
-and atomically returns their existing game or applies the active Club Session's
-pairing mode. Outside a session it fills the oldest waiting game or creates a
-waiting game with a cryptographically random side. The read-only `GET /api/games` endpoint returns `games` (ongoing, ordered by
+`POST /api/sessions/:id/check-ins` accepts `{ "playerId": 1234, "name": "Ada" }`
+and checks the player into that specific active session. Closed or stale session
+requests fail without changing player or attendance data. The main leaderboard
+does not offer check-in or checkout controls; use the active session's
+**Add player to session** selector or its attendance controls. Camera check-in
+selects the active session and submits its explicit ID; without an active
+session, the browser reports an error instead of creating standalone attendance.
+
+Attendance survives scoring. After a result is recorded, eligible checked-in
+players are automatically paired within their frozen cohort, without repeating
+opponents in that session. Existing waiting tables are filled first. Players
+without an eligible opponent remain **Checked in · Available for pairing**;
+they are not placed into new single-player waiting games just because a result
+was recorded. An arriving player can pair with these available attendees.
+
+**Check out** appears next to session players. Finish or cancel their unfinished
+game first, including a waiting game; checkout is blocked both in the UI and on
+the server until then. `DELETE /api/sessions/:id/check-ins/:playerId` records
+checkout while preserving attendance and historical results. Checked-out players
+remain listed as **Checked out · Unavailable**, are excluded from automatic
+pairing and seat pickers, and cannot be assigned manually, by QR seat scan, or by
+HTTP/MCP resource operations. Explicit check-in reactivates their existing
+attendance row. Session closure checks everyone out without creating new games.
+Cancelling an unfinished game does not trigger automatic re-pairing, so its
+players can then check out. Historical sessions remain read-only.
+
+`player-check-in` and generic `check-in` creation accept `eventId` to select the
+session; `player-check-out` requires it. Generic `check-in` updates accept
+`{ "checkOut": true }`. The old `POST /api/check-ins` endpoint and unscoped MCP
+check-in remain compatibility paths for older standalone clients, but are not
+used by browser check-in. Migration 14 adds nullable checkout timestamps and
+recovers attendance for existing active-session manual game seats.
+
+The read-only `GET /api/games` endpoint returns `games` (ongoing, ordered by
 table) and `recentGames` (the 20 most recently finished). `PATCH
 /api/games/:id/result` with JSON `{ "result": "1-0" }` (or either other
 canonical token) finalizes a fully seated game. `PATCH
 /api/games/:id/seats/:side` accepts `{ "playerId": 1234 }` or
 `{ "playerId": null }` to assign, replace, or remove one active seat.
-`GET /api/players?gameId=:id` returns the entire player roster (not the
-200-entry leaderboard subset), including check-in and source-table context.
+`GET /api/players?gameId=:id` returns the player roster (not the
+200-entry leaderboard subset), excluding players checked out of that game's
+session and including check-in and source-table context.
 Selecting an unchecked player creates session membership and a pairing cohort,
 then seats them directly without invoking automatic pairing. Selecting someone
 at another table in the same event moves them, leaves their former seat empty,

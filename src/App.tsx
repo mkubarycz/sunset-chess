@@ -324,7 +324,8 @@ interface AppProps {
   ) => Promise<ClubSession>
   closeClubSession?: (id: number, resolution: 'draw' | 'cancel') => Promise<ClubSession>
   deleteClubSession?: (id: number) => Promise<void>
-  checkInPlayer?: (player: PlayerPayload, signal: AbortSignal) => Promise<CheckInResult>
+  checkInPlayer?: (player: PlayerPayload, signal: AbortSignal, eventId?: number) => Promise<CheckInResult>
+  checkOutPlayer?: (eventId: number, playerId: number) => Promise<void>
   moveWaitingPlayer?: (
     playerId: number,
     destinationGameId: number,
@@ -484,8 +485,10 @@ async function defaultCloseClubSession(
 async function defaultCheckInPlayer(
   player: PlayerPayload,
   signal: AbortSignal,
+  eventId?: number,
 ): Promise<CheckInResult> {
-  const response = await fetch('/api/check-ins', {
+  if (eventId === undefined) throw new Error('Open an active Club Session before checking in players.')
+  const response = await fetch(`/api/sessions/${eventId}/check-ins`, {
     method: 'POST',
     signal,
     headers: { accept: 'application/json', 'content-type': 'application/json' },
@@ -498,6 +501,20 @@ async function defaultCheckInPlayer(
       : `Check-in request failed (${response.status}).`)
   }
   return body as CheckInResult
+}
+
+async function defaultCheckOutPlayer(eventId: number, playerId: number): Promise<void> {
+  const response = await fetch(`/api/sessions/${eventId}/check-ins/${playerId}`, {
+    method: 'DELETE', headers: { accept: 'application/json' },
+  })
+  const body = await response.json() as {
+    checkIn?: { eventId: number; playerId: number; checkedOutAt: string | null }
+    error?: string
+  }
+  if (!response.ok || body.checkIn?.eventId !== eventId || body.checkIn.playerId !== playerId
+    || typeof body.checkIn.checkedOutAt !== 'string') {
+    throw new Error(body.error || `Checkout failed (${response.status}).`)
+  }
 }
 
 async function defaultMoveWaitingPlayer(
@@ -540,6 +557,7 @@ export default function App({
   closeClubSession = defaultCloseClubSession,
   deleteClubSession = defaultDeleteClubSession,
   checkInPlayer = defaultCheckInPlayer,
+  checkOutPlayer = defaultCheckOutPlayer,
   moveWaitingPlayer = defaultMoveWaitingPlayer,
   finalizeGame = defaultFinalizeGame,
   gamesPollIntervalMs = 2000,
@@ -567,6 +585,10 @@ export default function App({
   const [createGameError, setCreateGameError] = useState('')
   const [leaderboardRefresh, setLeaderboardRefresh] = useState(0)
   const [sessions, setSessions] = useState<ClubSession[]>([])
+  const activeSessionIdRef = useRef<number | undefined>(undefined)
+  useLayoutEffect(() => {
+    activeSessionIdRef.current = sessions.find((session) => session.active)?.id
+  }, [sessions])
   const [sessionsLoaded, setSessionsLoaded] = useState(false)
   const sessionIds = useMemo(() => sessionsLoaded ? sessions.map((session) => session.id) : undefined,
     [sessions, sessionsLoaded])
@@ -1005,12 +1027,14 @@ export default function App({
     setCheckInError(false)
     setCheckInNotice(`Checking in ${player.name}…`)
     try {
+      const session = sessions.find((item) => item.active && selectedView === `session-${item.id}`)
+      if (!session) throw new Error('Open an active Club Session before checking in players.')
       const result = await checkInPlayer({
         v: 1,
         kind: 'player',
         playerId: player.id,
         name: player.name,
-      }, controller.signal)
+      }, controller.signal, session.id)
       if (result.status === 'paired') {
         setCheckInNotice(`${player.name} checks into Table ${result.game.tableNumber}`)
       } else if (result.status === 'waiting') {
@@ -1029,7 +1053,17 @@ export default function App({
       setCheckInNotice(message)
       throw cause
     }
-  }, [checkInPlayer, refreshGames, refreshSessions])
+  }, [checkInPlayer, refreshGames, refreshSessions, selectedView, sessions])
+
+  const handleSessionCheckOut = useCallback(async (player: SelectablePlayer) => {
+    const session = sessions.find((item) => item.active && selectedView === `session-${item.id}`)
+    if (!session) throw new Error('Open an active Club Session before checking out players.')
+    await checkOutPlayer(session.id, player.id)
+    setCheckInError(false)
+    setCheckInNotice(`${player.name} checked out of ${session.name}.`)
+    await refreshGames(true)
+    await refreshSessions()
+  }, [checkOutPlayer, refreshGames, refreshSessions, selectedView, sessions])
 
   const handleMoveWaitingPlayer = useCallback(async (
     player: SelectablePlayer,
@@ -1255,7 +1289,12 @@ export default function App({
     checkInRequestRef.current.set(playerId, controller)
     setCheckInError(false)
     setCheckInNotice(`Checking in ${detectedPlayer.name}…`)
-    void checkInPlayer(detectedPlayer, controller.signal).then((result) => {
+    const eventId = activeSessionIdRef.current
+    if (eventId !== undefined) navigate(`session-${eventId}`)
+    const request = eventId !== undefined
+      ? checkInPlayer(detectedPlayer, controller.signal, eventId)
+      : checkInPlayer(detectedPlayer, controller.signal)
+    void request.then((result) => {
       if (controller.signal.aborted || generation !== cameraGenerationRef.current) return
       if (result.status === 'paired') {
         setCheckInNotice(`${detectedPlayer.name} checks into Table ${result.game.tableNumber}`)
@@ -1292,7 +1331,7 @@ export default function App({
         checkInRequestRef.current.delete(playerId)
       }
     })
-  }, [checkInPlayer, clearResultAcknowledgement, refreshGames, refreshSessions])
+  }, [checkInPlayer, clearResultAcknowledgement, navigate, refreshGames, refreshSessions])
 
   useEffect(() => {
     void refreshGames()
@@ -3742,7 +3781,6 @@ export default function App({
             leaderboard: <div className="workspace-with-games">
               <Leaderboard refreshKey={leaderboardRefresh} variant="rail"
                 onScanCode={beginPlayerCodeScan}
-                onCheckIn={(player) => handleManualSessionCheckIn(player, true)}
                 onOpenGame={handleOpenPlayerGame}
                 onMoveWaitingPlayer={handleMoveWaitingPlayer}
                 waitingGames={games}
@@ -3767,6 +3805,7 @@ export default function App({
                   onScanCode={beginPlayerCodeScan}
                   eventId={activeSession.id} title="Session Standings"
                   onCheckIn={(player) => handleManualSessionCheckIn(player, true)}
+                  onCheckOut={handleSessionCheckOut}
                   onOpenGame={handleOpenPlayerGame}
                   onMoveWaitingPlayer={handleMoveWaitingPlayer}
                   waitingGames={games}
