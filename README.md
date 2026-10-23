@@ -976,6 +976,21 @@ confirmation in chat.
 curl --fail http://localhost:4176/health
 ```
 
+## Pull request reviews
+
+The repository's active [protect-main ruleset](https://github.com/mkubarycz/sunset-chess/rules/25726646)
+matches Working Memory's default-branch policy. GitHub Copilot automatically
+reviews non-draft pull requests targeting the default branch and reviews again
+on subsequent pushes; draft pull requests are excluded.
+
+Changes must go through a pull request, all review threads must be resolved
+before merging, and force pushes and branch deletion are blocked. The policy
+does not require a human approval count. Review findings should be examined and
+addressed before merging; automatic review does not merge a pull request.
+
+This is a GitHub repository setting, not a local agent or Actions workflow.
+Checking out this repository does not install the policy in another repository.
+
 ## Container
 
 ```sh
@@ -1059,6 +1074,9 @@ To restore, stop only `working-memory-sunset-chess-1-4` first. Preserve its
 current database and any `-wal`/`-shm` sidecars in a separate recovery directory.
 Using a helper container mounting only `working-memory-sunset-chess-1-4-data`,
 replace `/data/sunset-chess.sqlite` with the verified snapshot and ensure no old
-sidecars remain at the database path. Restart the 1.4 container and verify
+sidecars remain at the database path. Transfer the snapshot and its manifest
+with `docker cp` if Docker cannot bind-mount the host backup directory. Verify
+the manifest hash, integrity, and foreign keys before replacing the database.
+Restart the current application so its pending schema migrations run, and verify
 `/health`, players, sessions, and results. Never restore over a running SQLite
 database or touch the original Sunset Chess environment.
