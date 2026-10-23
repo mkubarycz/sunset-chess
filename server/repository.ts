@@ -2,6 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { randomInt } from 'node:crypto';
 import { ConflictError, NotFoundError, StartedGameError, ValidationError } from './errors.js';
 import { calculateElo, INITIAL_RATING } from './ratings.js';
+import { ensurePairingCohort } from './pairingCohorts.js';
 
 export interface PlayerResource {
   id: number;
@@ -1069,6 +1070,10 @@ export class ChessRepository {
         const checkIn = this.recordCheckIn(
           activeEventId, player.id, checkedInAt, game.id, 'paired', side,
         );
+        this.db.prepare(`
+          UPDATE CheckInResource SET placement = 'paired'
+          WHERE gameId = ? AND checkedOutAt IS NULL
+        `).run(game.id);
         this.db.exec('COMMIT');
         return { status: 'paired', game, side, checkIn };
       }
@@ -1217,27 +1222,7 @@ export class ChessRepository {
   }
 
   private ensureSessionPairingCohort(eventId: number, playerId: number): void {
-    if (this.db.prepare(`
-      SELECT 1 FROM PairingCohortResource WHERE eventId = ? AND playerId = ?
-    `).get(eventId, playerId)) return;
-    const player = this.getPlayer(playerId);
-    const boundaries = this.db.prepare(`
-      SELECT cohort, MIN(snapshotRating) AS minimumRating
-      FROM PairingCohortResource
-      WHERE eventId = ?
-      GROUP BY cohort
-      ORDER BY CASE cohort WHEN 'A' THEN 1 WHEN 'B' THEN 2 WHEN 'C' THEN 3 ELSE 4 END
-    `).all(eventId) as unknown as Array<{
-      cohort: PairingCohortCode;
-      minimumRating: number;
-    }>;
-    const cohort = boundaries.find(({ minimumRating }) => player.rating >= minimumRating)?.cohort
-      ?? boundaries.at(-1)?.cohort
-      ?? 'A';
-    this.db.prepare(`
-      INSERT INTO PairingCohortResource(eventId, playerId, cohort, snapshotRating)
-      VALUES (?, ?, ?, ?)
-    `).run(eventId, playerId, cohort, player.rating);
+    ensurePairingCohort(this.db, eventId, this.getPlayer(playerId));
   }
 
   private findClubSessionPairing(

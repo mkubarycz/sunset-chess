@@ -565,9 +565,9 @@ describe('ChessRepository', () => {
     ]);
     expect(persisted.getGame(game.id)).toEqual(game);
     expect(reopened.prepare('SELECT count(*) AS count FROM schema_migrations').get())
-      .toEqual({ count: 14 });
+      .toEqual({ count: 15 });
     expect(db.prepare('SELECT count(*) AS count FROM schema_migrations').get())
-      .toEqual({ count: 14 });
+      .toEqual({ count: 15 });
     reopened.close();
     db.close();
   });
@@ -612,7 +612,7 @@ describe('ChessRepository', () => {
     migrated.close();
     const reopened = openDatabase(path);
     expect(reopened.prepare('SELECT count(*) AS count FROM GameResource').get()).toEqual({ count: 1 });
-    expect(reopened.prepare('SELECT count(*) AS count FROM schema_migrations').get()).toEqual({ count: 14 });
+    expect(reopened.prepare('SELECT count(*) AS count FROM schema_migrations').get()).toEqual({ count: 15 });
     reopened.close();
   });
 

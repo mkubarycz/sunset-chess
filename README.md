@@ -729,6 +729,14 @@ session; `player-check-out` requires it. Generic `check-in` updates accept
 check-in remain compatibility paths for older standalone clients, but are not
 used by browser check-in. Migration 14 adds nullable checkout timestamps and
 recovers attendance for existing active-session manual game seats.
+Migration 15 repairs missing active-session cohorts using the same late-arrival
+assignment rules as check-in, preserving existing frozen snapshots. It also
+recovers missing historical membership from completed, non-cancelled games as
+checked-out attendance, so results appear in standings without automatically
+enrolling those players in pairing. Existing checked-out assignments with no
+remaining game are normalized. Both waiting-table participants report paired
+placement after the second seat is filled, and closing a session clears all
+current-assignment metadata.
 
 The read-only `GET /api/games` endpoint returns `games` (ongoing, ordered by
 table) and `recentGames` (the 20 most recently finished). `PATCH

@@ -32,20 +32,33 @@ function fixture() {
   return { db, repository, resources: new ResourceService(repository), path };
 }
 
-it('upgrades populated v13 attendance without losing domain data and recovers manual active seats', () => {
+it.each([13, 14])('upgrades populated v%i attendance and recovers late manual players without changing frozen cohorts', (version) => {
   const { db, repository, path } = fixture();
   repository.upsertPlayer(1000, 'Alice');
   repository.upsertPlayer(1001, 'Bob');
   const session = repository.createClubSession('Migration attendance');
-  const game = repository.createGame(1000, 1001, session.id);
+  const frozen = repository.listPairingCohorts(session.id);
+  repository.upsertPlayer(1002, 'Late arrival');
+  const game = repository.createGame(1001, 1002, session.id);
   const players = repository.listPlayers();
   const games = repository.listGames();
   const ratingEvents = repository.listRatingEvents();
   db.exec(`
     DELETE FROM CheckInResource;
-    ALTER TABLE CheckInResource DROP COLUMN checkedOutAt;
-    DELETE FROM schema_migrations WHERE version = 14;
+    DELETE FROM PairingCohortResource WHERE playerId = 1002;
+    ${version === 13 ? 'ALTER TABLE CheckInResource DROP COLUMN checkedOutAt;' : ''}
+    DELETE FROM schema_migrations WHERE version > ${version};
   `);
+  if (version === 14) {
+    db.prepare(`
+      INSERT INTO CheckInResource(eventId, playerId, checkedInAt, gameId, placement, side)
+      VALUES (?, ?, ?, ?, 'paired', ?)
+    `).run(session.id, 1001, game.createdAt, game.id, 'black');
+    db.prepare(`
+      INSERT INTO CheckInResource(eventId, playerId, checkedInAt, gameId, placement, side)
+      VALUES (?, ?, ?, ?, 'paired', ?)
+    `).run(session.id, 1002, game.createdAt, game.id, 'white');
+  }
   db.close();
   const migrated = openDatabase(path);
   try {
@@ -54,14 +67,73 @@ it('upgrades populated v13 attendance without losing domain data and recovers ma
     expect(next.listGames()).toEqual(games);
     expect(next.listRatingEvents()).toEqual(ratingEvents);
     expect(next.listCheckIns(session.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ playerId: 1000, gameId: game.id, checkedOutAt: null }),
       expect.objectContaining({ playerId: 1001, gameId: game.id, checkedOutAt: null }),
+      expect.objectContaining({ playerId: 1002, gameId: game.id, checkedOutAt: null }),
     ]));
+    expect(next.listPairingCohorts(session.id).filter(({ playerId }) => playerId !== 1002))
+      .toEqual(frozen);
+    expect(next.listPairingCohorts(session.id)).toContainEqual({
+      eventId: session.id, playerId: 1002, cohort: 'A', snapshotRating: 700,
+    });
+    next.upsertPlayer(1003, 'Next arrival');
+    next.checkInPlayer({ id: 1003, name: 'Next arrival' }, () => 0, undefined, session.id);
+    next.finalizeGame(game.id, '1/2-1/2');
+    expect(next.listJoinedGames()).toEqual([
+      expect.objectContaining({
+        blackPlayerId: expect.any(Number), whitePlayerId: expect.any(Number),
+      }),
+    ]);
+    expect([next.listJoinedGames()[0].blackPlayerId, next.listJoinedGames()[0].whitePlayerId].sort())
+      .toEqual([1002, 1003]);
     expect(migrated.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' });
     expect(migrated.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
   } finally {
     migrated.close();
   }
+});
+
+it.each([true, false])('recovers completed manual-game participants as checked out (active session: %s)', (active) => {
+  const { db, repository, path } = fixture();
+  repository.upsertPlayer(1000, 'Alice');
+  repository.upsertPlayer(1001, 'Bob');
+  const session = repository.createClubSession('Historical manual game');
+  const game = repository.createGame(1000, 1001, session.id);
+  repository.finalizeGame(game.id, '1/2-1/2');
+  if (!active) repository.closeClubSession(session.id, 'cancel');
+  const players = repository.listPlayers();
+  const games = repository.listGames();
+  const ledger = repository.listRatingEvents();
+  const cohorts = repository.listPairingCohorts(session.id);
+  db.exec('DELETE FROM CheckInResource; DELETE FROM schema_migrations WHERE version = 15;');
+  db.close();
+  const migrated = openDatabase(path);
+  try {
+    const next = new ChessRepository(migrated);
+    const resources = new ResourceService(next);
+    expect(next.listPlayers()).toEqual(players);
+    expect(next.listGames()).toEqual(games);
+    expect(next.listRatingEvents()).toEqual(ledger);
+    expect(next.listPairingCohorts(session.id)).toEqual(cohorts);
+    expect(next.listLeaderboard(100, session.id)).toEqual([
+      expect.objectContaining({ id: 1000, sessionGamesPlayed: 1, sessionDraws: 1, checkInStatus: 'checked-out' }),
+      expect.objectContaining({ id: 1001, sessionGamesPlayed: 1, sessionDraws: 1, checkInStatus: 'checked-out' }),
+    ]);
+    for (const attendance of next.listCheckIns(session.id)) {
+      expect(attendance).toMatchObject({
+        checkedOutAt: expect.any(String), gameId: null, placement: null, side: null,
+      });
+      expect(resources.get('check-in', String(attendance.id))).toMatchObject({
+        status: { attendance: 'checked-out', placement: 'checked-out' },
+      });
+    }
+    expect(migrated.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' });
+    expect(migrated.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+  } finally {
+    migrated.close();
+  }
+  const reopened = openDatabase(path);
+  expect(new ChessRepository(reopened).listCheckIns(session.id)).toHaveLength(2);
+  reopened.close();
 });
 
 afterEach(() => {
@@ -260,7 +332,7 @@ describe('Sunset Chess application contract', () => {
   it('physically migrates to first-class resource tables at the latest schema', () => {
     const { db } = fixture();
     expect(db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get())
-      .toEqual({ version: 14 });
+      .toEqual({ version: 15 });
     const tables = (db.prepare(`
       SELECT name FROM sqlite_master
       WHERE type = 'table' AND name LIKE '%Resource'
@@ -318,7 +390,7 @@ describe('Sunset Chess application contract', () => {
       INSERT INTO ClubEventPlayer(eventId, playerId, checkedInAt)
       SELECT eventId, playerId, checkedInAt FROM CheckInResource WHERE eventId IS NOT NULL;
       DROP TABLE CheckInResource;
-      DELETE FROM schema_migrations WHERE version IN (10, 14);
+      DELETE FROM schema_migrations WHERE version IN (10, 14, 15);
     `);
     db.close();
 

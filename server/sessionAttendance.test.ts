@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { DatabaseSync } from 'node:sqlite';
 import { openDatabase } from './database.js';
 import { ChessRepository } from './repository.js';
+import { ResourceService } from './resources.js';
 
 let db: DatabaseSync;
 afterEach(() => db?.close());
@@ -19,6 +20,37 @@ function fixture(count = 16) {
 }
 
 describe('session attendance and automatic pairing', () => {
+  it('reports both waiting-table participants as paired, including repeated check-in and resource reads', () => {
+    const { repository, session, checkIn } = fixture();
+    checkIn(1000);
+    checkIn(1001);
+    expect(checkIn(1000).status).toBe('already-checked-in');
+    const resources = new ResourceService(repository);
+    for (const attendance of repository.listCheckIns(session.id)) {
+      expect(attendance.placement).toBe('paired');
+      expect(resources.get('check-in', String(attendance.id))).toMatchObject({
+        status: { attendance: 'checked-in', placement: 'paired' },
+      });
+    }
+  });
+
+  it.each(['draw', 'cancel'] as const)('clears current assignments on session closure (%s)', (resolution) => {
+    const { repository, session, checkIn } = fixture();
+    checkIn(1000);
+    checkIn(1001);
+    checkIn(1002);
+    repository.closeClubSession(session.id, resolution);
+    const resources = new ResourceService(repository);
+    for (const attendance of repository.listCheckIns(session.id)) {
+      expect(attendance).toMatchObject({
+        checkedOutAt: expect.any(String), gameId: null, placement: null, side: null,
+      });
+      expect(resources.get('check-in', String(attendance.id))).toMatchObject({
+        status: { attendance: 'checked-out', placement: 'checked-out' },
+      });
+    }
+  });
+
   it('keeps attendance after scoring without creating a waiting game or repeating opponents', () => {
     const { repository, session, checkIn } = fixture();
     const first = checkIn(1000);
