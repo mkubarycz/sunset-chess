@@ -413,7 +413,9 @@ export class ChessRepository {
         UPDATE ClubSessionResource SET active = 0, closedAt = ? WHERE id = ? AND active = 1
       `).run(closedAt, id);
       this.db.prepare(`
-        UPDATE CheckInResource SET checkedOutAt = COALESCE(checkedOutAt, ?) WHERE eventId = ?
+        UPDATE CheckInResource
+        SET checkedOutAt = COALESCE(checkedOutAt, ?), gameId = NULL, placement = NULL, side = NULL
+        WHERE eventId = ?
       `).run(closedAt, id);
       const closed = this.listClubSessions().find((candidate) => candidate.id === id);
       if (!closed) throw new Error(`Club session ${id} disappeared after close.`);
