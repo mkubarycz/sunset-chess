@@ -7,6 +7,59 @@ import { Leaderboard } from './Leaderboard'
 afterEach(() => vi.unstubAllGlobals())
 
 describe('Leaderboard', () => {
+  it.each([undefined, 4])('shows W/D/L records without game counts (session=%s)', async (eventId) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true, json: () => Promise.resolve({ leaderboard: [{
+        id: 1000, rank: 1, name: 'Alice', currentRating: 720,
+        gamesPlayed: 8, wins: 5, draws: 1, losses: 2, lastPlayedAt: null,
+        sessionGamesPlayed: 9, sessionWins: 2, sessionDraws: 3, sessionLosses: 4,
+      }] }),
+    }))
+    render(<Leaderboard refreshKey={0} eventId={eventId} />)
+    const table = await screen.findByRole('table')
+    const record = within(table).getByRole('group', { name: '5 wins, 1 draw, 2 losses' })
+    expect(record).toHaveTextContent(/^5W 1D 2L$/)
+    expect(record.querySelector('.standing-record-wins')).toHaveTextContent('5W')
+    expect(record.querySelector('.standing-record-draws')).toHaveTextContent('1D')
+    expect(record.querySelector('.standing-record-losses')).toHaveTextContent('2L')
+    expect(table.querySelectorAll('.leaderboard-record small, .leaderboard-session-record small')).toHaveLength(0)
+    expect(within(table).queryByText('8g')).not.toBeInTheDocument()
+    expect(within(table).queryByText('9g')).not.toBeInTheDocument()
+    expect(within(table).getByRole('button', { name: /record: 5 wins, 1 draw, 2 losses/ })).toBeInTheDocument()
+    if (eventId !== undefined) {
+      expect(within(table).getByRole('group', { name: '2 wins, 3 draws, 4 losses' }))
+        .toHaveTextContent(/^2W 3D 4L$/)
+    }
+  })
+
+  it('keeps record colors above 4.5:1 contrast on normal and highlighted dark surfaces', () => {
+    const css = readFileSync('src/App.css', 'utf8')
+    const color = (name: string) => {
+      const value = css.match(new RegExp(`--${name}:\\s*(#[\\da-f]{6})`, 'i'))?.[1]
+      if (!value) throw new Error(`Missing theme color ${name}`)
+      return value
+    }
+    const luminance = (hex: string) => {
+      const linear = [1, 3, 5].map((offset) => {
+        const channel = parseInt(hex.slice(offset, offset + 2), 16) / 255
+        return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
+      })
+      return linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722
+    }
+    const highlighted = css.match(/\.leaderboard-row:hover\s*\{[^}]*background:\s*(#[\da-f]{6})/i)?.[1]
+    if (!highlighted) throw new Error('Missing highlighted leaderboard row background')
+    for (const [outcome, variable] of [['wins', 'success'], ['draws', 'muted'], ['losses', 'error']]) {
+      expect(css).toMatch(new RegExp(`\\.standing-record-${outcome}\\s*\\{[^}]*color:\\s*var\\(--${variable}\\)`))
+      for (const background of [color('ink-950'), color('ink-900'), color('ink-850'), color('ink-800'), highlighted]) {
+        const foregroundLuminance = luminance(color(variable))
+        const backgroundLuminance = luminance(background)
+        const ratio = (Math.max(foregroundLuminance, backgroundLuminance) + 0.05)
+          / (Math.min(foregroundLuminance, backgroundLuminance) + 0.05)
+        expect(ratio, `${outcome} against ${background}`).toBeGreaterThanOrEqual(4.5)
+      }
+    }
+  })
+
   it('shows colored saved cohorts in a column without grouping players or restoring ranks', async () => {
     const players = [
       { id: 1000, rank: 1, name: 'Dora', currentRating: 900, cohort: 'D' },
@@ -40,7 +93,7 @@ describe('Leaderboard', () => {
     }
     expect(table.querySelector('.leaderboard-rank, .podium, [class*="rank-"]')).toBeNull()
     expect(table.querySelector('[aria-label*="rank "]')).toBeNull()
-    expect(screen.getByRole('button', { name: 'Alex, cohort A, 850 Elo, 0-0-0 record' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Alex, cohort A, 850 Elo, record: 0 wins, 0 draws, 0 losses' })).toBeInTheDocument()
     expect(screen.getByText(/Automatic pairing only matches players within the same cohort/)).toBeVisible()
     const style = document.createElement('style')
     style.textContent = readFileSync('src/App.css', 'utf8')
@@ -270,7 +323,7 @@ describe('Leaderboard', () => {
     expect(onOpenGame).toHaveBeenCalledWith(expect.objectContaining({ id: 1002, name: 'Carol' }))
     expect(screen.getAllByRole('columnheader').map((header) => header.textContent))
       .toEqual(['Cohort', 'Player', 'Elo', 'Record', 'Session Record'])
-    expect(screen.getByText('1-0-0')).toBeVisible()
+    expect(screen.getByRole('group', { name: '1 win, 0 draws, 0 losses' })).toHaveTextContent('1W 0D 0L')
     fireEvent.click(screen.getByRole('button', { name: 'Check in Alice' }))
     await waitFor(() => expect(onCheckIn).toHaveBeenCalledWith(
       expect.objectContaining({ id: 1000, name: 'Alice' }),
@@ -290,5 +343,67 @@ describe('Leaderboard', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', {
       name: 'Move Bob to another table',
     })).not.toBeInTheDocument())
+  })
+})
+describe('session attendance controls', () => {
+  const entries = [
+    { rank: 1, id: 1000, name: 'Alice', currentRating: 700, gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
+      lastPlayedAt: null, checkInStatus: 'available', tableNumber: null, cohort: 'A' },
+    { rank: 2, id: 1001, name: 'Bob', currentRating: 700, gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
+      lastPlayedAt: null, checkInStatus: 'waiting', tableNumber: 2, cohort: 'A' },
+    { rank: 3, id: 1002, name: 'Carol', currentRating: 700, gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
+      lastPlayedAt: null, checkInStatus: 'checked-out', tableNumber: null, cohort: 'A' },
+    { rank: 4, id: 1003, name: 'Dana', currentRating: 700, gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
+      lastPlayedAt: null, checkInStatus: 'paired', tableNumber: 3, cohort: 'A', opponentName: 'Eve' },
+    { rank: 5, id: 1004, name: 'Eve', currentRating: 700, gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
+      lastPlayedAt: null, checkInStatus: 'playing', tableNumber: 4, cohort: 'A', opponentName: 'Frank' },
+  ]
+
+  it('keeps check-in and checkout controls off the main leaderboard even if handlers are supplied', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ leaderboard: entries }) }))
+    render(<Leaderboard refreshKey={0} onCheckIn={vi.fn()} onCheckOut={vi.fn()} />)
+    await screen.findByRole('table', { name: 'Elo rankings' })
+    expect(screen.queryByRole('button', { name: /^Check (in|out) / })).not.toBeInTheDocument()
+  })
+
+  it('shows session availability, checkout, blocked-game explanations, and explicit re-check-in', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ leaderboard: entries }) }))
+    const onCheckOut = vi.fn().mockResolvedValue(undefined)
+    const onCheckIn = vi.fn().mockResolvedValue(undefined)
+    render(<Leaderboard refreshKey={0} eventId={4} onCheckIn={onCheckIn} onCheckOut={onCheckOut} />)
+    const checkout = await screen.findByRole('button', { name: 'Check out Alice' })
+    expect(screen.getByText('Checked in · Available for pairing')).toBeVisible()
+    expect(screen.getByText('Checked out · Unavailable')).toBeVisible()
+    expect(checkout).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Check out Bob' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Check out Dana' })).toBeEnabled()
+    expect(screen.getByText('Paired with Eve on table 3')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Check out Eve' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Check out Eve' }))
+      .toHaveAttribute('title', 'Finish or cancel Table 4 before checking out.')
+    fireEvent.click(checkout)
+    await waitFor(() => expect(onCheckOut).toHaveBeenCalledWith(expect.objectContaining({ id: 1000 })))
+    fireEvent.click(screen.getByRole('button', { name: 'Check out Dana' }))
+    await waitFor(() => expect(onCheckOut).toHaveBeenCalledWith(expect.objectContaining({ id: 1003 })))
+    fireEvent.click(screen.getByRole('button', { name: 'Check in Carol' }))
+    await waitFor(() => expect(onCheckIn).toHaveBeenCalledWith(expect.objectContaining({ id: 1002 })))
+    expect(screen.queryByRole('button', { name: 'Check in Alice' })).not.toBeInTheDocument()
+  })
+
+  it('reports checkout failures without hiding the player or pretending checkout succeeded', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ leaderboard: entries }) }))
+    render(<Leaderboard refreshKey={0} eventId={4}
+      onCheckOut={vi.fn().mockRejectedValue(new Error('Finish or cancel the current game.'))} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Check out Alice' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Finish or cancel the current game.')
+    expect(screen.getByRole('button', { name: 'Check out Alice' })).toBeEnabled()
+    expect(screen.getByText('Checked in · Available for pairing')).toBeVisible()
+  })
+
+  it('keeps historical attendance read-only', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ leaderboard: entries }) }))
+    render(<Leaderboard refreshKey={0} eventId={4} readOnly onCheckIn={vi.fn()} onCheckOut={vi.fn()} />)
+    await screen.findByRole('table', { name: 'Session standings' })
+    expect(screen.queryByRole('button', { name: /^Check (in|out) / })).not.toBeInTheDocument()
   })
 })

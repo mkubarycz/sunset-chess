@@ -163,8 +163,8 @@ describe('scanner and player producer', () => {
     })
 
     beforeEach(() => {
-      vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(
-        JSON.stringify({ leaderboard: [] }), { status: 200 },
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => new Response(
+        JSON.stringify(String(input).includes('/sessions/') ? { games: [] } : { leaderboard: [] }), { status: 200 },
       ))
     })
 
@@ -247,14 +247,127 @@ describe('scanner and player producer', () => {
       },
     )
 
-    it('does not restore a session that is already closed', async () => {
+    it('restores a closed session URL as a read-only historical view', async () => {
       window.history.replaceState(null, '', '/?view=session-4')
       render(<App {...dashboardProps()} fetchSessions={vi.fn().mockResolvedValue([
         { ...session, active: false, closedAt: '2026-10-02T15:00:00.000Z' },
       ])} />)
-      await waitFor(() => expect(new URL(window.location.href).searchParams.get('view')).toBe('leaderboard'))
-      expect(screen.getByRole('alert', { name: 'Dashboard navigation error' }))
-        .toHaveTextContent('That Club Session is no longer available')
+      expect(await screen.findByRole('region', { name: `Past club session: ${session.name}` })).toBeVisible()
+      expect(new URL(window.location.href).searchParams.get('view')).toBe('session-4')
+      expect(screen.queryByRole('alert', { name: 'Dashboard navigation error' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: `Configure ${session.name}` })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Add player to session' })).not.toBeInTheDocument()
+    })
+
+    it.each([true, false])('deletes an empty session from its page and removes it from navigation (active=%s)', async (active) => {
+      window.history.replaceState(null, '', '/?view=session-4')
+      const deleteClubSession = vi.fn().mockResolvedValue(undefined)
+      render(<App {...dashboardProps()} deleteClubSession={deleteClubSession}
+        fetchSessions={vi.fn().mockResolvedValue([{ ...session, active }])} />)
+      await userEvent.click(await screen.findByRole('button', { name: 'Delete empty session' }))
+      expect(deleteClubSession).not.toHaveBeenCalled()
+      await userEvent.click(screen.getByRole('button', { name: 'Delete Session' }))
+      expect(deleteClubSession).toHaveBeenCalledWith(4)
+      expect(await screen.findByRole('region', { name: 'All Club Sessions' })).toBeVisible()
+      expect(new URL(window.location.href).searchParams.get('view')).toBe('club-sessions')
+      expect(screen.queryByRole('tab', { name: session.name })).not.toBeInTheDocument()
+      await userEvent.click(screen.getByRole('button', { name: 'Club Sessions' }))
+      expect(screen.queryByRole('menuitem', { name: new RegExp(session.name) })).not.toBeInTheDocument()
+      expect(screen.getByRole('menuitem', { name: 'Create New Session' })).toBeEnabled()
+    })
+
+    it('uses the deletion endpoint and keeps the session open on a server conflict', async () => {
+      window.history.replaceState(null, '', '/?view=session-4')
+      const fetch = vi.mocked(globalThis.fetch).mockImplementation(async (_input, init) => new Response(
+        JSON.stringify(init?.method === 'DELETE'
+          ? { error: 'Only a session with zero check-ins and zero games can be deleted.' }
+          : { leaderboard: [], games: [] }),
+        { status: init?.method === 'DELETE' ? 409 : 200 },
+      ))
+      render(<App {...dashboardProps()} />)
+      await userEvent.click(await screen.findByRole('button', { name: 'Delete empty session' }))
+      await userEvent.click(screen.getByRole('button', { name: 'Delete Session' }))
+      expect(fetch).toHaveBeenCalledWith('/api/sessions/4', expect.objectContaining({ method: 'DELETE' }))
+      expect(await within(screen.getByRole('dialog')).findByRole('alert')).toHaveTextContent('zero check-ins and zero games')
+      expect(new URL(window.location.href).searchParams.get('view')).toBe('session-4')
+      expect(screen.getByRole('dialog')).toBeVisible()
+    })
+
+    it('lists dated past sessions alongside an active session and restores history with Back', async () => {
+      const past = { ...session, id: 2, name: 'Previous Club Night',
+        active: false, closedAt: '2026-10-02T15:00:00.000Z' }
+      render(<App {...dashboardProps()} fetchSessions={vi.fn().mockResolvedValue([past, session])} />)
+      await screen.findByRole('tab', { name: session.name })
+      await userEvent.click(screen.getByRole('button', { name: 'Club Sessions' }))
+      const menu = screen.getByRole('menu', { name: 'Club Sessions' })
+      const option = within(menu).getByRole('menuitem', { name: /Previous Club Night/ })
+      expect(option).toHaveTextContent(new Date(past.createdAt).toLocaleString())
+      expect(within(menu).getByRole('menuitem', { name: new RegExp(session.name) })).toHaveTextContent('Active')
+      await userEvent.click(option)
+      expect(await screen.findByRole('region', { name: `Past club session: ${past.name}` })).toBeVisible()
+      expect(new URL(window.location.href).searchParams.get('view')).toBe('session-2')
+      await userEvent.click(screen.getByRole('tab', { name: session.name }))
+      act(() => window.history.back())
+      expect(await screen.findByRole('region', { name: `Past club session: ${past.name}` })).toBeVisible()
+    })
+
+    it('communicates when there are no sessions and keeps creation and archive discoverable', async () => {
+      render(<App {...dashboardProps()} fetchSessions={vi.fn().mockResolvedValue([])} />)
+      await userEvent.click(screen.getByRole('button', { name: 'Club Sessions' }))
+      expect(await screen.findByText('No club sessions yet.')).toBeVisible()
+      expect(screen.getByRole('menuitem', { name: 'Create New Session' })).toBeEnabled()
+      await userEvent.click(screen.getByRole('menuitem', { name: 'Find Past Sessions' }))
+      expect(screen.getByRole('tab', { name: 'Club Sessions' })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getByText('No past club sessions yet.')).toBeVisible()
+    })
+
+    it('shows only the most recent five in the menu and all sessions in the archive tab', async () => {
+      const history = Array.from({ length: 7 }, (_, index) => ({
+        ...session, id: index + 1, name: `Club Night ${index + 1}`,
+        createdAt: `2026-10-0${index + 1}T13:00:00.000Z`, active: false,
+        closedAt: `2026-10-0${index + 1}T15:00:00.000Z`,
+      }))
+      const props = { ...dashboardProps(), fetchSessions: vi.fn().mockResolvedValue(history) }
+      const view = render(<App {...props} />)
+      await userEvent.click(screen.getByRole('button', { name: 'Club Sessions' }))
+      const menu = screen.getByRole('menu', { name: 'Club Sessions' })
+      expect(within(menu).getAllByRole('menuitem')).toHaveLength(7)
+      expect(within(menu).getByRole('menuitem', { name: /Club Night 7/ })).toBeVisible()
+      expect(within(menu).queryByRole('menuitem', { name: /Club Night 1/ })).not.toBeInTheDocument()
+      await userEvent.click(within(menu).getByRole('menuitem', { name: 'Find Past Sessions' }))
+      const archive = screen.getByRole('region', { name: 'All Club Sessions' })
+      expect(within(archive).getAllByRole('button')).toHaveLength(7)
+      expect(new URL(window.location.href).searchParams.get('view')).toBe('club-sessions')
+      await userEvent.click(within(archive).getByRole('button', { name: /Club Night 1/ }))
+      expect(await screen.findByRole('region', { name: 'Past club session: Club Night 1' })).toBeVisible()
+      act(() => window.history.back())
+      expect(await screen.findByRole('region', { name: 'All Club Sessions' })).toBeVisible()
+      view.unmount()
+      render(<App {...props} />)
+      expect(await screen.findByRole('region', { name: 'All Club Sessions' })).toBeVisible()
+      expect(screen.getByRole('tab', { name: 'Club Sessions' })).toHaveAttribute('aria-selected', 'true')
+    })
+
+    it('keeps the active session available and explains why creation is disabled', async () => {
+      render(<App {...dashboardProps()} />)
+      await screen.findByRole('tab', { name: session.name })
+      await userEvent.click(screen.getByRole('button', { name: 'Club Sessions' }))
+      expect(screen.getByRole('menuitem', { name: 'Create New Session' })).toBeDisabled()
+      expect(screen.getByText('Close the active session before creating another.')).toBeVisible()
+      await userEvent.click(screen.getByRole('menuitem', { name: new RegExp(session.name) }))
+      expect(screen.getByRole('tab', { name: session.name })).toHaveAttribute('aria-selected', 'true')
+    })
+
+    it('shows session-load failures rather than an empty history and supports retry', async () => {
+      const fetchSessions = vi.fn().mockRejectedValueOnce(new Error('Sessions offline'))
+        .mockResolvedValue([session])
+      render(<App {...dashboardProps()} fetchSessions={fetchSessions} />)
+      expect(await screen.findByRole('alert')).toHaveTextContent('Sessions offline')
+      await userEvent.click(screen.getByRole('button', { name: 'Club Sessions' }))
+      expect(screen.getByRole('menuitem', { name: 'Create New Session' })).toBeDisabled()
+      expect(screen.getByText('Sessions unavailable. Use Retry club sessions below.')).toBeVisible()
+      await userEvent.click(screen.getByRole('button', { name: 'Retry club sessions' }))
+      expect(await screen.findByRole('tab', { name: session.name })).toBeVisible()
     })
 
     it('reports history failures without switching to a view the URL cannot preserve', async () => {
@@ -431,6 +544,7 @@ describe('scanner and player producer', () => {
     render(<App
       workerFactory={() => worker as unknown as Worker}
       fetchGames={vi.fn().mockResolvedValue([])}
+      fetchSessions={vi.fn().mockResolvedValue([])}
       gamesPollIntervalMs={1_000_000}
     />)
     await act(async () => vi.advanceTimersByTimeAsync(0))
@@ -442,7 +556,7 @@ describe('scanner and player producer', () => {
     expect(worker.terminate).toHaveBeenCalledOnce()
     expect(cancelAnimationFrame).toHaveBeenCalled()
     expect(screen.getByRole('status')).toHaveTextContent('Camera off')
-    expect(screen.getByRole('alert')).toHaveTextContent('Camera paused after 5 minutes without a QR code')
+    expect(screen.getByText(/Camera paused after 5 minutes without a QR code/)).toHaveAttribute('role', 'alert')
     expect(screen.getByRole('button', { name: 'Start Camera' })).toBeInTheDocument()
   })
 
@@ -2227,11 +2341,12 @@ describe('ongoing games', () => {
     render(<App
       fetchGames={vi.fn().mockResolvedValue([])}
       createEmptyGame={vi.fn().mockRejectedValue(new Error('Database unavailable.'))}
+      fetchSessions={vi.fn().mockResolvedValue([])}
       gamesPollIntervalMs={60_000}
     />)
     await screen.findByText('No games are ongoing yet.')
     await userEvent.click(screen.getByRole('button', { name: 'Add empty game' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('Database unavailable.')
+    expect(await screen.findByText('Database unavailable.')).toHaveAttribute('role', 'alert')
     expect(screen.getByRole('button', { name: 'Add empty game' })).toBeEnabled()
   })
 
@@ -2325,6 +2440,55 @@ describe('ongoing games', () => {
   describe('standings check-in table details', () => {
     afterEach(() => window.history.replaceState(null, '', '/'))
 
+    it('uses explicit session HTTP endpoints for checkout and re-check-in', async () => {
+      window.history.replaceState(null, '', '/?view=session-4')
+      const session = {
+        id: 4, type: 'club-session' as const, name: 'Attendance',
+        createdAt: '2026-10-18T12:00:00.000Z', active: true, closedAt: null,
+        playerCount: 1, gameCount: 0, activeGameCount: 0, pairingMode: 'club-session-pairing-1' as const,
+      }
+      const assigned = {
+        ...game, id: 20, tableNumber: 7, eventId: 4, blackPlayerId: 1002,
+        blackPlayer: { id: 1002, name: 'Manual Player', rating: 700 },
+        whitePlayerId: null, whitePlayer: null,
+      }
+      let status = 'available'
+      const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        if (input === '/api/sessions/4/check-ins/1002' && init?.method === 'DELETE') {
+          status = 'checked-out'
+          return new Response(JSON.stringify({ checkIn: {
+            eventId: 4, playerId: 1002, checkedOutAt: '2026-10-22T22:00:00.000Z',
+          } }))
+        }
+        if (input === '/api/sessions/4/check-ins' && init?.method === 'POST') {
+          status = 'waiting'
+          return new Response(JSON.stringify({ status: 'waiting', game: assigned, side: 'black' }))
+        }
+        if (String(input).startsWith('/api/leaderboard')) {
+          return new Response(JSON.stringify({ leaderboard: [{
+            rank: 1, id: 1002, name: 'Manual Player', currentRating: 700, cohort: 'A',
+            gamesPlayed: 0, wins: 0, losses: 0, draws: 0, lastPlayedAt: null,
+            checkInStatus: status, tableNumber: status === 'waiting' ? 7 : null,
+          }] }))
+        }
+        if (input === '/api/players?gameId=20') {
+          return new Response(JSON.stringify({ players: [{ id: 1002, name: 'Manual Player', currentRating: 700 }] }))
+        }
+        throw new Error(`Unexpected request: ${String(input)}`)
+      })
+      render(<App fetchSessions={vi.fn().mockResolvedValue([session])}
+        fetchGames={vi.fn(async () => status === 'waiting' ? [assigned] : [])} />)
+      await userEvent.click(await screen.findByRole('button', { name: 'Check out Manual Player' }))
+      expect(await screen.findByText('Checked out · Unavailable')).toBeVisible()
+      await userEvent.click(screen.getByRole('button', { name: 'Check in Manual Player' }))
+      await screen.findByRole('dialog', { name: 'Table 7 game details' })
+      expect(fetch).toHaveBeenCalledWith('/api/sessions/4/check-ins/1002', expect.objectContaining({ method: 'DELETE' }))
+      expect(fetch).toHaveBeenCalledWith('/api/sessions/4/check-ins', expect.objectContaining({
+        method: 'POST', body: JSON.stringify({ playerId: 1002, name: 'Manual Player' }),
+      }))
+      expect(fetch.mock.calls.some(([url]) => url === '/api/check-ins')).toBe(false)
+    })
+
     it.each([
       { view: 'leaderboard', status: 'waiting' },
       { view: 'session-4', status: 'waiting' },
@@ -2366,11 +2530,16 @@ describe('ongoing games', () => {
         checkInPlayer={checkInPlayer}
         gamesPollIntervalMs={60_000}
       />)
+      if (view === 'leaderboard') {
+        await screen.findByRole('table', { name: 'Elo rankings' })
+        expect(screen.queryByRole('button', { name: 'Check in Manual Player' })).not.toBeInTheDocument()
+        await user.click(await screen.findByRole('tab', { name: session.name }))
+      }
       await user.click(await screen.findByRole('button', { name: 'Check in Manual Player' }))
       const dialog = await screen.findByRole('dialog', { name: 'Table 7 game details' })
       expect(checkInPlayer).toHaveBeenCalledExactlyOnceWith({
         v: 1, kind: 'player', playerId: 1002, name: 'Manual Player',
-      }, expect.any(AbortSignal))
+      }, expect.any(AbortSignal), session.id)
       expect(within(dialog).getByRole('combobox', { name: 'Black player' })).toHaveValue('Manual Player (700 Elo)')
       expect(within(dialog).getByRole('button', { name: 'Switch white and black players' })).toBeVisible()
       await user.click(within(dialog).getByRole('button', { name: 'Close game details' }))
@@ -2381,16 +2550,22 @@ describe('ongoing games', () => {
     })
 
     it('does not open a table popup when check-in fails', async () => {
-      window.history.replaceState(null, '', '/?view=leaderboard')
+      window.history.replaceState(null, '', '/?view=session-4')
       const user = userEvent.setup()
       const checkInPlayer = vi.fn().mockRejectedValue(new Error('Check-in rejected.'))
+      const session = {
+        id: 4, type: 'club-session' as const, name: 'Check-in Session',
+        createdAt: '2026-10-18T12:00:00.000Z', active: true, closedAt: null,
+        playerCount: 1, gameCount: 0, activeGameCount: 0,
+        pairingMode: 'club-session-pairing-1' as const,
+      }
       vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({ leaderboard: [{
         rank: 1, id: 1002, name: 'Manual Player', currentRating: 700,
         gamesPlayed: 0, wins: 0, losses: 0, draws: 0, lastPlayedAt: null,
         checkInStatus: 'not-checked-in', tableNumber: null,
       }] }), { status: 200 }))
       render(<App fetchGames={vi.fn().mockResolvedValue([])}
-        fetchSessions={vi.fn().mockResolvedValue([])} checkInPlayer={checkInPlayer} />)
+        fetchSessions={vi.fn().mockResolvedValue([session])} checkInPlayer={checkInPlayer} />)
       await user.click(await screen.findByRole('button', { name: 'Check in Manual Player' }))
       await waitFor(() => expect(screen.getAllByText('Check-in rejected.').length).toBeGreaterThan(0))
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
@@ -2442,13 +2617,16 @@ describe('ongoing games', () => {
       checkInPlayer={checkInPlayer}
       gamesPollIntervalMs={60_000}
     />)
-    await userEvent.click(await screen.findByRole('button', { name: '+ Create Club Session' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Club Sessions' }))
+    const create = screen.getByRole('menuitem', { name: 'Create New Session' })
+    await waitFor(() => expect(create).toBeEnabled())
+    await userEvent.click(create)
 
     expect(createClubSession).toHaveBeenCalledWith(expect.any(AbortSignal))
     const sessionTab = await screen.findByRole('tab', { name: 'Oct 2 Club Session' })
     expect(sessionTab).toHaveAttribute('aria-selected', 'true')
     expect(new URL(window.location.href).searchParams.get('view')).toBe(`session-${session.id}`)
-    expect(screen.queryByRole('button', { name: '+ Create Club Session' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Configure Oct 2 Club Session' })).toBeVisible()
     expect(screen.getByRole('heading', { name: 'Session Standings' })).toBeVisible()
 
@@ -2463,7 +2641,7 @@ describe('ongoing games', () => {
       kind: 'player',
       playerId: 1002,
       name: 'Manual Player',
-    }, expect.any(AbortSignal))
+    }, expect.any(AbortSignal), session.id)
 
     await userEvent.click(screen.getByRole('tab', { name: 'Leaderboard' }))
     expect(within(screen.getByRole('region', { name: 'Ongoing games' })).getAllByRole('article'))
@@ -2476,7 +2654,8 @@ describe('ongoing games', () => {
     expect(closeClubSession).toHaveBeenCalledWith(session.id, 'draw')
     expect(new URL(window.location.href).searchParams.get('view')).toBe('leaderboard')
     expect(screen.queryByRole('tab', { name: 'Oct 2 Club Session' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '+ Create Club Session' })).toBeVisible()
+    await userEvent.click(screen.getByRole('button', { name: 'Club Sessions' }))
+    expect(screen.getByRole('menuitem', { name: 'Create New Session' })).toBeEnabled()
     expect(screen.getByRole('tab', { name: 'Leaderboard' })).toHaveAttribute('aria-selected', 'true')
   })
 

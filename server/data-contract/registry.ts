@@ -1,7 +1,9 @@
 import { checkInResource } from './check-in.js';
 import { checkInGetOperation } from './check-in.get.js';
 import { checkInPostOperation } from './check-in.post.js';
+import { checkInPutOperation } from './check-in.put.js';
 import { clubSessionResource } from './club-session.js';
+import { clubSessionDeleteOperation } from './club-session.delete.js';
 import { clubSessionGetOperation } from './club-session.get.js';
 import { clubSessionPostOperation } from './club-session.post.js';
 import { clubSessionPutOperation } from './club-session.put.js';
@@ -60,10 +62,12 @@ export const sunsetChessResources: Record<ResourceKind, ResourceDefinition> = {
     clubSessionGetOperation,
     clubSessionPostOperation,
     clubSessionPutOperation,
+    clubSessionDeleteOperation,
   ]),
   'check-in': assembleResource(checkInResource, [
     checkInGetOperation,
     checkInPostOperation,
+    checkInPutOperation,
   ]),
   game: assembleResource(gameResource, [
     gameGetOperation,

@@ -160,10 +160,16 @@ export function createMcpServer(repository: ChessRepository): McpServer {
     domainResult(() => ({ player: repository.updatePlayerName(id, name) })));
   server.registerTool('player-check-in', {
     description: 'Check in a player by known QR player ID and name. Atomically updates the player and returns their existing game, pairs them into the oldest waiting game, uses the lowest-numbered empty table, or creates a waiting game at the lowest available table.',
-    inputSchema: { playerId, name: z.string().trim().min(1).max(80) },
+    inputSchema: { playerId, name: z.string().trim().min(1).max(80), eventId: sessionId.optional() },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ playerId: id, name }) =>
-    domainResult(() => repository.checkInPlayer({ id, name })));
+  }, async ({ playerId: id, name, eventId }) =>
+    domainResult(() => repository.checkInPlayer({ id, name }, undefined, undefined, eventId)));
+  server.registerTool('player-check-out', {
+    description: 'Check a player out of the specified active Club Session, releasing their unstarted seat. Finish or cancel a started game first.',
+    inputSchema: { playerId, eventId: sessionId },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ playerId: id, eventId }) =>
+    domainResult(() => ({ checkIn: repository.checkOutPlayer(eventId, id) })));
   server.registerTool('waiting-player-move', {
     description: 'Move a player who is waiting alone to another waiting table in the same event and close the table they vacated.',
     inputSchema: { playerId, destinationGameId: gameId, overrideStarted: z.boolean().optional() },

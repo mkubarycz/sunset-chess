@@ -8,14 +8,14 @@ interface DashboardLocation {
 
 function readDashboardLocation(fallback: DashboardTab): DashboardLocation {
   const view = new URL(window.location.href).searchParams.get('view') ?? fallback
-  if (view === 'leaderboard' || view === 'recent-games'
+  if (view === 'leaderboard' || view === 'recent-games' || view === 'club-sessions'
     || (/^session-[1-9]\d*$/.test(view) && Number.isSafeInteger(Number(view.slice(8))))) {
     return { view, error: '' }
   }
   return { view: 'leaderboard', error: 'The requested dashboard view is unavailable. Showing Leaderboard.' }
 }
 
-export function useDashboardNavigation(fallback: DashboardTab, activeSessionId: number | null | undefined) {
+export function useDashboardNavigation(fallback: DashboardTab, sessionIds: readonly number[] | undefined) {
   const [location, setLocation] = useState(() => readDashboardLocation(fallback))
 
   const navigate = useCallback((view: string, mode: 'push' | 'replace' = 'push', error?: string) => {
@@ -43,8 +43,8 @@ export function useDashboardNavigation(fallback: DashboardTab, activeSessionId: 
     let mounted = true
     const synchronize = () => {
       const requested = readDashboardLocation(fallback)
-      if (requested.view.startsWith('session-') && activeSessionId !== undefined
-        && requested.view !== `session-${activeSessionId}`) {
+      if (requested.view.startsWith('session-') && sessionIds !== undefined
+        && !sessionIds.includes(Number(requested.view.slice(8)))) {
         navigate('leaderboard', 'replace', 'That Club Session is no longer available. Showing Leaderboard.')
       } else {
         navigate(requested.view, 'replace', requested.error || undefined)
@@ -58,7 +58,7 @@ export function useDashboardNavigation(fallback: DashboardTab, activeSessionId: 
       mounted = false
       window.removeEventListener('popstate', synchronize)
     }
-  }, [activeSessionId, fallback, navigate])
+  }, [sessionIds, fallback, navigate])
 
   return { selectedView: location.view, navigationError: location.error, navigate }
 }

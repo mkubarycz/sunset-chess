@@ -14,7 +14,7 @@ export interface LeaderboardEntry {
   losses: number
   draws: number
   lastPlayedAt: string | null
-  checkInStatus?: 'not-checked-in' | 'waiting' | 'playing'
+  checkInStatus?: 'not-checked-in' | 'waiting' | 'paired' | 'playing' | 'available' | 'checked-out'
   tableNumber?: number | null
   opponentName?: string | null
   sessionGamesPlayed?: number
@@ -32,6 +32,10 @@ export interface RatingEvent {
   delta: number
   recordedAt: string
   reason: 'baseline' | 'game' | 'migration' | 'compensation'
+  opponentName: string | null
+  opponentRatingBefore: number | null
+  opponentDelta: number | null
+  outcome: 'win' | 'draw' | 'loss' | null
 }
 
 export interface PlayerProfile extends LeaderboardEntry {
@@ -79,10 +83,30 @@ function profileGameToGameCard(
   }
 }
 
-function ratingReason(reason: RatingEvent['reason']) {
-  if (reason === 'game') return 'Game result'
-  if (reason === 'compensation') return 'Cancelled game'
-  if (reason === 'migration') return 'Imported rating'
+function ratingReason(event: RatingEvent) {
+  if (event.reason === 'game') {
+    if (!event.opponentName || !event.outcome) return 'Game result (details unavailable)'
+    const outcome = event.outcome === 'win' ? 'Win' : event.outcome === 'loss' ? 'Loss' : 'Draw'
+    return <span className="rating-game-reason">
+      <span>{outcome} v {event.opponentName}</span>
+      {event.opponentRatingBefore == null || event.opponentDelta == null
+        ? <span className="rating-opponent-elo">Opponent Elo unavailable</span>
+        : <>
+            <span className="rating-opponent-elo"
+              aria-label={`${event.opponentName}'s pre-game Elo: ${event.opponentRatingBefore}`}>
+              {event.opponentRatingBefore}
+            </span>
+            <span className={`rating-opponent-delta${event.opponentDelta > 0 ? ' positive' : event.opponentDelta < 0 ? ' negative' : ''}`}
+              aria-label={`${event.opponentName}'s Elo change: ${event.opponentDelta > 0 ? '+' : ''}${event.opponentDelta}`}>
+              {event.opponentDelta > 0 ? '+' : ''}{event.opponentDelta}
+            </span>
+          </>}
+    </span>
+  }
+  if (event.reason === 'compensation') {
+    return event.opponentName ? `Cancelled game v. ${event.opponentName}` : 'Cancelled game'
+  }
+  if (event.reason === 'migration') return 'Imported rating'
   return 'Starting rating'
 }
 
@@ -121,9 +145,14 @@ export function PlayerCardDialog({
   const [confirmDelete, setConfirmDelete] = useState(confirmDeleteInitially)
   const [busy, setBusy] = useState(false)
   const [savingName, setSavingName] = useState(false)
+  const [openedGame, setOpenedGame] = useState<OngoingGame | null>(null)
+  const [openingGame, setOpeningGame] = useState(false)
   const nameInputRef = useRef<HTMLInputElement>(null)
   const savedNameRef = useRef(player.name)
   const savePromiseRef = useRef<Promise<boolean> | null>(null)
+  const gameRequestRef = useRef<AbortController | null>(null)
+
+  useEffect(() => () => gameRequestRef.current?.abort(), [])
 
   const loadProfile = useCallback(async (signal?: AbortSignal, preserveDraft = false) => {
     if (preserveDraft && savePromiseRef.current) return
@@ -144,6 +173,7 @@ export function PlayerCardDialog({
   }, [player.id])
 
   useEffect(() => {
+    if (openedGame) return
     const controller = new AbortController()
     void Promise.resolve().then(() => loadProfile(controller.signal, true)).catch((reason) => {
       if (!controller.signal.aborted) {
@@ -151,7 +181,7 @@ export function PlayerCardDialog({
       }
     })
     return () => controller.abort()
-  }, [confirmDeleteInitially, loadProfile, player.name, refreshKey])
+  }, [confirmDeleteInitially, loadProfile, openedGame, player.name, refreshKey])
 
   const saveName = () => {
     if (savePromiseRef.current) return savePromiseRef.current
@@ -230,15 +260,51 @@ export function PlayerCardDialog({
     }
   }
 
+  const openGame = async (gameId: number) => {
+    if (gameRequestRef.current) return
+    const controller = new AbortController()
+    gameRequestRef.current = controller
+    setOpeningGame(true)
+    setProfileError('')
+    try {
+      if (!await saveName() || controller.signal.aborted) return
+      const response = await fetch(`/api/games/${gameId}`, {
+        signal: controller.signal, headers: { accept: 'application/json' },
+      })
+      const body = await response.json() as { game?: OngoingGame; error?: string }
+      if (controller.signal.aborted) return
+      if (!response.ok || !body.game || body.game.id !== gameId) {
+        throw new Error(body.error || `Could not open game (${response.status}).`)
+      }
+      setOpenedGame(body.game)
+    } catch (reason) {
+      if (!controller.signal.aborted) {
+        setProfileError(reason instanceof Error ? reason.message : 'Could not open game.')
+      }
+    } finally {
+      if (gameRequestRef.current === controller) gameRequestRef.current = null
+      if (!controller.signal.aborted) setOpeningGame(false)
+    }
+  }
+
+  if (openedGame) {
+    return <GameCard key={openedGame.id} game={openedGame} mode="dialog" onClose={onClose}
+      onMutate={async (game) => {
+        await onMutate()
+        setOpenedGame((current) => current ? { ...current, ...game } : current)
+      }} />
+  }
+
   return (
     <ModalDialog className=" profile-dialog player-edit-dialog"
       ariaLabel={`Player card for ${profile?.name ?? player.name}`}
       closeLabel="Close player card" initialFocusRef={nameInputRef} onClose={closeAfterSave}>
-      <div aria-busy={busy || savingName}>
+      <div aria-busy={busy || savingName || openingGame}>
         <div className="player-card-identity">
           <form className="player-edit-form"
             onSubmit={(event) => { event.preventDefault(); void saveName() }}>
           <input id="edit-player-name" ref={nameInputRef} maxLength={80} value={editName}
+              disabled={busy || openingGame}
               aria-label="Player name" onChange={(event) => setEditName(event.target.value)}
               onBlur={() => void saveName()} />
           </form>
@@ -250,6 +316,7 @@ export function PlayerCardDialog({
           </p>
         </div>
         {savingName && <p className="player-save-status" role="status">Saving name…</p>}
+        {openingGame && <p role="status">Opening game...</p>}
         {profileError && <p className="games-message error" role="alert">{profileError}</p>}
         {!profile && !profileError && <p role="status">Loading player profile…</p>}
         {profile && <>
@@ -265,7 +332,8 @@ export function PlayerCardDialog({
               <h3>Ongoing games</h3>
               <div className="profile-game-strip" role="region" aria-label={`Ongoing games for ${profile.name}`} tabIndex={0}>
                 {profile.ongoingGames.map((game) => (
-                  <GameCard key={game.id} game={game} management={false} />
+                  <GameCard key={game.id} game={game} management={false}
+                    onOpenDetails={() => void openGame(game.id)} />
                 ))}
               </div>
             </section>
@@ -277,7 +345,7 @@ export function PlayerCardDialog({
               : <div className="profile-game-strip" role="region" aria-label={`Recent games for ${profile.name}`} tabIndex={0}>
                   {profile.recentGames.slice(0, 10).map((game) => (
                     <GameCard key={game.id} game={profileGameToGameCard(profile, game)}
-                      management={false} selectable={false} />
+                      management={false} onOpenDetails={() => void openGame(game.id)} />
                   ))}
                 </div>
             }
@@ -292,8 +360,15 @@ export function PlayerCardDialog({
                       <thead><tr><th>Date</th><th>Reason</th><th>Change</th><th>Elo</th></tr></thead>
                       <tbody>{[...profile.ratingHistory].reverse().map((event) => (
                         <tr key={event.id}>
-                          <td><time dateTime={event.recordedAt}>{new Date(event.recordedAt).toLocaleDateString()}</time></td>
-                          <td>{ratingReason(event.reason)}{event.gameId ? ` #${event.gameId}` : ''}</td>
+                          <td>{event.gameId !== null
+                            ? <button type="button" className="rating-game-link" disabled={openingGame}
+                              aria-label={`Open game ${event.gameId} from ${new Date(event.recordedAt).toLocaleDateString()}`}
+                              onClick={() => { if (event.gameId !== null) void openGame(event.gameId) }}>
+                                <time dateTime={event.recordedAt}>{new Date(event.recordedAt).toLocaleDateString()}</time>
+                              </button>
+                            : <time dateTime={event.recordedAt}>{new Date(event.recordedAt).toLocaleDateString()}</time>}
+                          </td>
+                          <td>{ratingReason(event)}</td>
                           <td className={event.delta > 0 ? 'positive' : event.delta < 0 ? 'negative' : ''}>
                             {event.delta > 0 ? '+' : ''}{event.delta}
                           </td>

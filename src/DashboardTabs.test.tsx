@@ -28,18 +28,18 @@ describe('DashboardTabs', () => {
     expect(leaderboard).toHaveFocus()
   })
 
-  it('renders a create control outside the selectable tabs', async () => {
-    const onCreate = vi.fn()
+  it('renders toolbar controls outside the selectable tabs and their scroller', () => {
+    const onOpen = vi.fn()
     render(<DashboardTabs selected="leaderboard" onSelect={() => undefined}
       tabs={[{ id: 'leaderboard', label: 'Leaderboard' }]}
-      createLabel="+ Create Club Session" onCreate={onCreate}>
+      toolbarActions={<button type="button" onClick={onOpen}>Club Sessions</button>}>
       {{ leaderboard: <p>Ranks</p> }}
     </DashboardTabs>)
 
-    const create = screen.getByRole('button', { name: '+ Create Club Session' })
-    expect(create).not.toHaveAttribute('role', 'tab')
-    fireEvent.click(create)
-    expect(onCreate).toHaveBeenCalledOnce()
+    const menu = screen.getByRole('button', { name: 'Club Sessions' })
+    expect(screen.getByRole('tablist')).not.toContainElement(menu)
+    fireEvent.click(menu)
+    expect(onOpen).toHaveBeenCalledOnce()
   })
 
   it('places a configuration action directly beside its tab', () => {

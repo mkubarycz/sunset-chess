@@ -3,6 +3,8 @@ import { createOutputSchema } from './operation.js';
 import type { ResourceOperationDefinition } from './types.js';
 
 export const CheckInCreateInputSchema = z.object({
+  eventId: z.number().int().positive().optional()
+    .describe('Explicit active Club Session; omitted only for compatibility with standalone check-in.'),
   playerId: z.number().int().min(1000).max(2000)
     .describe('Known QR player identity.'),
   name: z.string().trim().min(1).max(80)

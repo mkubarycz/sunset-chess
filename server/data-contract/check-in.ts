@@ -7,14 +7,16 @@ export const CheckInSpecSchema = z.object({
 });
 
 export const CheckInStatusSchema = z.object({
-  placement: z.enum(['paired', 'waiting', 'already-checked-in', 'migrated'])
+  placement: z.enum(['paired', 'waiting', 'already-checked-in', 'available', 'checked-out', 'migrated'])
     .describe('migrated means v9 attendance existed but its original placement was not recoverable.'),
   side: z.enum(['black', 'white']).nullable(),
   checkedInAt: z.string().datetime(),
+  checkedOutAt: z.string().datetime().nullable(),
+  attendance: z.enum(['checked-in', 'checked-out']),
 });
 
 export const checkInResource: ResourceDescriptor = {
-  description: 'An immutable attendance resource and the atomic entry point to pairing placement.',
+  description: 'Session attendance, retained until explicit checkout, and the atomic entry point to pairing placement.',
   spec: CheckInSpecSchema,
   status: CheckInStatusSchema,
   relationships: {
@@ -28,12 +30,16 @@ export const checkInResource: ResourceDescriptor = {
     'Session pairing never crosses frozen cohorts or repeats an opponent.',
   ],
   lifecycle: [
-    'Created once; placement outcome is immutable audit state.',
+    'Created once per session; attendance remains active after scoring until checkout or session closure.',
+    'Checkout releases unstarted seats but is blocked during started games; explicit check-in reactivates attendance.',
+    'Game placement tracks current assignment; historical games and rating events remain unchanged.',
     'Migrated v9 attendance without a reconstructable active placement is explicitly marked migrated.',
   ],
   effects: [
     'Create atomically upserts the player, freezes a late player cohort, records attendance, and preserves pairing/game placement.',
     'Existing active placement returns already-checked-in without duplicating attendance.',
+    'Scoring automatically pairs available checked-in players within cohorts without repeating opponents.',
+    'Checked-out players cannot be assigned to another game without explicit check-in.',
   ],
   fields: {
     generated: [
@@ -43,7 +49,7 @@ export const checkInResource: ResourceDescriptor = {
       'relationships.game',
       'relationships.cohort',
     ],
-    mutable: [],
+    mutable: ['status.checkedOutAt', 'status.attendance', 'relationships.game', 'status.placement', 'status.side'],
     immutable: ['spec.playerId', 'relationships.player', 'relationships.session'],
   },
 };

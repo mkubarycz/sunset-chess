@@ -8,8 +8,9 @@ export const ClubSessionSpecSchema = z.object({
 });
 
 export const ClubSessionStatusSchema = z.object({
-  lifecycle: z.enum(['active', 'closed']),
+  lifecycle: z.enum(['active', 'closed', 'deleted']),
   closedAt: z.string().datetime().nullable(),
+  deletedAt: z.string().datetime().nullable(),
   playerCount: z.number().int().nonnegative(),
   gameCount: z.number().int().nonnegative(),
   activeGameCount: z.number().int().nonnegative(),
@@ -23,11 +24,18 @@ export const clubSessionResource: ResourceDescriptor = {
   constraints: [
     'At most one Club Session may be active.',
     'Pairing mode is club-session-pairing-1.',
+    'Only sessions with zero check-ins and zero games can be soft-deleted.',
   ],
-  lifecycle: ['active -> closed', 'Closing resolves every unfinished game atomically.'],
+  lifecycle: [
+    'active -> closed',
+    'active or closed -> deleted only for empty sessions.',
+    'Closing resolves every unfinished game atomically.',
+    'Deleted sessions and their retained cohorts are hidden from reads and cannot be mutated.',
+  ],
   effects: [
     'Create defaults pairingMode to club-session-pairing-1 when omitted.',
     'Create snapshots every existing player into one of four rating cohorts.',
+    'Delete retains the database row and cohorts, records deletedAt, and deactivates the session.',
   ],
   fields: {
     generated: ['metadata.id', 'metadata.createdAt', 'status'],

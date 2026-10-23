@@ -96,6 +96,22 @@ A local-first QR camera scanner with a SQLite/MCP control plane.
   Open cards refresh in place without discarding focus or unsaved name edits.
 - Twenty most recently completed games with compact W/L/D plus signed Elo
   changes and each player's Elo at the beginning of that game
+- One Club Sessions dropdown for creating a session, opening one of the five
+  most recent sessions, or choosing Find Past Sessions to open an all-sessions
+  dashboard tab with dates, status, player/game counts, and a clear empty state.
+  Close the active session before creating another. Closed sessions open read-only details, session standings,
+  and their complete recorded game history (not just the twenty latest games).
+  Session URLs also support reload and browser Back/Forward. Overall records
+  and Elo remain current club totals; the Session Record column is session-only.
+- Leaderboard and session record columns use `5W 1D 2L` order without game
+  counts: high-contrast green wins, neutral draws, and red losses. Letter labels
+  and expanded accessible names keep the meaning independent of color.
+- Empty session pages (active or closed) offer a top-right trash icon with
+  confirmation. Deletion is soft: the database row and cohort snapshots are
+  retained, but the session is hidden from menus, archives, and resource reads.
+  The server atomically requires zero check-ins and zero games, including
+  completed or cancelled games. Deleting an active empty session frees the
+  active-session slot.
 - Successful QR check-ins optimistically promote the assigned table to the
   rail's left edge, then animate a decorative identity token from the detected
   QR label (reduced-motion users receive only a stationary highlight)
@@ -646,6 +662,12 @@ MCP exposes the same model through `contract-discover`, `resource-query`,
 The existing UI-focused `/api` endpoints and named MCP tools remain compatibility
 adapters over the same repository behavior.
 
+`DELETE /api/sessions/:id` and generic `club-session` resource deletion share
+the empty-session guard. Schema v13 records `deletedAt` and deactivates a
+soft-deleted session; its retained row cannot be renamed, reopened, or used
+for new games. The generic delete response reports lifecycle `deleted`, while
+subsequent reads return not found. There is no automatic restore action.
+
 `check-in` is a first-class immutable resource. Creating it atomically upserts
 the constrained 1000–2000 player identity, preserves or assigns the frozen
 session cohort, records attendance, and preserves or produces game/table
@@ -657,7 +679,7 @@ unrecoverable placement status as `migrated` instead of inventing history.
 
 MCP for 1.4 is published at <http://localhost:4176/mcp>. Compatibility tools are `player-list`,
 `player-get`, `player-create`, `player-upsert`, `player-name-update`,
-`player-check-in`, `player-delete`,
+`player-check-in`, `player-check-out`, `player-delete`,
 `game-list`, `game-get`, `game-create`, `game-result-set`, `game-cancel`,
 `game-seat-update`, `game-start`, and the backward-compatible `game-delete`.
 Read tools also include `leaderboard-list` and `player-profile-get` for ranked
@@ -672,17 +694,59 @@ natural-language creation; it uniformly chooses an available ID from 1000–2000
 accepts only black and white player IDs and assigns the table. A quick protocol
 smoke can be run with any Streamable HTTP MCP client.
 
-`POST /api/check-ins` accepts a validated player QR identity, updates that player,
-and atomically returns their existing game or applies the active Club Session's
-pairing mode. Outside a session it fills the oldest waiting game or creates a
-waiting game with a cryptographically random side. The read-only `GET /api/games` endpoint returns `games` (ongoing, ordered by
+`POST /api/sessions/:id/check-ins` accepts `{ "playerId": 1234, "name": "Ada" }`
+and checks the player into that specific active session. Closed or stale session
+requests fail without changing player or attendance data. The main leaderboard
+does not offer check-in or checkout controls; use the active session's
+**Add player to session** selector or its attendance controls. Camera check-in
+selects the active session and submits its explicit ID; without an active
+session, the browser reports an error instead of creating standalone attendance.
+
+Attendance survives scoring. After a result is recorded, eligible checked-in
+players are automatically paired within their frozen cohort, without repeating
+opponents in that session. Existing waiting tables are filled first. Players
+without an eligible opponent remain **Checked in · Available for pairing**;
+they are not placed into new single-player waiting games just because a result
+was recorded. An arriving player can pair with these available attendees.
+
+**Check out** appears next to session players. Waiting and paired players can
+check out before their game starts: their seat is cleared, any opponent remains
+waiting, and an empty game is removed. Once the game starts, checkout is blocked
+both in the UI and on the server until it finishes or is cancelled.
+`DELETE /api/sessions/:id/check-ins/:playerId` records checkout while preserving
+attendance and historical results. Checked-out players without completed games
+are hidden from session standings; those with completed results remain listed
+as **Checked out · Unavailable** with a **Check in** button. They are excluded from automatic
+pairing and seat pickers, and cannot be assigned manually, by QR seat scan, or by
+HTTP/MCP resource operations. Explicit check-in reactivates their existing
+attendance row. Session closure checks everyone out without creating new games.
+Cancelling an unfinished game does not trigger automatic re-pairing, so its
+players can then check out. Historical sessions remain read-only.
+
+`player-check-in` and generic `check-in` creation accept `eventId` to select the
+session; `player-check-out` requires it. Generic `check-in` updates accept
+`{ "checkOut": true }`. The old `POST /api/check-ins` endpoint and unscoped MCP
+check-in remain compatibility paths for older standalone clients, but are not
+used by browser check-in. Migration 14 adds nullable checkout timestamps and
+recovers attendance for existing active-session manual game seats.
+Migration 15 repairs missing active-session cohorts using the same late-arrival
+assignment rules as check-in, preserving existing frozen snapshots. It also
+recovers missing historical membership from completed, non-cancelled games as
+checked-out attendance, so results appear in standings without automatically
+enrolling those players in pairing. Existing checked-out assignments with no
+remaining game are normalized. Both waiting-table participants report paired
+placement after the second seat is filled, and closing a session clears all
+current-assignment metadata.
+
+The read-only `GET /api/games` endpoint returns `games` (ongoing, ordered by
 table) and `recentGames` (the 20 most recently finished). `PATCH
 /api/games/:id/result` with JSON `{ "result": "1-0" }` (or either other
 canonical token) finalizes a fully seated game. `PATCH
 /api/games/:id/seats/:side` accepts `{ "playerId": 1234 }` or
 `{ "playerId": null }` to assign, replace, or remove one active seat.
-`GET /api/players?gameId=:id` returns the entire player roster (not the
-200-entry leaderboard subset), including check-in and source-table context.
+`GET /api/players?gameId=:id` returns the player roster (not the
+200-entry leaderboard subset), excluding players checked out of that game's
+session and including check-in and source-table context.
 Selecting an unchecked player creates session membership and a pairing cohort,
 then seats them directly without invoking automatic pairing. Selecting someone
 at another table in the same event moves them, leaves their former seat empty,
@@ -771,6 +835,17 @@ The bounded limit is 1–200. `GET /api/players/:id/profile?recentLimit=10`
 returns record/rank, the player's ongoing games, newest-first non-cancelled
 completed games (maximum 50), and full chronological Elo history. Malformed
 bounds return 400 and missing players 404.
+Game-related history includes the opponent's name, pre-game Elo, signed Elo
+change, and the player's win/loss/draw outcome, independent of the Elo delta.
+The player card displays reasons such as “Win v Alice 700 -16”, with the
+opponent's pre-game Elo in smaller, vertically centered text and their change
+colored by gain/loss. These values come from the historical ledger, not the
+opponent's current rating. Selecting a game-linked history date or an
+ongoing/recent game saves any pending name edit, then replaces the player card
+with the standard game-details dialog. `GET /api/games/:id` supplies the full
+joined game, including original timestamps, players, rating changes, and
+cancellation eligibility, even for older or cancelled games. Missing games
+return 404; failed navigation leaves the player card open with an error.
 Top-level dashboard tabs use the History API and a `view` query parameter:
 `?view=leaderboard`, `?view=recent-games`, or `?view=session-4` for session ID 4.
 Clicking or keyboard-selecting a tab adds a history entry; selecting the current
@@ -909,6 +984,21 @@ confirmation in chat.
 curl --fail http://localhost:4176/health
 ```
 
+## Pull request reviews
+
+The repository's active [protect-main ruleset](https://github.com/mkubarycz/sunset-chess/rules/25726646)
+matches Working Memory's default-branch policy. GitHub Copilot automatically
+reviews non-draft pull requests targeting the default branch and reviews again
+on subsequent pushes; draft pull requests are excluded.
+
+Changes must go through a pull request, all review threads must be resolved
+before merging, and force pushes and branch deletion are blocked. The policy
+does not require a human approval count. Review findings should be examined and
+addressed before merging; automatic review does not merge a pull request.
+
+This is a GitHub repository setting, not a local agent or Actions workflow.
+Checking out this repository does not install the policy in another repository.
+
 ## Container
 
 ```sh
@@ -946,3 +1036,55 @@ changes in one are not synchronized to the other.
 To reset only the 1.4 environment,
 stop/remove the container and explicitly remove the volume yourself; the
 application never deletes the volume automatically.
+
+### Back up before development
+
+```sh
+npm run backup:database
+```
+
+Requires Docker, the running 1.4 container, and Node 22.13+ with the repository's
+installed dependencies. The command checks the container's volume and port,
+then uses SQLite's online backup API with a read-only source connection. It
+saves a snapshot to a unique private directory under
+`~/Documents/SunsetChess-backups/`, outside the repository and Docker volume.
+The downloaded copy must pass integrity and foreign-key checks before a
+`manifest.json` is written with its SHA-256, all table row counts, timestamp,
+and source container/image/volume identity. Failures exit nonzero; an incomplete
+backup without a manifest is not verified. No backups are automatically pruned.
+The temporary container snapshot is removed; the host backup is retained.
+The app does not need to stop, and the original Sunset Chess is never touched.
+This helper currently supports only the documented 1.4 deployment; it is not
+the repository's permanent target selection policy. If the confirmed instance
+changes, update and validate the backup tooling for that instance before use.
+
+### Agent session defaults
+
+[Repository instructions](.github/copilot-instructions.md) tell new Copilot
+sessions to discover targets from the current branch's deployment configuration
+and running environment, confirm the selected instance once, take a verified
+backup before development, and deploy validated app changes to that instance
+unless the user requests otherwise. No version, port, or container is a
+permanent preference. A target explicitly named in the request counts as
+confirmation, subject to verification. Backup and deployment tooling must match
+the selected target; target-specific helpers must be adapted and validated
+when the deployment changes. Documentation-only changes do not need deployment.
+`npm run deploy:docker` waits up to 120 seconds for container health; agents
+must also verify `/health` and the changed behavior on the live URL.
+
+These always-on instructions are the right default for this repository-wide
+workflow; no separate agent or manually invoked skill is required. They guide
+agent behavior rather than enforce it as a hook. Commit and merge the
+instructions and scripts into the branch used for new sessions so future
+worktrees inherit them. They do not configure sessions using older branches.
+
+To restore, stop only `working-memory-sunset-chess-1-4` first. Preserve its
+current database and any `-wal`/`-shm` sidecars in a separate recovery directory.
+Using a helper container mounting only `working-memory-sunset-chess-1-4-data`,
+replace `/data/sunset-chess.sqlite` with the verified snapshot and ensure no old
+sidecars remain at the database path. Transfer the snapshot and its manifest
+with `docker cp` if Docker cannot bind-mount the host backup directory. Verify
+the manifest hash, integrity, and foreign keys before replacing the database.
+Restart the current application so its pending schema migrations run, and verify
+`/health`, players, sessions, and results. Never restore over a running SQLite
+database or touch the original Sunset Chess environment.

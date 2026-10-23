@@ -159,6 +159,9 @@ import { useDashboardNavigation } from './useDashboardNavigation'
 import { ModalDialog } from './ModalDialog'
 import { SettingsMenu } from './SettingsMenu'
 import { SessionCard, type ClubSession } from './SessionCard'
+import { PastSessionView } from './PastSessionView'
+import { ClubSessionsMenu, ClubSessionsView } from './ClubSessions'
+import { SessionHeader } from './SessionHeader'
 import { SessionPlayerDialog, type SelectablePlayer } from './SessionPlayerDialog'
 import {
   loadUiPreferences,
@@ -320,7 +323,9 @@ interface AppProps {
     pairingMode: 'club-session-pairing-1',
   ) => Promise<ClubSession>
   closeClubSession?: (id: number, resolution: 'draw' | 'cancel') => Promise<ClubSession>
-  checkInPlayer?: (player: PlayerPayload, signal: AbortSignal) => Promise<CheckInResult>
+  deleteClubSession?: (id: number) => Promise<void>
+  checkInPlayer?: (player: PlayerPayload, signal: AbortSignal, eventId?: number) => Promise<CheckInResult>
+  checkOutPlayer?: (eventId: number, playerId: number) => Promise<void>
   moveWaitingPlayer?: (
     playerId: number,
     destinationGameId: number,
@@ -422,6 +427,16 @@ async function defaultCreateClubSession(signal: AbortSignal): Promise<ClubSessio
   return body.session
 }
 
+async function defaultDeleteClubSession(id: number): Promise<void> {
+  const response = await fetch(`/api/sessions/${id}`, {
+    method: 'DELETE', headers: { accept: 'application/json' },
+  })
+  const body = await response.json() as { session?: { id: number; deletedAt?: string }; error?: string }
+  if (!response.ok || body.session?.id !== id || typeof body.session.deletedAt !== 'string') {
+    throw new Error(body.error || `Club session deletion failed (${response.status}).`)
+  }
+}
+
 async function defaultRenameClubSession(id: number, name: string): Promise<ClubSession> {
   const response = await fetch(`/api/sessions/${id}`, {
     method: 'PATCH',
@@ -470,8 +485,10 @@ async function defaultCloseClubSession(
 async function defaultCheckInPlayer(
   player: PlayerPayload,
   signal: AbortSignal,
+  eventId?: number,
 ): Promise<CheckInResult> {
-  const response = await fetch('/api/check-ins', {
+  if (eventId === undefined) throw new Error('Open an active Club Session before checking in players.')
+  const response = await fetch(`/api/sessions/${eventId}/check-ins`, {
     method: 'POST',
     signal,
     headers: { accept: 'application/json', 'content-type': 'application/json' },
@@ -484,6 +501,20 @@ async function defaultCheckInPlayer(
       : `Check-in request failed (${response.status}).`)
   }
   return body as CheckInResult
+}
+
+async function defaultCheckOutPlayer(eventId: number, playerId: number): Promise<void> {
+  const response = await fetch(`/api/sessions/${eventId}/check-ins/${playerId}`, {
+    method: 'DELETE', headers: { accept: 'application/json' },
+  })
+  const body = await response.json() as {
+    checkIn?: { eventId: number; playerId: number; checkedOutAt: string | null }
+    error?: string
+  }
+  if (!response.ok || body.checkIn?.eventId !== eventId || body.checkIn.playerId !== playerId
+    || typeof body.checkIn.checkedOutAt !== 'string') {
+    throw new Error(body.error || `Checkout failed (${response.status}).`)
+  }
 }
 
 async function defaultMoveWaitingPlayer(
@@ -524,7 +555,9 @@ export default function App({
   renameClubSession = defaultRenameClubSession,
   updateClubSessionPairingMode = defaultUpdateClubSessionPairingMode,
   closeClubSession = defaultCloseClubSession,
+  deleteClubSession = defaultDeleteClubSession,
   checkInPlayer = defaultCheckInPlayer,
+  checkOutPlayer = defaultCheckOutPlayer,
   moveWaitingPlayer = defaultMoveWaitingPlayer,
   finalizeGame = defaultFinalizeGame,
   gamesPollIntervalMs = 2000,
@@ -552,10 +585,16 @@ export default function App({
   const [createGameError, setCreateGameError] = useState('')
   const [leaderboardRefresh, setLeaderboardRefresh] = useState(0)
   const [sessions, setSessions] = useState<ClubSession[]>([])
+  const activeSessionIdRef = useRef<number | undefined>(undefined)
+  useLayoutEffect(() => {
+    activeSessionIdRef.current = sessions.find((session) => session.active)?.id
+  }, [sessions])
   const [sessionsLoaded, setSessionsLoaded] = useState(false)
+  const sessionIds = useMemo(() => sessionsLoaded ? sessions.map((session) => session.id) : undefined,
+    [sessions, sessionsLoaded])
   const { selectedView, navigationError, navigate } = useDashboardNavigation(
     initialPreferences.preferences.selectedTab,
-    sessionsLoaded ? sessions.find((session) => session.active)?.id ?? null : undefined,
+    sessionIds,
   )
   const [sessionsError, setSessionsError] = useState('')
   const [creatingSession, setCreatingSession] = useState(false)
@@ -926,6 +965,14 @@ export default function App({
     setSessions((current) => current.map((session) => session.id === id ? updated : session))
   }, [renameClubSession])
 
+  const handleDeleteClubSession = useCallback(async (id: number) => {
+    await deleteClubSession(id)
+    setSessions((current) => current.filter((session) => session.id !== id))
+    setSessionConfigOpen(false)
+    setSessionPlayerDialogOpen(false)
+    navigate('club-sessions', 'replace')
+  }, [deleteClubSession, navigate])
+
   const handleUpdateClubSessionPairingMode = useCallback(async (
     id: number,
     pairingMode: 'club-session-pairing-1',
@@ -980,12 +1027,14 @@ export default function App({
     setCheckInError(false)
     setCheckInNotice(`Checking in ${player.name}…`)
     try {
+      const session = sessions.find((item) => item.active && selectedView === `session-${item.id}`)
+      if (!session) throw new Error('Open an active Club Session before checking in players.')
       const result = await checkInPlayer({
         v: 1,
         kind: 'player',
         playerId: player.id,
         name: player.name,
-      }, controller.signal)
+      }, controller.signal, session.id)
       if (result.status === 'paired') {
         setCheckInNotice(`${player.name} checks into Table ${result.game.tableNumber}`)
       } else if (result.status === 'waiting') {
@@ -1004,7 +1053,17 @@ export default function App({
       setCheckInNotice(message)
       throw cause
     }
-  }, [checkInPlayer, refreshGames, refreshSessions])
+  }, [checkInPlayer, refreshGames, refreshSessions, selectedView, sessions])
+
+  const handleSessionCheckOut = useCallback(async (player: SelectablePlayer) => {
+    const session = sessions.find((item) => item.active && selectedView === `session-${item.id}`)
+    if (!session) throw new Error('Open an active Club Session before checking out players.')
+    await checkOutPlayer(session.id, player.id)
+    setCheckInError(false)
+    setCheckInNotice(`${player.name} checked out of ${session.name}.`)
+    await refreshGames(true)
+    await refreshSessions()
+  }, [checkOutPlayer, refreshGames, refreshSessions, selectedView, sessions])
 
   const handleMoveWaitingPlayer = useCallback(async (
     player: SelectablePlayer,
@@ -1230,7 +1289,12 @@ export default function App({
     checkInRequestRef.current.set(playerId, controller)
     setCheckInError(false)
     setCheckInNotice(`Checking in ${detectedPlayer.name}…`)
-    void checkInPlayer(detectedPlayer, controller.signal).then((result) => {
+    const eventId = activeSessionIdRef.current
+    if (eventId !== undefined) navigate(`session-${eventId}`)
+    const request = eventId !== undefined
+      ? checkInPlayer(detectedPlayer, controller.signal, eventId)
+      : checkInPlayer(detectedPlayer, controller.signal)
+    void request.then((result) => {
       if (controller.signal.aborted || generation !== cameraGenerationRef.current) return
       if (result.status === 'paired') {
         setCheckInNotice(`${detectedPlayer.name} checks into Table ${result.game.tableNumber}`)
@@ -1267,7 +1331,7 @@ export default function App({
         checkInRequestRef.current.delete(playerId)
       }
     })
-  }, [checkInPlayer, clearResultAcknowledgement, refreshGames, refreshSessions])
+  }, [checkInPlayer, clearResultAcknowledgement, navigate, refreshGames, refreshSessions])
 
   useEffect(() => {
     void refreshGames()
@@ -3470,10 +3534,14 @@ export default function App({
   )
 
   const activeSession = sessions.find((session) => session.active) ?? null
+  const pastSessions = sessions.filter((session) => !session.active)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id - a.id)
+  const selectedPastSession = pastSessions.find((session) => selectedView === `session-${session.id}`)
   const sessionViewId = activeSession ? `session-${activeSession.id}` : null
   const dashboardTabs = [
     { id: 'leaderboard', label: 'Leaderboard' },
     { id: 'recent-games', label: 'Recent Games' },
+    ...(selectedView === 'club-sessions' ? [{ id: 'club-sessions', label: 'Club Sessions' }] : []),
     ...(activeSession && sessionViewId ? [{
       id: sessionViewId,
       label: activeSession.name,
@@ -3483,6 +3551,7 @@ export default function App({
         onClick: () => setSessionConfigOpen(true),
       },
     }] : []),
+    ...(selectedPastSession ? [{ id: `session-${selectedPastSession.id}`, label: selectedPastSession.name }] : []),
   ]
   const ongoingGamesPanel = (
     panelGames: OngoingGame[],
@@ -3696,10 +3765,12 @@ export default function App({
           <DashboardTabs
             selected={selectedView}
             tabs={dashboardTabs}
-            createLabel={!activeSession
-              ? (creatingSession ? '+ Creating Club Session…' : '+ Create Club Session')
-              : undefined}
-            onCreate={!activeSession && !creatingSession ? () => void handleCreateClubSession() : undefined}
+            toolbarActions={
+              <ClubSessionsMenu sessions={sessions} loaded={sessionsLoaded} error={sessionsError}
+                creating={creatingSession} onCreate={() => void handleCreateClubSession()}
+                onSelect={(id) => navigate(`session-${id}`)}
+                onFindPast={() => navigate('club-sessions')} />
+            }
             onSelect={(view) => {
               navigate(view)
               if (view === 'leaderboard' || view === 'recent-games') {
@@ -3710,7 +3781,6 @@ export default function App({
             leaderboard: <div className="workspace-with-games">
               <Leaderboard refreshKey={leaderboardRefresh} variant="rail"
                 onScanCode={beginPlayerCodeScan}
-                onCheckIn={(player) => handleManualSessionCheckIn(player, true)}
                 onOpenGame={handleOpenPlayerGame}
                 onMoveWaitingPlayer={handleMoveWaitingPlayer}
                 waitingGames={games}
@@ -3721,12 +3791,21 @@ export default function App({
               {ongoingGamesPanel(games, 'all')}
             </div>,
             'recent-games': recentGamesPanel,
+            'club-sessions': <ClubSessionsView sessions={sessions} loaded={sessionsLoaded} error={sessionsError}
+              onSelect={(id) => navigate(`session-${id}`)} />,
+            ...(selectedPastSession ? {
+              [`session-${selectedPastSession.id}`]: <PastSessionView key={selectedPastSession.id}
+                session={selectedPastSession} onDelete={() => handleDeleteClubSession(selectedPastSession.id)} />,
+            } : {}),
             ...(activeSession && sessionViewId ? {
-              [sessionViewId]: <div className="workspace-with-games">
+              [sessionViewId]: <div className="active-session-view">
+                <SessionHeader session={activeSession} onDelete={() => handleDeleteClubSession(activeSession.id)} />
+                <div className="workspace-with-games">
                 <Leaderboard refreshKey={leaderboardRefresh} variant="rail"
                   onScanCode={beginPlayerCodeScan}
                   eventId={activeSession.id} title="Session Standings"
                   onCheckIn={(player) => handleManualSessionCheckIn(player, true)}
+                  onCheckOut={handleSessionCheckOut}
                   onOpenGame={handleOpenPlayerGame}
                   onMoveWaitingPlayer={handleMoveWaitingPlayer}
                   waitingGames={games}
@@ -3740,6 +3819,7 @@ export default function App({
                   'session',
                   activeSession.id,
                 )}
+                </div>
               </div>,
             } : {}),
           }}</DashboardTabs>
@@ -3760,7 +3840,9 @@ export default function App({
               onClose={() => setSessionPlayerDialogOpen(false)}
               onCheckIn={handleManualSessionCheckIn} />
           )}
-          {sessionsError && <p className="games-message error">{sessionsError}</p>}
+          {sessionsError && <p className="games-message error" role="alert">{sessionsError}
+            {' '}<button type="button" onClick={() => void refreshSessions()}>Retry club sessions</button>
+          </p>}
           {playerCreator}
         </section>
 

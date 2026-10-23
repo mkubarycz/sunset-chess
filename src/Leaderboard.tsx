@@ -3,6 +3,20 @@ import type { OngoingGame } from './GameCard'
 import { ModalDialog } from './ModalDialog'
 import { PlayerCardDialog, type LeaderboardEntry } from './PlayerCardDialog'
 
+function recordLabel(wins: number, draws: number, losses: number) {
+  return `${wins} ${wins === 1 ? 'win' : 'wins'}, ${draws} ${draws === 1 ? 'draw' : 'draws'}, ${losses} ${losses === 1 ? 'loss' : 'losses'}`
+}
+
+function StandingRecord({ wins, draws, losses }: { wins: number; draws: number; losses: number }) {
+  return (
+    <span className="standing-record" role="group" aria-label={recordLabel(wins, draws, losses)}>
+      <span className="standing-record-wins" aria-hidden="true">{wins}W</span>{' '}
+      <span className="standing-record-draws" aria-hidden="true">{draws}D</span>{' '}
+      <span className="standing-record-losses" aria-hidden="true">{losses}L</span>
+    </span>
+  )
+}
+
 export function Leaderboard({
   refreshKey,
   variant = 'default',
@@ -10,11 +24,13 @@ export function Leaderboard({
   addPlayerLabel = 'Add player',
   onScanCode,
   onCheckIn,
+  onCheckOut,
   onOpenGame,
   onMoveWaitingPlayer,
   waitingGames = [],
   eventId,
   title = 'Current Club Standings',
+  readOnly = false,
 }: {
   refreshKey: number
   variant?: 'default' | 'rail'
@@ -22,17 +38,20 @@ export function Leaderboard({
   addPlayerLabel?: string
   onScanCode?: (player: LeaderboardEntry) => void
   onCheckIn?: (player: LeaderboardEntry) => Promise<void>
+  onCheckOut?: (player: LeaderboardEntry) => Promise<void>
   onOpenGame?: (player: LeaderboardEntry) => void
   onMoveWaitingPlayer?: (player: LeaderboardEntry, destinationGameId: number, overrideStarted?: boolean) => Promise<void>
   waitingGames?: readonly OngoingGame[]
   eventId?: number
   title?: string
+  readOnly?: boolean
 }) {
   const [entries, setEntries] = useState<LeaderboardEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [selected, setSelected] = useState<LeaderboardEntry | null>(null)
   const [checkingInId, setCheckingInId] = useState<number | null>(null)
+  const [checkingOutId, setCheckingOutId] = useState<number | null>(null)
   const [movingPlayer, setMovingPlayer] = useState<LeaderboardEntry | null>(null)
   const [movingToGameId, setMovingToGameId] = useState<number | null>(null)
   const [moveError, setMoveError] = useState('')
@@ -97,12 +116,27 @@ export function Leaderboard({
     </button>
   )
 
+  const checkOut = async (entry: LeaderboardEntry) => {
+    if (!onCheckOut || checkingOutId !== null) return
+    setCheckingOutId(entry.id)
+    setError('')
+    try {
+      await onCheckOut(entry)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not check out this player.')
+    } finally {
+      setCheckingOutId(null)
+    }
+  }
+
   const statusContent = (entry: LeaderboardEntry) => {
+    if (entry.checkInStatus === 'checked-out') return 'Checked out · Unavailable'
+    if (entry.checkInStatus === 'available') return 'Checked in · Available for pairing'
     if (entry.checkInStatus === 'waiting' && entry.tableNumber !== null) {
       return <>Waiting at {onOpenGame ? tableLink(entry) : `table ${entry.tableNumber}`}</>
     }
-    if (entry.checkInStatus === 'playing' && entry.tableNumber !== null) {
-      return <>Playing {entry.opponentName ?? 'an opponent'} on{' '}
+    if (['paired', 'playing'].includes(entry.checkInStatus ?? '') && entry.tableNumber !== null) {
+      return <>{entry.checkInStatus === 'paired' ? 'Paired with' : 'Playing'} {entry.opponentName ?? 'an opponent'} on{' '}
         {onOpenGame ? tableLink(entry) : `table ${entry.tableNumber}`}</>
     }
     return 'Not checked in'
@@ -161,7 +195,7 @@ export function Leaderboard({
         </div>
         <div aria-live="polite">
           {loading && entries.length === 0 && <p>Loading leaderboard…</p>}
-          {error && <p className="games-message error">{error}</p>}
+          {error && <p role="alert" className="games-message error">{error}</p>}
         </div>
         {!loading && !error && entries.length === 0 && <p>No players yet. New players begin at 700 Elo.</p>}
         {entries.length > 0 && (
@@ -190,14 +224,14 @@ export function Leaderboard({
                   </td>}
                   <td className="leaderboard-player">
                     <div className="leaderboard-player-content">
-                      <button type="button" className="leaderboard-player-name"
+                      {readOnly ? <strong>{entry.name}</strong> : <button type="button" className="leaderboard-player-name"
                         aria-label={`Open player card for ${entry.name}`}
                         onClick={(event) => openPlayerCard(entry, event.currentTarget)}>
                         {entry.name}
-                      </button>
-                      <span className={`leaderboard-player-status status-${entry.checkInStatus ?? 'not-checked-in'}`}>
+                      </button>}
+                      {!readOnly && <span className={`leaderboard-player-status status-${entry.checkInStatus ?? 'not-checked-in'}`}>
                         {statusContent(entry)}
-                      </span>
+                      </span>}
                       {onMoveWaitingPlayer && entry.checkInStatus === 'waiting' && (
                         <button type="button" className="leaderboard-move-player"
                           onClick={(event) => {
@@ -209,9 +243,22 @@ export function Leaderboard({
                           Move To...
                         </button>
                       )}
-                      {onCheckIn && (entry.checkInStatus ?? 'not-checked-in') === 'not-checked-in' && (
+                      {sessionStandings && !readOnly && onCheckOut
+                        && ['waiting', 'paired', 'playing', 'available'].includes(entry.checkInStatus ?? '') && (
+                        <button type="button" className="leaderboard-check-out secondary"
+                          aria-label={`Check out ${entry.name}`}
+                          disabled={checkingOutId !== null || checkingInId !== null || entry.checkInStatus === 'playing'}
+                          title={entry.checkInStatus === 'playing'
+                            ? `Finish or cancel Table ${entry.tableNumber} before checking out.`
+                            : `Check ${entry.name} out of this session`}
+                          onClick={() => void checkOut(entry)}>
+                          {checkingOutId === entry.id ? 'Checking out…' : 'Check out'}
+                        </button>
+                      )}
+                      {sessionStandings && !readOnly && onCheckIn
+                        && ['not-checked-in', 'checked-out'].includes(entry.checkInStatus ?? 'not-checked-in') && (
                         <button type="button" className="leaderboard-check-in"
-                          disabled={checkingInId !== null}
+                          disabled={checkingInId !== null || checkingOutId !== null}
                           aria-label={`Check in ${entry.name}`}
                           onClick={() => void checkIn(entry)}>
                           {checkingInId === entry.id ? 'Checking in…' : 'Check in'}
@@ -221,20 +268,19 @@ export function Leaderboard({
                   </td>
                   <td className="leaderboard-elo">{entry.currentRating}</td>
                   <td className="leaderboard-record">
-                    <span>{entry.wins}-{entry.losses}-{entry.draws}</span>
-                    <small>{entry.gamesPlayed}g</small>
-                    <button type="button" className="leaderboard-row-hit" onClick={(event) => {
+                    <StandingRecord wins={entry.wins} draws={entry.draws} losses={entry.losses} />
+                    {!readOnly && <button type="button" className="leaderboard-row-hit" onClick={(event) => {
                       openPlayerCard(entry, event.currentTarget)
                     }} aria-label={`${entry.name}, ${sessionStandings
                       ? entry.cohort ? `cohort ${entry.cohort}` : 'no cohort assigned'
-                      : `rank ${entry.rank}`}, ${entry.currentRating} Elo, ${entry.wins}-${entry.losses}-${entry.draws} record`}>
+                      : `rank ${entry.rank}`}, ${entry.currentRating} Elo, record: ${recordLabel(entry.wins, entry.draws, entry.losses)}`}>
                       <span className="visually-hidden">View {entry.name} profile</span>
-                    </button>
+                    </button>}
                   </td>
                   {eventId !== undefined && (
                     <td className="leaderboard-session-record">
-                      <span>{entry.sessionWins ?? 0}-{entry.sessionLosses ?? 0}-{entry.sessionDraws ?? 0}</span>
-                      <small>{entry.sessionGamesPlayed ?? 0}g</small>
+                      <StandingRecord wins={entry.sessionWins ?? 0}
+                        draws={entry.sessionDraws ?? 0} losses={entry.sessionLosses ?? 0} />
                     </td>
                   )}
                 </tr>

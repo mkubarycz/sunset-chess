@@ -2,6 +2,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { calculateElo, INITIAL_RATING } from './ratings.js';
+import { ensurePairingCohort } from './pairingCohorts.js';
 
 const migrations = [
   {
@@ -486,7 +487,72 @@ const migrations = [
       );
     `,
   },
+  {
+    version: 13,
+    sql: `
+      ALTER TABLE ClubSessionResource ADD COLUMN deletedAt TEXT CHECK (
+        deletedAt IS NULL OR (
+          active = 0 AND length(deletedAt) >= 20 AND datetime(deletedAt) IS NOT NULL
+        )
+      );
+    `,
+  },
+  {
+    version: 14,
+    sql: `
+      ALTER TABLE CheckInResource ADD COLUMN checkedOutAt TEXT CHECK (
+        checkedOutAt IS NULL OR (length(checkedOutAt) >= 20 AND datetime(checkedOutAt) IS NOT NULL)
+      );
+      INSERT OR IGNORE INTO CheckInResource(eventId, playerId, checkedInAt, gameId, placement, side)
+      SELECT g.eventId, g.blackPlayerId, g.createdAt, g.id,
+        CASE WHEN g.whitePlayerId IS NULL THEN 'waiting' ELSE 'paired' END, 'black'
+      FROM GameResource g JOIN ClubSessionResource s ON s.id = g.eventId AND s.active = 1
+      WHERE g.result IS NULL AND g.cancelledAt IS NULL AND g.blackPlayerId IS NOT NULL;
+      INSERT OR IGNORE INTO CheckInResource(eventId, playerId, checkedInAt, gameId, placement, side)
+      SELECT g.eventId, g.whitePlayerId, g.createdAt, g.id,
+        CASE WHEN g.blackPlayerId IS NULL THEN 'waiting' ELSE 'paired' END, 'white'
+      FROM GameResource g JOIN ClubSessionResource s ON s.id = g.eventId AND s.active = 1
+      WHERE g.result IS NULL AND g.cancelledAt IS NULL AND g.whitePlayerId IS NOT NULL;
+    `,
+  },
+  {
+    version: 15,
+    sql: `
+      WITH participants AS (
+        SELECT eventId, blackPlayerId AS playerId, createdAt, finishedAt
+        FROM GameResource
+        WHERE eventId IS NOT NULL AND result IS NOT NULL AND cancelledAt IS NULL
+        UNION ALL
+        SELECT eventId, whitePlayerId AS playerId, createdAt, finishedAt
+        FROM GameResource
+        WHERE eventId IS NOT NULL AND result IS NOT NULL AND cancelledAt IS NULL
+      )
+      INSERT INTO CheckInResource(eventId, playerId, checkedInAt, checkedOutAt)
+      SELECT eventId, playerId, MIN(createdAt), MAX(finishedAt)
+      FROM participants GROUP BY eventId, playerId
+      ON CONFLICT DO NOTHING;
+
+      UPDATE CheckInResource SET placement = NULL, side = NULL
+      WHERE checkedOutAt IS NOT NULL AND gameId IS NULL;
+    `,
+  },
 ] as const;
+
+function backfillActivePairingCohorts(db: DatabaseSync): void {
+  const players = db.prepare(`
+    SELECT attendance.eventId, player.id, player.rating
+    FROM CheckInResource AS attendance
+    JOIN ClubSessionResource AS session ON session.id = attendance.eventId AND session.active = 1
+    JOIN PlayerResource AS player ON player.id = attendance.playerId
+    WHERE attendance.checkedOutAt IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM PairingCohortResource AS cohort
+        WHERE cohort.eventId = attendance.eventId AND cohort.playerId = attendance.playerId
+      )
+    ORDER BY attendance.eventId, attendance.checkedInAt, attendance.id
+  `).all() as Array<{ eventId: number; id: number; rating: number }>;
+  for (const player of players) ensurePairingCohort(db, player.eventId, player);
+}
 
 function backfillRatingLedger(db: DatabaseSync, recordedAt: string): void {
   const players = db.prepare('SELECT id, rating FROM Player ORDER BY id').all() as unknown as
@@ -632,6 +698,7 @@ export function openDatabase(path = process.env.SUNSET_CHESS_DB_PATH || defaultD
       if (migration.version === 3) assertUniqueGameParticipation(db);
       db.exec(migration.sql);
       if (migration.version === 5) backfillRatingLedger(db, new Date().toISOString());
+      if (migration.version === 15) backfillActivePairingCohorts(db);
       if (migration.version === 3) assertUniqueGameParticipation(db);
       db.prepare('INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)')
         .run(migration.version, new Date().toISOString());
