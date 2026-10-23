@@ -99,6 +99,11 @@ describe('Sunset Chess HTTP and MCP', () => {
       expect(firstBody.checkIn.eventId).toBe(session.id);
       const second = await post(1001, 'Bob');
       expect(second.status).toBe(200);
+      const released = await fetch(`${endpoint}/1000`, { method: 'DELETE' });
+      expect(released.status).toBe(200);
+      expect(app.repository.listLeaderboard(100, session.id).map(({ id }) => id)).toEqual([1001]);
+      expect((await post(1000, 'Alice')).status).toBe(200);
+      app.repository.updateGameResource(firstBody.game.id, { start: true });
       const blocked = await fetch(`${endpoint}/1000`, { method: 'DELETE' });
       expect(blocked.status).toBe(409);
       expect(await blocked.json()).toMatchObject({ error: expect.stringMatching(/Finish or cancel Table/) });

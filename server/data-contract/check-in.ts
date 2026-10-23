@@ -31,7 +31,7 @@ export const checkInResource: ResourceDescriptor = {
   ],
   lifecycle: [
     'Created once per session; attendance remains active after scoring until checkout or session closure.',
-    'Checkout is blocked while the player has an unfinished game; explicit check-in reactivates attendance.',
+    'Checkout releases unstarted seats but is blocked during started games; explicit check-in reactivates attendance.',
     'Game placement tracks current assignment; historical games and rating events remain unchanged.',
     'Migrated v9 attendance without a reconstructable active placement is explicitly marked migrated.',
   ],

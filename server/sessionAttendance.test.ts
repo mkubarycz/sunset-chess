@@ -74,22 +74,56 @@ describe('session attendance and automatic pairing', () => {
     });
   });
 
-  it('blocks checkout while waiting, paired, or started, then allows it after cancellation', () => {
+  it('releases a waiting seat and hides a checked-out player without completed results', () => {
+    const { repository, session, checkIn } = fixture();
+    checkIn(1000);
+    const attendance = repository.checkOutPlayer(session.id, 1000);
+    expect(attendance).toMatchObject({ checkedOutAt: expect.any(String), gameId: null });
+    expect(repository.listJoinedGames()).toEqual([]);
+    expect(repository.listLeaderboard(100, session.id)).toEqual([]);
+    expect(repository.checkOutPlayer(session.id, 1000)).toEqual(attendance);
+    expect(checkIn(1000).checkIn.id).toBe(attendance.id);
+    expect(repository.listJoinedGames()).toEqual([
+      expect.objectContaining({ blackPlayerId: 1000, whitePlayerId: null }),
+    ]);
+  });
+
+  it.each([1000, 1001])('releases either paired seat on checkout and keeps the opponent waiting (%i)', (playerId) => {
     const { repository, session, checkIn } = fixture();
     const first = checkIn(1000);
-    expect(() => repository.checkOutPlayer(session.id, 1000)).toThrow(/Finish or cancel Table/);
     checkIn(1001);
-    expect(() => repository.checkOutPlayer(session.id, 1000)).toThrow(/Finish or cancel Table/);
+    expect(repository.listLeaderboard(100, session.id).map(({ checkInStatus }) => checkInStatus))
+      .toEqual(['paired', 'paired']);
+    repository.checkOutPlayer(session.id, playerId);
+    const opponentId = playerId === 1000 ? 1001 : 1000;
+    expect(repository.listLeaderboard(100, session.id)).toEqual([
+      expect.objectContaining({ id: opponentId, checkInStatus: 'waiting' }),
+    ]);
+    expect(repository.listCheckIns(session.id, opponentId)[0]).toMatchObject({
+      gameId: first.game.id, placement: 'waiting', checkedOutAt: null,
+    });
+    const again = checkIn(playerId);
+    expect(again.game.id).toBe(first.game.id);
+    expect(repository.listJoinedGames()).toHaveLength(1);
+    expect(repository.listCheckIns(session.id, playerId)).toHaveLength(1);
+  });
+
+  it('blocks checkout only after the game starts, then allows it after cancellation', () => {
+    const { repository, session, checkIn } = fixture();
+    const first = checkIn(1000);
+    checkIn(1001);
     repository.updateGameResource(first.game.id, { start: true });
+    expect(repository.listLeaderboard(100, session.id).map(({ checkInStatus }) => checkInStatus))
+      .toEqual(['playing', 'playing']);
     expect(() => repository.checkOutPlayer(session.id, 1000)).toThrow(/Finish or cancel Table/);
+    expect(repository.getGame(first.game.id).blackPlayerId).toBe(1000);
+    expect(repository.listCheckIns(session.id, 1000)[0].checkedOutAt).toBeNull();
     repository.cancelGame(first.game.id, undefined, undefined, true);
     expect(repository.listJoinedGames()).toEqual([]);
     const checkedOut = repository.checkOutPlayer(session.id, 1000);
     expect(checkedOut.checkedOutAt).toEqual(expect.any(String));
     expect(repository.checkOutPlayer(session.id, 1000)).toEqual(checkedOut);
-    expect(repository.listLeaderboard(100, session.id)).toContainEqual(
-      expect.objectContaining({ id: 1000, checkInStatus: 'checked-out' }),
-    );
+    expect(repository.listLeaderboard(100, session.id).some(({ id }) => id === 1000)).toBe(false);
   });
 
   it('excludes checked-out players from automatic pairing and every manual assignment path', () => {
@@ -98,6 +132,9 @@ describe('session attendance and automatic pairing', () => {
     checkIn(1001);
     repository.finalizeGame(first.game.id, '0-1');
     repository.checkOutPlayer(session.id, 1000);
+    expect(repository.listLeaderboard(100, session.id)).toContainEqual(
+      expect.objectContaining({ id: 1000, checkInStatus: 'checked-out', sessionGamesPlayed: 1 }),
+    );
     const next = checkIn(1002);
     checkIn(1003);
     expect(repository.listSeatOptions(next.game.id).some(({ id }) => id === 1000)).toBe(false);
@@ -105,6 +142,28 @@ describe('session attendance and automatic pairing', () => {
     expect(() => repository.updateGameSeat(next.game.id, 'white', 1000)).toThrow(/checked out/);
     expect(() => repository.updateGameResource(next.game.id, { blackPlayerId: 1000 })).toThrow(/checked out/);
     repository.finalizeGame(next.game.id, '0-1');
+    expect(repository.listJoinedGames().some((game) =>
+      game.blackPlayerId === 1000 || game.whitePlayerId === 1000)).toBe(false);
+    expect(repository.listCheckIns(session.id, 1000)[0].checkedOutAt).not.toBeNull();
+  });
+
+  it('retains completed standings when checking out of an automatically paired next game', () => {
+    const { repository, session, checkIn } = fixture();
+    const first = checkIn(1000);
+    checkIn(1001);
+    const second = checkIn(1002);
+    checkIn(1003);
+    repository.finalizeGame(first.game.id, '0-1');
+    repository.finalizeGame(second.game.id, '0-1');
+    repository.checkOutPlayer(session.id, 1000);
+    expect(repository.listLeaderboard(100, session.id)).toContainEqual(
+      expect.objectContaining({ id: 1000, checkInStatus: 'checked-out', sessionGamesPlayed: 1 }),
+    );
+    expect(repository.listJoinedGames().some((game) =>
+      game.blackPlayerId === 1000 || game.whitePlayerId === 1000)).toBe(false);
+    const paired = repository.listJoinedGames().find((game) =>
+      game.blackPlayerId !== null && game.whitePlayerId !== null)!;
+    repository.finalizeGame(paired.id, '1/2-1/2');
     expect(repository.listJoinedGames().some((game) =>
       game.blackPlayerId === 1000 || game.whitePlayerId === 1000)).toBe(false);
     expect(repository.listCheckIns(session.id, 1000)[0].checkedOutAt).not.toBeNull();

@@ -1203,12 +1203,12 @@ describe('ChessRepository', () => {
     expect(repository.listLeaderboard()).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: 1000,
-        checkInStatus: 'playing',
+        checkInStatus: 'paired',
         opponentName: 'Bob',
       }),
       expect.objectContaining({
         id: 1001,
-        checkInStatus: 'playing',
+        checkInStatus: 'paired',
         opponentName: 'Alice',
       }),
     ]));

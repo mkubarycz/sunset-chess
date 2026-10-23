@@ -165,7 +165,7 @@ export function createMcpServer(repository: ChessRepository): McpServer {
   }, async ({ playerId: id, name, eventId }) =>
     domainResult(() => repository.checkInPlayer({ id, name }, undefined, undefined, eventId)));
   server.registerTool('player-check-out', {
-    description: 'Check a player out of the specified active Club Session. Finish or cancel their unfinished game first.',
+    description: 'Check a player out of the specified active Club Session, releasing their unstarted seat. Finish or cancel a started game first.',
     inputSchema: { playerId, eventId: sessionId },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ playerId: id, eventId }) =>

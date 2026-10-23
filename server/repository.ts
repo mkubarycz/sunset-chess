@@ -51,7 +51,7 @@ export interface LeaderboardEntry {
   losses: number;
   draws: number;
   lastPlayedAt: string | null;
-  checkInStatus: 'not-checked-in' | 'waiting' | 'playing' | 'available' | 'checked-out';
+  checkInStatus: 'not-checked-in' | 'waiting' | 'paired' | 'playing' | 'available' | 'checked-out';
   tableNumber: number | null;
   opponentName: string | null;
   sessionGamesPlayed: number;
@@ -1140,11 +1140,19 @@ export class ChessRepository {
         return attendance;
       }
       const game = this.db.prepare(`
-        SELECT tableNumber FROM GameResource
+        SELECT * FROM GameResource
         WHERE result IS NULL AND cancelledAt IS NULL AND (blackPlayerId = ? OR whitePlayerId = ?)
         LIMIT 1
-      `).get(playerId, playerId) as { tableNumber: number } | undefined;
-      if (game) throw new ConflictError(`Finish or cancel Table ${game.tableNumber} before checking this player out.`);
+      `).get(playerId, playerId) as GameResource | undefined;
+      if (game?.startedAt) throw new ConflictError(`Finish or cancel Table ${game.tableNumber} before checking this player out.`);
+      if (game?.eventId === eventId) {
+        const remaining = this.updateGameSeatInTransaction(
+          game.id, game.blackPlayerId === playerId ? 'black' : 'white', null,
+        );
+        if (remaining.blackPlayerId === null && remaining.whitePlayerId === null) {
+          this.cancelGameInTransaction(game.id, null, now);
+        }
+      }
       const checkedOutAt = now();
       if (typeof checkedOutAt !== 'string' || Number.isNaN(Date.parse(checkedOutAt))) {
         throw new Error('Clock source returned an invalid ISO timestamp.');
@@ -1883,8 +1891,9 @@ export class ChessRepository {
           CASE
             ${eventId === undefined ? '' : "WHEN r.checkedOutAt IS NOT NULL THEN 'checked-out'"}
             WHEN ongoing.id IS NULL THEN '${eventId === undefined ? 'not-checked-in' : 'available'}'
+            WHEN ongoing.startedAt IS NOT NULL THEN 'playing'
             WHEN ongoing.blackPlayerId IS NULL OR ongoing.whitePlayerId IS NULL THEN 'waiting'
-            ELSE 'playing'
+            ELSE 'paired'
           END AS checkInStatus,
           ongoing.tableNumber,
           opponent.name AS opponentName,
@@ -1900,6 +1909,7 @@ export class ChessRepository {
             WHEN ongoing.whitePlayerId = r.id THEN ongoing.blackPlayerId
             ELSE ongoing.whitePlayerId
           END
+        ${eventId === undefined ? '' : 'WHERE r.checkedOutAt IS NULL OR sr.sessionGamesPlayed > 0'}
         ORDER BY r.currentRating DESC, r.gamesPlayed DESC,
           r.name COLLATE NOCASE ASC, r.id ASC
         LIMIT ?

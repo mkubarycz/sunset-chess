@@ -135,8 +135,8 @@ export function Leaderboard({
     if (entry.checkInStatus === 'waiting' && entry.tableNumber !== null) {
       return <>Waiting at {onOpenGame ? tableLink(entry) : `table ${entry.tableNumber}`}</>
     }
-    if (entry.checkInStatus === 'playing' && entry.tableNumber !== null) {
-      return <>Playing {entry.opponentName ?? 'an opponent'} on{' '}
+    if (['paired', 'playing'].includes(entry.checkInStatus ?? '') && entry.tableNumber !== null) {
+      return <>{entry.checkInStatus === 'paired' ? 'Paired with' : 'Playing'} {entry.opponentName ?? 'an opponent'} on{' '}
         {onOpenGame ? tableLink(entry) : `table ${entry.tableNumber}`}</>
     }
     return 'Not checked in'
@@ -244,11 +244,11 @@ export function Leaderboard({
                         </button>
                       )}
                       {sessionStandings && !readOnly && onCheckOut
-                        && ['waiting', 'playing', 'available'].includes(entry.checkInStatus ?? '') && (
+                        && ['waiting', 'paired', 'playing', 'available'].includes(entry.checkInStatus ?? '') && (
                         <button type="button" className="leaderboard-check-out secondary"
                           aria-label={`Check out ${entry.name}`}
-                          disabled={checkingOutId !== null || checkingInId !== null || entry.tableNumber != null}
-                          title={entry.tableNumber != null
+                          disabled={checkingOutId !== null || checkingInId !== null || entry.checkInStatus === 'playing'}
+                          title={entry.checkInStatus === 'playing'
                             ? `Finish or cancel Table ${entry.tableNumber} before checking out.`
                             : `Check ${entry.name} out of this session`}
                           onClick={() => void checkOut(entry)}>

@@ -353,6 +353,10 @@ describe('session attendance controls', () => {
       lastPlayedAt: null, checkInStatus: 'waiting', tableNumber: 2, cohort: 'A' },
     { rank: 3, id: 1002, name: 'Carol', currentRating: 700, gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
       lastPlayedAt: null, checkInStatus: 'checked-out', tableNumber: null, cohort: 'A' },
+    { rank: 4, id: 1003, name: 'Dana', currentRating: 700, gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
+      lastPlayedAt: null, checkInStatus: 'paired', tableNumber: 3, cohort: 'A', opponentName: 'Eve' },
+    { rank: 5, id: 1004, name: 'Eve', currentRating: 700, gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
+      lastPlayedAt: null, checkInStatus: 'playing', tableNumber: 4, cohort: 'A', opponentName: 'Frank' },
   ]
 
   it('keeps check-in and checkout controls off the main leaderboard even if handlers are supplied', async () => {
@@ -371,11 +375,16 @@ describe('session attendance controls', () => {
     expect(screen.getByText('Checked in · Available for pairing')).toBeVisible()
     expect(screen.getByText('Checked out · Unavailable')).toBeVisible()
     expect(checkout).toBeEnabled()
-    expect(screen.getByRole('button', { name: 'Check out Bob' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Check out Bob' }))
-      .toHaveAttribute('title', 'Finish or cancel Table 2 before checking out.')
+    expect(screen.getByRole('button', { name: 'Check out Bob' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Check out Dana' })).toBeEnabled()
+    expect(screen.getByText('Paired with Eve on table 3')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Check out Eve' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Check out Eve' }))
+      .toHaveAttribute('title', 'Finish or cancel Table 4 before checking out.')
     fireEvent.click(checkout)
     await waitFor(() => expect(onCheckOut).toHaveBeenCalledWith(expect.objectContaining({ id: 1000 })))
+    fireEvent.click(screen.getByRole('button', { name: 'Check out Dana' }))
+    await waitFor(() => expect(onCheckOut).toHaveBeenCalledWith(expect.objectContaining({ id: 1003 })))
     fireEvent.click(screen.getByRole('button', { name: 'Check in Carol' }))
     await waitFor(() => expect(onCheckIn).toHaveBeenCalledWith(expect.objectContaining({ id: 1002 })))
     expect(screen.queryByRole('button', { name: 'Check in Alice' })).not.toBeInTheDocument()

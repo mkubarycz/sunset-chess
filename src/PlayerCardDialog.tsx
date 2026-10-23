@@ -14,7 +14,7 @@ export interface LeaderboardEntry {
   losses: number
   draws: number
   lastPlayedAt: string | null
-  checkInStatus?: 'not-checked-in' | 'waiting' | 'playing' | 'available' | 'checked-out'
+  checkInStatus?: 'not-checked-in' | 'waiting' | 'paired' | 'playing' | 'available' | 'checked-out'
   tableNumber?: number | null
   opponentName?: string | null
   sessionGamesPlayed?: number

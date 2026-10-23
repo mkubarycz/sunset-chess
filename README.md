@@ -709,11 +709,14 @@ without an eligible opponent remain **Checked in · Available for pairing**;
 they are not placed into new single-player waiting games just because a result
 was recorded. An arriving player can pair with these available attendees.
 
-**Check out** appears next to session players. Finish or cancel their unfinished
-game first, including a waiting game; checkout is blocked both in the UI and on
-the server until then. `DELETE /api/sessions/:id/check-ins/:playerId` records
-checkout while preserving attendance and historical results. Checked-out players
-remain listed as **Checked out · Unavailable**, are excluded from automatic
+**Check out** appears next to session players. Waiting and paired players can
+check out before their game starts: their seat is cleared, any opponent remains
+waiting, and an empty game is removed. Once the game starts, checkout is blocked
+both in the UI and on the server until it finishes or is cancelled.
+`DELETE /api/sessions/:id/check-ins/:playerId` records checkout while preserving
+attendance and historical results. Checked-out players without completed games
+are hidden from session standings; those with completed results remain listed
+as **Checked out · Unavailable** with a **Check in** button. They are excluded from automatic
 pairing and seat pickers, and cannot be assigned manually, by QR seat scan, or by
 HTTP/MCP resource operations. Explicit check-in reactivates their existing
 attendance row. Session closure checks everyone out without creating new games.
